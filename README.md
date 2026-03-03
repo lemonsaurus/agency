@@ -254,6 +254,47 @@ Agents are assigned to the number keys (`Prefix+2` through `Prefix+5`) in the or
 
 ---
 
+## claudejail — sandboxed Claude Code
+
+`claudejail` is a wrapper script included in this repo that runs Claude Code inside a [Firejail](https://firejail.wordpress.com/) sandbox. It restricts Claude's filesystem access to **only the current working directory**, so the agent can't read or modify anything else on your system.
+
+What the sandbox does:
+
+- **Blacklists your entire `$HOME`**, then whitelists only `$PWD`, `~/.claude`, and the `claude` binary
+- **Drops all Linux capabilities**, enables seccomp filtering
+- **Blocks privilege escalation** (`nonewprivs`, `noroot`)
+- **Isolates IPC, /tmp, and /dev**
+- **Blocks D-Bus, sound, video, 3D**
+- **Restricts `/etc`** to only networking and SSL essentials
+- **Allows network access** (Claude needs the Anthropic API)
+- **Allows subprocess execution** (Claude needs git, npm, bash, etc.)
+
+### Installing claudejail
+
+```bash
+# Install firejail if you don't have it
+sudo apt install firejail
+
+# Install the claudejail script and firejail profile
+make install-claudejail
+```
+
+This copies two files:
+
+- `~/.local/bin/claudejail` — the wrapper script
+- `~/.config/firejail/claudejail.profile` — the sandbox profile
+
+Then just use `claudejail` anywhere you'd use `claude`:
+
+```bash
+cd ~/projects/myapp
+claudejail                    # Claude can only see ~/projects/myapp
+```
+
+Inside agency, `claudejail` is the default `Prefix+2` agent. The source files live in `scripts/claudejail` and `scripts/claudejail.profile`.
+
+---
+
 ## Pane labels
 
 Each pane gets a top-border label in the format `agent@folder`:

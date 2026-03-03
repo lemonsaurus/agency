@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# claudejail — Run Claude Code in a Firejail sandbox restricted to $PWD
+set -euo pipefail
+
+PROFILE="${HOME}/.config/firejail/claudejail.profile"
+
+# --- Preflight checks -------------------------------------------------------
+
+if ! command -v firejail &>/dev/null; then
+    echo "error: firejail is not installed" >&2
+    echo "  sudo apt install firejail" >&2
+    exit 1
+fi
+
+if ! command -v claude &>/dev/null; then
+    echo "error: claude is not installed" >&2
+    exit 1
+fi
+
+if [[ ! -f "$PROFILE" ]]; then
+    echo "error: firejail profile not found at ${PROFILE}" >&2
+    echo "  run 'make install-claudejail' from the agency repo to install it" >&2
+    exit 1
+fi
+
+# --- Resolve working directory -----------------------------------------------
+
+CWD="$(pwd -P)"
+
+# --- Launch sandboxed Claude -------------------------------------------------
+
+exec firejail \
+    --profile="$PROFILE" \
+    --whitelist="$CWD" \
+    --whitelist="${HOME}/.claude" \
+    --whitelist="${HOME}/.local/bin/claude" \
+    -- \
+    claude \
+    --allowedTools Bash Edit Write Read Glob Grep WebFetch WebSearch NotebookEdit Agent \
+    "$@"

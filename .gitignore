@@ -4,3 +4,8 @@ bin/
 *.test
 *.out
 .DS_Store
+.env
+.env.*
+*.pem
+*.key
+credentials.json
