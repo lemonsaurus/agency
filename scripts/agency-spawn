@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# agency-spawn — request a new agent pane from inside an existing one
+#
+# Usage (from inside an agency pane):
+#   agency-spawn claude                  # spawn a Claude Code pane in $PWD
+#   agency-spawn codex                   # spawn a Codex pane in $PWD
+#   agency-spawn gemini                  # spawn a Gemini pane in $PWD
+#   agency-spawn --cmd "aider"           # spawn arbitrary command in $PWD
+#   agency-spawn claude --dir /tmp       # spawn in a specific directory
+#   agency-spawn --cmd "aider" --dir /x  # arbitrary command in specific dir
+#
+# This works because agency sets AGENCY_SOCKET in every pane's env.
+
+set -euo pipefail
+
+if [[ -z "${AGENCY_SOCKET:-}" ]]; then
+    echo "Error: AGENCY_SOCKET not set. Are you inside an agency session?" >&2
+    exit 1
+fi
+
+if [[ ! -S "$AGENCY_SOCKET" ]]; then
+    echo "Error: Socket $AGENCY_SOCKET does not exist." >&2
+    exit 1
+fi
+
+if ! command -v socat &>/dev/null; then
+    # Fallback if socat isn't installed: use bash /dev/tcp or nc
+    if command -v nc &>/dev/null; then
+        SEND_CMD="nc -U"
+    else
+        echo "Error: Need socat or nc (netcat) installed." >&2
+        exit 1
+    fi
+else
+    SEND_CMD="socat - UNIX-CONNECT:"
+fi
+
+# Parse --dir flag from anywhere in args.
+DIR=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dir)
+            DIR="${2:?Usage: agency-spawn ... --dir /path}"
+            shift 2
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${ARGS[@]}"
+
+# Default to current working directory.
+if [[ -z "$DIR" ]]; then
+    DIR="$PWD"
+fi
+
+# Build the dir suffix for the IPC message.
+DIR_SUFFIX=""
+if [[ -n "$DIR" ]]; then
+    DIR_SUFFIX="@${DIR}"
+fi
+
+if [[ "${1:-}" == "--cmd" ]]; then
+    shift
+    MSG="spawn:cmd:${*}${DIR_SUFFIX}"
+else
+    MSG="spawn:${1:?Usage: agency-spawn <agent-type> or agency-spawn --cmd \"command\"}${DIR_SUFFIX}"
+fi
+
+if [[ "$SEND_CMD" == "socat"* ]]; then
+    echo "$MSG" | socat - "UNIX-CONNECT:$AGENCY_SOCKET"
+else
+    echo "$MSG" | nc -U "$AGENCY_SOCKET"
+fi

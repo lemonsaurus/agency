@@ -1,0 +1,41 @@
+[session]
+name = "agency"
+default_layout = "tiled"         # tiled | columns | rows | main-vertical
+
+[theme]
+active_border = "#89b4fa"        # Catppuccin blue
+inactive_border = "#45475a"      # Catppuccin surface1
+status_bg = "#181825"            # Catppuccin mantle
+status_fg = "#cdd6f4"            # Catppuccin text
+
+[agents.claudejail]
+command = "claudejail"
+icon = "🔒"
+border_color = "#f38ba8"         # red
+
+[agents.claude]
+command = "claude"
+icon = "🤖"
+border_color = "#cba6f7"         # mauve
+
+[agents.codex]
+command = "codex"
+icon = "🧠"
+border_color = "#89b4fa"         # blue
+
+[agents.gemini]
+command = "gemini"
+icon = "✦"
+border_color = "#f9e2af"         # yellow
+
+# Add your own agent types below:
+#
+# [agents.aider]
+# command = "aider --model ollama_chat/gemma3"
+# icon = "🔧"
+# border_color = "#a6e3a1"
+#
+# [agents.cursor]
+# command = "cursor-agent"
+# icon = "▶"
+# border_color = "#f5c2e7"
