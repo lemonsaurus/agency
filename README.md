@@ -1,7 +1,6 @@
 <div align="center">
 
-<!-- Replace with your logo -->
-<!-- ![Agency logo](docs/logo.svg) -->
+<img src="assets/logo.png" alt="Agency logo" width="200" />
 
 # Agency
 
@@ -16,9 +15,7 @@ Run Claude Code, Codex, Gemini, and any CLI agent simultaneously in a tiled tmux
 
 ---
 
-<!-- Replace with a screenshot or screen recording -->
-<!-- ![Agency in action](docs/demo.mp4) -->
-<!-- ![Agency screenshot](docs/screenshot.png) -->
+<video src="assets/agency_demo.mp4" controls width="100%"></video>
 
 ---
 
