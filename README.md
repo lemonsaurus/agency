@@ -2,26 +2,24 @@
 
 <img src="assets/logo.png" alt="Agency logo" width="200" />
 
-**A terminal-native session manager for AI coding agents.**
+*a beautiful terminal multiplexer grid for color coded agent sessions*
 
-Run Claude Code, Codex, Gemini, and any CLI agent simultaneously in a tiled tmux grid — with everything visible at once, keyboard-driven, and zero overhead.
-
-<!-- Replace with a real badge row once the repo is public -->
-<!-- ![Go version](https://img.shields.io/badge/go-1.22+-00ADD8) ![tmux](https://img.shields.io/badge/tmux-3.5%2B-1BB91F) ![License](https://img.shields.io/badge/license-MIT-blue) -->
-
+![Go version](https://img.shields.io/badge/go-1.22+-00ADD8) ![tmux](https://img.shields.io/badge/tmux-3.5%2B-1BB91F) ![License](https://img.shields.io/badge/license-MIT-blue) 
 </div>
 
 ---
 
-<video src="assets/agency_demo.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/0ddf6f56-4c13-4603-a85e-6e95914c4184
 
 ---
 
 ## What is this?
 
-Agency turns your terminal into a Bloomberg-style multi-agent workstation. Every pane stays on screen in a tiled grid — no tabs, no alt-tabbing, no context switching. Spawn agents in specific project directories with a single keypress, kill them just as fast, and let them self-spawn sibling panes over a unix socket while they work.
+Agency turns your terminal into a Bloomberg-style multi-terminal workstation. Every pane stays on screen in a tiled grid — no tabs, no alt-tabbing, no context switching. Designed for giant ultrawide monitor nerds who are trying to juggle and keep track of 10+ terminal sessions.
 
-Each pane gets a unique color and a bold `agent@folder` label in its border, so you always know what's running where.
+Each pane gets a unique color and a bold `agent@folder` label in its border, so you always know what's running where. Borders dynamically switch color to match the label. Each label has an icon. Hotkeys to start claude, codex and gemini sessions.
+
+<sub>PS: This is not really appropriate for a small monitor - for that use case, maybe check out [agent deck](https://github.com/asheshgoplani/agent-deck).</sub>
 
 ---
 
@@ -37,6 +35,9 @@ Each pane gets a unique color and a bold `agent@folder` label in its border, so 
 - **Crash recovery** — if agency restarts, it re-adopts existing tmux panes automatically
 - **Isolated tmux config** — agency manages its own `tmux.conf`, never touches your `~/.tmux.conf`
 - **Catppuccin Mocha theme** — inline, no plugin dependencies
+
+<img width="2280" height="1045" alt="image" src="https://github.com/user-attachments/assets/23e60f00-ea89-4b4f-920a-54a326983a20" />
+
 
 ---
 
