@@ -2,8 +2,6 @@
 
 <img src="assets/logo.png" alt="Agency logo" width="200" />
 
-# Agency
-
 **A terminal-native session manager for AI coding agents.**
 
 Run Claude Code, Codex, Gemini, and any CLI agent simultaneously in a tiled tmux grid — with everything visible at once, keyboard-driven, and zero overhead.
