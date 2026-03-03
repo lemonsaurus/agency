@@ -9,11 +9,31 @@ import (
 )
 
 type Config struct {
-	Session SessionConfig            `toml:"session"`
-	Theme   ThemeConfig              `toml:"theme"`
-	Agents  map[string]AgentConfig   `toml:"agents"`
+	Session SessionConfig          `toml:"session"`
+	Theme   ThemeConfig            `toml:"theme"`
+	Keys    KeysConfig             `toml:"keys"`
+	Agents  map[string]AgentConfig `toml:"agents"`
 	// AgentOrder preserves insertion order from TOML parsing.
 	AgentOrder []string `toml:"-"`
+}
+
+type KeysConfig struct {
+	Prefix         string `toml:"prefix"`
+	Palette        string `toml:"palette"`
+	Terminal       string `toml:"terminal"`
+	LayoutTiled    string `toml:"layout_tiled"`
+	LayoutColumns  string `toml:"layout_columns"`
+	LayoutRows     string `toml:"layout_rows"`
+	LayoutMainVert string `toml:"layout_main_vert"`
+	LayoutCycle    string `toml:"layout_cycle"`
+	KillPane       string `toml:"kill_pane"`
+	KillSession    string `toml:"kill_session"`
+	Zoom           string `toml:"zoom"`
+	Broadcast      string `toml:"broadcast"`
+	Detach         string `toml:"detach"`
+	Respawn        string `toml:"respawn"`
+	CopyMode       string `toml:"copy_mode"`
+	Paste          string `toml:"paste"`
 }
 
 type SessionConfig struct {

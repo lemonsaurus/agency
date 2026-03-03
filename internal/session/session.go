@@ -104,10 +104,10 @@ func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string)
 	} else {
 		folder := folderLabel(dir)
 		if folder != "" {
-			displayName = fmt.Sprintf("cmd@%s", folder)
+			displayName = fmt.Sprintf(">_ %s@%s", filepath.Base(command), folder)
 		} else {
-			m.counters["custom"]++
-			displayName = fmt.Sprintf("custom #%d", m.counters["custom"])
+			m.counters["terminal"]++
+			displayName = fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
 		}
 	}
 
@@ -132,15 +132,13 @@ func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string)
 	return nil
 }
 
-// stylePaneLabel stores the display label and sets per-pane border colors.
-// Both pane-border-style (inactive) and pane-active-border-style (focused) are
-// set per-pane so each pane always shows its own unique color from the palette.
+// stylePaneLabel stores the display label and color as pane user options.
+// The pane-focus-in hook in tmux.conf reads @agent_color to dynamically
+// set the active border color when a pane gains focus.
 func (m *Manager) stylePaneLabel(ctx context.Context, paneID, title, color string) {
 	_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_label", title)
 	if color != "" {
 		_ = m.tmux.SetPaneOption(ctx, paneID, "@agent_color", color)
-		_ = m.tmux.SetPaneOption(ctx, paneID, "pane-border-style", "fg="+color)
-		_ = m.tmux.SetPaneOption(ctx, paneID, "pane-active-border-style", "fg="+color+",bold")
 	}
 }
 
@@ -238,10 +236,10 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 		} else {
 			folder := folderLabel(pane.CWD)
 			if folder != "" {
-				displayName = fmt.Sprintf("unknown@%s", folder)
+				displayName = fmt.Sprintf(">_ %s@%s", pane.Command, folder)
 			} else {
-				m.counters["unknown"]++
-				displayName = fmt.Sprintf("unknown #%d", m.counters["unknown"])
+				m.counters["terminal"]++
+				displayName = fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
 			}
 		}
 

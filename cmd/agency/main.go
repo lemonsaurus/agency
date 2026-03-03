@@ -186,13 +186,14 @@ func runLaunch() {
 	// Check if tmux session already exists (crash recovery).
 	if tc.SessionExists(ctx) {
 		log.Printf("Existing tmux session found, adopting orphan panes...")
-		if err := mgr.AdoptOrphans(ctx); err != nil {
-			log.Printf("Warning: adopting orphans: %v", err)
-		}
 	} else {
 		if err := tc.NewSession(ctx); err != nil {
 			log.Fatalf("Creating tmux session: %v", err)
 		}
+	}
+	// Label all existing panes (initial shell on fresh start, or orphans on recovery).
+	if err := mgr.AdoptOrphans(ctx); err != nil {
+		log.Printf("Warning: adopting orphans: %v", err)
 	}
 
 	// Start IPC socket server.

@@ -24,6 +24,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agents["claude"].Icon != "🤖" {
 		t.Errorf("expected claude icon '🤖', got %q", cfg.Agents["claude"].Icon)
 	}
+	if cfg.Keys.Prefix != "C-b" {
+		t.Errorf("expected default prefix 'C-b', got %q", cfg.Keys.Prefix)
+	}
+	if cfg.Keys.Zoom != "z" {
+		t.Errorf("expected default zoom 'z', got %q", cfg.Keys.Zoom)
+	}
 }
 
 func TestParse(t *testing.T) {
@@ -59,6 +65,48 @@ border_color = "#00ff00"
 	}
 	if agent.Command != "my-agent-cmd" {
 		t.Errorf("expected command 'my-agent-cmd', got %q", agent.Command)
+	}
+}
+
+func TestParseKeys(t *testing.T) {
+	tomlData := `
+[keys]
+prefix = "C-Space"
+palette = "p"
+zoom = "f"
+copy_mode = "c"
+paste = "v"
+
+[agents.test]
+command = "test"
+icon = "T"
+border_color = "#000"
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Keys.Prefix != "C-Space" {
+		t.Errorf("expected prefix 'C-Space', got %q", cfg.Keys.Prefix)
+	}
+	if cfg.Keys.Palette != "p" {
+		t.Errorf("expected palette 'p', got %q", cfg.Keys.Palette)
+	}
+	if cfg.Keys.Zoom != "f" {
+		t.Errorf("expected zoom 'f', got %q", cfg.Keys.Zoom)
+	}
+	if cfg.Keys.CopyMode != "c" {
+		t.Errorf("expected copy_mode 'c', got %q", cfg.Keys.CopyMode)
+	}
+	if cfg.Keys.Paste != "v" {
+		t.Errorf("expected paste 'v', got %q", cfg.Keys.Paste)
+	}
+	// Unset keys should retain defaults.
+	if cfg.Keys.KillPane != "x" {
+		t.Errorf("expected default kill_pane 'x', got %q", cfg.Keys.KillPane)
+	}
+	if cfg.Keys.Detach != "d" {
+		t.Errorf("expected default detach 'd', got %q", cfg.Keys.Detach)
 	}
 }
 

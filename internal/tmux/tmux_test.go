@@ -238,15 +238,15 @@ func TestGenerateConfig(t *testing.T) {
 	content := buildTmuxConf(cfg, "agency")
 
 	checks := []string{
-		"set -g prefix C-Space",
+		"set -g prefix " + cfg.Keys.Prefix,
 		"set -g mouse on",
 		"set -g history-limit 50000",
 		"set -g mode-keys emacs",
 		"pane-border-status top",
-		"bind a display-popup",
-		"bind c copy-mode",
-		"bind v paste-buffer",
-		"bind 1 split-window",
+		"bind " + cfg.Keys.Palette + " display-popup",
+		"bind " + cfg.Keys.CopyMode + " copy-mode",
+		"bind " + cfg.Keys.Paste + " paste-buffer",
+		"bind " + cfg.Keys.Terminal + " run-shell",
 		"bind 2 display-popup",
 		"spawn-dialog",
 		"#{b:pane_current_path}",
@@ -255,14 +255,39 @@ func TestGenerateConfig(t *testing.T) {
 		"#{pane_current_command}",
 		"pane-active-border-style",
 		"bind Up select-pane -U",
-		"bind = run-shell",
-		"bind x confirm-before",
-		"bind q display-popup",
+		"bind " + cfg.Keys.LayoutTiled + " run-shell",
+		"bind " + cfg.Keys.KillPane + " confirm-before",
+		"bind " + cfg.Keys.KillSession + " display-popup",
 		"Kill session",
-		"bind f resize-pane -Z",
+		"bind " + cfg.Keys.Zoom + " resize-pane -Z",
 		cfg.Theme.ActiveBorder,
 		cfg.Theme.InactiveBorder,
 		cfg.Theme.StatusBG,
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(content, check) {
+			t.Errorf("tmux.conf missing expected content: %q", check)
+		}
+	}
+}
+
+func TestGenerateConfigCustomKeys(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Keys.Prefix = "C-Space"
+	cfg.Keys.Palette = "p"
+	cfg.Keys.Zoom = "f"
+	cfg.Keys.CopyMode = "c"
+	cfg.Keys.Paste = "v"
+	content := buildTmuxConf(cfg, "agency")
+
+	checks := []string{
+		"set -g prefix C-Space",
+		"bind C-Space send-prefix",
+		"bind p display-popup",
+		"bind f resize-pane -Z",
+		"bind c copy-mode",
+		"bind v paste-buffer",
 	}
 
 	for _, check := range checks {

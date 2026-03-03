@@ -28,6 +28,28 @@ command = "gemini"
 icon = "✦"
 border_color = "#f9e2af"         # yellow
 
+# Keybindings — all values use tmux key notation.
+# Uncomment and change any binding you want to customize.
+# Navigation (arrow keys) and resize (shift+arrows) are not configurable.
+#
+# [keys]
+# prefix = "C-b"                  # tmux prefix key
+# palette = "a"                   # open command palette
+# terminal = "1"                  # spawn plain terminal
+# layout_tiled = "="              # tiled grid layout
+# layout_columns = "|"            # side-by-side columns
+# layout_rows = "-"               # stacked rows
+# layout_main_vert = "m"          # main-vertical layout
+# layout_cycle = "Space"          # cycle through layouts
+# kill_pane = "x"                 # kill pane (with confirm)
+# kill_session = "q"              # kill session (with confirm)
+# zoom = "z"                      # toggle pane zoom
+# broadcast = "b"                 # broadcast to all panes
+# detach = "d"                    # detach client
+# respawn = "r"                   # respawn dead pane
+# copy_mode = "["                 # enter copy mode
+# paste = "]"                     # paste buffer
+
 # Add your own agent types below:
 #
 # [agents.aider]

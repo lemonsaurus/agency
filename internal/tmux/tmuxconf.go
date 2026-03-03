@@ -33,11 +33,11 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Header.
 	b.WriteString("# Agency tmux.conf — auto-generated, do not edit\n\n")
 
-	// Prefix: Ctrl+Space.
+	// Prefix.
 	b.WriteString("# Prefix\n")
-	b.WriteString("unbind C-b\n")
-	b.WriteString("set -g prefix C-Space\n")
-	b.WriteString("bind C-Space send-prefix\n\n")
+	fmt.Fprintf(&b, "unbind C-b\n")
+	fmt.Fprintf(&b, "set -g prefix %s\n", cfg.Keys.Prefix)
+	fmt.Fprintf(&b, "bind %s send-prefix\n\n", cfg.Keys.Prefix)
 
 	// General settings.
 	b.WriteString("# General\n")
@@ -49,14 +49,20 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g pane-base-index 1\n")
 	b.WriteString("set -g renumber-windows on\n")
 	b.WriteString("set -g default-terminal \"tmux-256color\"\n")
-	b.WriteString("set -ga terminal-overrides \",*256col*:Tc\"\n\n")
+	b.WriteString("set -ga terminal-overrides \",*256col*:Tc\"\n")
+	// Extended keys: required for modern terminals (Rio, Ghostty, WezTerm, etc.)
+	// that use Kitty keyboard protocol / CSI u to properly pass Ctrl+Space
+	// and other modified keys to tmux.
+	b.WriteString("set -g extended-keys always\n")
+	b.WriteString("set -gs extended-keys-format csi-u\n")
+	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
+	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n\n")
 
 	// Catppuccin Mocha colors.
 	b.WriteString("# Catppuccin Mocha theme\n")
-	// Global defaults for panes that have no per-pane style (e.g. the initial shell pane).
-	// Agency-spawned panes override these via set-option -p at spawn time.
-	b.WriteString("set -g pane-border-style fg=#313244\n")
-	b.WriteString("set -g pane-active-border-style fg=#45475a\n")
+	fmt.Fprintf(&b, "set -g pane-border-style fg=%s\n", cfg.Theme.InactiveBorder)
+	// Active border: dynamically resolves to the focused pane's @agent_color.
+	fmt.Fprintf(&b, "set -g pane-active-border-style \"#{?#{@agent_color},fg=#{@agent_color},fg=%s}\"\n", cfg.Theme.ActiveBorder)
 	b.WriteString("set -g pane-border-status top\n")
 	b.WriteString("set -g pane-border-lines single\n")
 	// Label format: show @agency_label with colored badge for agency panes,
@@ -83,10 +89,10 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Spawn keybindings.
 	b.WriteString("# Agent spawn keybindings\n")
-	fmt.Fprintf(&b, "bind a display-popup -E -w 40 -h 15 \"%s palette\"\n", agencyBin)
+	fmt.Fprintf(&b, "bind %s display-popup -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
 
-	// Key 1: plain terminal in current pane's directory (no dialog, no tracking).
-	b.WriteString("bind 1 split-window -c \"#{pane_current_path}\"\n")
+	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color).
+	fmt.Fprintf(&b, "bind %s run-shell \"%s spawn --cmd \\\"$SHELL\\\" #{pane_current_path}\"\n", cfg.Keys.Terminal, agencyBin)
 
 	// Keys 2-5: agent spawn dialogs pre-filled with focused pane's directory.
 	i := 2
@@ -114,25 +120,25 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Layout keybindings.
 	b.WriteString("# Layout\n")
-	fmt.Fprintf(&b, "bind = run-shell \"%s layout tiled\"\n", agencyBin)
-	fmt.Fprintf(&b, "bind | run-shell \"%s layout columns\"\n", agencyBin)
-	fmt.Fprintf(&b, "bind - run-shell \"%s layout rows\"\n", agencyBin)
-	fmt.Fprintf(&b, "bind m run-shell \"%s layout main-vertical\"\n", agencyBin)
-	b.WriteString("bind Space next-layout\n\n")
+	fmt.Fprintf(&b, "bind %s run-shell \"%s layout tiled\"\n", cfg.Keys.LayoutTiled, agencyBin)
+	fmt.Fprintf(&b, "bind %s run-shell \"%s layout columns\"\n", cfg.Keys.LayoutColumns, agencyBin)
+	fmt.Fprintf(&b, "bind %s run-shell \"%s layout rows\"\n", cfg.Keys.LayoutRows, agencyBin)
+	fmt.Fprintf(&b, "bind %s run-shell \"%s layout main-vertical\"\n", cfg.Keys.LayoutMainVert, agencyBin)
+	fmt.Fprintf(&b, "bind %s next-layout\n\n", cfg.Keys.LayoutCycle)
 
 	// Management.
 	b.WriteString("# Management\n")
-	b.WriteString("bind x confirm-before -p \"Kill pane? (y/n)\" kill-pane\n")
+	fmt.Fprintf(&b, "bind %s confirm-before -p \"Kill pane? (y/n)\" kill-pane\n", cfg.Keys.KillPane)
 	// Kill session: popup accepts Enter or y/Y as confirmation.
 	killCmd := `printf 'Kill session? [Enter/y]: '; read -r _k; case "$_k" in ""|y|Y) tmux kill-session;; esac`
 	escapedKill := strings.ReplaceAll(killCmd, `"`, `\"`)
-	fmt.Fprintf(&b, "bind q display-popup -E -w 44 -h 3 \"%s\"\n", escapedKill)
-	b.WriteString("bind f resize-pane -Z\n")
-	b.WriteString("bind b set-window-option synchronize-panes\n")
-	b.WriteString("bind d detach-client\n")
-	b.WriteString("bind r respawn-pane -k\n")
-	b.WriteString("bind c copy-mode\n")
-	b.WriteString("bind v paste-buffer\n")
+	fmt.Fprintf(&b, "bind %s display-popup -E -w 44 -h 3 \"%s\"\n", cfg.Keys.KillSession, escapedKill)
+	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
+	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
+	fmt.Fprintf(&b, "bind %s detach-client\n", cfg.Keys.Detach)
+	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
+	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)
+	fmt.Fprintf(&b, "bind %s paste-buffer\n", cfg.Keys.Paste)
 
 	return b.String()
 }
