@@ -4,12 +4,61 @@
 
 *a beautiful terminal multiplexer grid for color coded agent sessions*
 
-![Go version](https://img.shields.io/badge/go-1.22+-00ADD8) ![tmux](https://img.shields.io/badge/tmux-3.5%2B-1BB91F) ![License](https://img.shields.io/badge/license-MIT-blue) 
+![Go version](https://img.shields.io/badge/go-1.24+-00ADD8) ![tmux](https://img.shields.io/badge/tmux-3.5%2B-1BB91F) ![License](https://img.shields.io/badge/license-MIT-blue) 
 </div>
 
 ---
 
 https://github.com/user-attachments/assets/0ddf6f56-4c13-4603-a85e-6e95914c4184
+
+---
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lemonsaurus/agency/main/install.sh | bash
+```
+
+This handles everything — installs tmux 3.5+ (building from source if your distro's version is too old), Go 1.24+, and agency itself. Sudo is only used for system-level installs (`apt`, `/usr/local`); everything else runs as your user.
+
+You'll also need at least one agent CLI: `claude`, `codex`, `gemini`, or any command you like.
+
+<details>
+<summary>Manual install</summary>
+
+#### Requirements
+
+- **Go 1.24+**
+- **tmux 3.5+** (most distros ship an older version — Ubuntu 24.04 has 3.2a)
+- `socat` or `nc` for the agent self-spawn script
+
+#### Building tmux 3.5+ from source
+
+```bash
+sudo apt install -y build-essential libevent-dev libncurses-dev \
+  autoconf automake pkg-config bison
+
+TMUX_VERSION=3.5a
+curl -sL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" \
+  | tar xz
+cd tmux-${TMUX_VERSION}
+./configure && make -j$(nproc) && sudo make install
+tmux -V   # should show 3.5a or newer
+```
+
+> If `tmux -V` still reports the old version, make sure `/usr/local/bin` comes before `/usr/bin` in your `$PATH`.
+
+After upgrading, kill any running tmux server so it picks up the new binary: `tmux kill-server`
+
+#### Building agency
+
+```bash
+git clone https://github.com/lemonsaurus/agency
+cd agency
+make install          # builds and copies to ~/.local/bin/
+```
+
+</details>
 
 ---
 
@@ -38,62 +87,6 @@ Each pane gets a unique color and a bold `agent@folder` label in its border, so 
 
 <img width="2280" height="1045" alt="image" src="https://github.com/user-attachments/assets/23e60f00-ea89-4b4f-920a-54a326983a20" />
 
-
----
-
-## Requirements
-
-- **Go 1.22+** (to build)
-- **tmux 3.5+** (for per-pane colored borders — see install instructions below)
-- At least one agent CLI: `claude`, `codex`, `gemini`, or any command you like
-- `socat` or `nc` for the agent self-spawn script
-
-### Installing tmux 3.5+
-
-The version in most distro package managers (Ubuntu ships 3.2a, even in 24.04) is too old for per-pane border colors. Build from source — it takes about two minutes:
-
-```bash
-# Install build dependencies
-sudo apt install -y build-essential libevent-dev libncurses-dev \
-  autoconf automake pkg-config bison
-
-# Download and build (check https://github.com/tmux/tmux/releases for the latest tag)
-TMUX_VERSION=3.5a
-curl -sL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" \
-  | tar xz
-cd tmux-${TMUX_VERSION}
-./configure && make -j$(nproc) && sudo make install
-
-# Verify — should show 3.5a or newer
-tmux -V
-```
-
-> If `tmux -V` still reports the old version, make sure `/usr/local/bin` comes before `/usr/bin` in your `$PATH`:
-> ```bash
-> echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-> ```
-
-After upgrading, kill any running tmux server so it picks up the new binary:
-
-```bash
-tmux kill-server
-```
-
----
-
-## Install
-
-```bash
-git clone https://github.com/lemonsaurus/agency
-cd agency
-make install          # builds and copies to ~/.local/bin/
-```
-
-Or just build locally:
-
-```bash
-make build            # produces ./bin/agency
-```
 
 ---
 
