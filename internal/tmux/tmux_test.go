@@ -254,6 +254,8 @@ func TestGenerateConfig(t *testing.T) {
 		"#{@agency_label}",
 		"#{pane_current_command}",
 		"pane-active-border-style",
+		"terminal-features 'xterm*:hyperlinks'",
+		"allow-passthrough on",
 		"bind Up select-pane -U",
 		"bind " + cfg.Keys.LayoutTiled + " run-shell",
 		"bind " + cfg.Keys.KillPane + " display-popup",

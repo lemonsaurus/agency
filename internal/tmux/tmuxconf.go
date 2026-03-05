@@ -77,7 +77,12 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g extended-keys always\n")
 	b.WriteString("set -gs extended-keys-format csi-u\n")
 	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
-	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n\n")
+	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n")
+	// Hyperlink passthrough: let OSC 8 sequences from agents reach the outer
+	// terminal so URLs are ctrl-clickable.
+	b.WriteString("set -ga terminal-features 'xterm*:hyperlinks'\n")
+	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
+	b.WriteString("set -g allow-passthrough on\n\n")
 
 	// Clipboard: select with mouse → copies to system clipboard, exits copy mode.
 	clipCmd := clipboardCommand()
