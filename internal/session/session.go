@@ -240,8 +240,15 @@ func (m *Manager) applyCustomTiled(ctx context.Context) error {
 	if maxRows <= 0 {
 		maxRows = 3
 	}
+	// Prefer fewer rows when pane count is small (keeps panes taller).
+	// Only use the full maxRows once we exceed what 2 rows can handle
+	// in 3 columns (i.e. more than 6 panes).
+	effectiveMax := min(2, maxRows)
+	if info.PaneCount > effectiveMax*3 {
+		effectiveMax = maxRows
+	}
 
-	columns := layout.Grid(info.PaneCount, maxRows)
+	columns := layout.Grid(info.PaneCount, effectiveMax)
 	layoutStr := layout.BuildCustomLayout(info.Width, info.Height, columns)
 	return m.tmux.SelectLayout(ctx, layoutStr)
 }
