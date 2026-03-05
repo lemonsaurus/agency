@@ -30,6 +30,7 @@ type KeysConfig struct {
 	KillSession    string `toml:"kill_session"`
 	Zoom           string `toml:"zoom"`
 	Broadcast      string `toml:"broadcast"`
+	BroadcastInput string `toml:"broadcast_input"`
 	Detach         string `toml:"detach"`
 	Respawn        string `toml:"respawn"`
 	CopyMode       string `toml:"copy_mode"`
@@ -39,6 +40,7 @@ type KeysConfig struct {
 type SessionConfig struct {
 	Name          string `toml:"name"`
 	DefaultLayout string `toml:"default_layout"`
+	MaxRows       int    `toml:"max_rows"`
 }
 
 type ThemeConfig struct {

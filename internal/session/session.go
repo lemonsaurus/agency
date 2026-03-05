@@ -8,6 +8,7 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/layout"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
@@ -46,9 +47,10 @@ type Manager struct {
 	cfg      *config.Config
 	poller   *status.Poller
 
-	panes      map[string]*TrackedPane // keyed by pane ID
-	counters   map[string]int          // instance counters per agent type (fallback when no dir)
-	colorIndex int                     // cycles through paneColors
+	panes         map[string]*TrackedPane // keyed by pane ID
+	counters      map[string]int          // instance counters per agent type (fallback when no dir)
+	colorIndex    int                     // cycles through paneColors
+	currentLayout string                  // last applied layout name (for relayout)
 }
 
 // NewManager creates a session manager.
@@ -126,8 +128,7 @@ func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string)
 		m.poller.Track(paneID, agentType)
 	}
 
-	layout := tmuxLayout(m.cfg.Session.DefaultLayout)
-	_ = m.tmux.SelectLayout(ctx, layout)
+	_ = m.applyLayout(ctx, m.cfg.Session.DefaultLayout)
 
 	return nil
 }
@@ -200,8 +201,49 @@ func (m *Manager) ListPanes() []TrackedPane {
 }
 
 // SetLayout changes the tmux layout.
-func (m *Manager) SetLayout(ctx context.Context, layout string) error {
-	return m.tmux.SelectLayout(ctx, tmuxLayout(layout))
+func (m *Manager) SetLayout(ctx context.Context, name string) error {
+	m.mu.Lock()
+	m.currentLayout = name
+	m.mu.Unlock()
+	return m.applyLayout(ctx, name)
+}
+
+// Relayout re-applies the current layout (useful after window resize).
+func (m *Manager) Relayout(ctx context.Context) error {
+	m.mu.Lock()
+	name := m.currentLayout
+	m.mu.Unlock()
+	if name == "" {
+		name = m.cfg.Session.DefaultLayout
+	}
+	return m.applyLayout(ctx, name)
+}
+
+func (m *Manager) applyLayout(ctx context.Context, name string) error {
+	if name == "tiled" {
+		return m.applyCustomTiled(ctx)
+	}
+	return m.tmux.SelectLayout(ctx, tmuxLayout(name))
+}
+
+func (m *Manager) applyCustomTiled(ctx context.Context) error {
+	info, err := m.tmux.GetWindowInfo(ctx)
+	if err != nil {
+		// Fallback to tmux's built-in tiled.
+		return m.tmux.SelectLayout(ctx, "tiled")
+	}
+	if info.PaneCount <= 1 {
+		return nil
+	}
+
+	maxRows := m.cfg.Session.MaxRows
+	if maxRows <= 0 {
+		maxRows = 3
+	}
+
+	columns := layout.Grid(info.PaneCount, maxRows)
+	layoutStr := layout.BuildCustomLayout(info.Width, info.Height, columns)
+	return m.tmux.SelectLayout(ctx, layoutStr)
 }
 
 // AdoptOrphans scans existing tmux panes and rebuilds internal state.
@@ -259,6 +301,26 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+// BroadcastKeys sends keystrokes to all tracked agent panes (skips
+// plain terminal/custom command panes that have no agent type).
+func (m *Manager) BroadcastKeys(ctx context.Context, keys string) error {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.panes))
+	for id, p := range m.panes {
+		if p.AgentType != "" {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, id := range ids {
+		if err := m.tmux.SendText(ctx, id, keys); err != nil {
+			return fmt.Errorf("sending keys to pane %s: %w", id, err)
+		}
+	}
 	return nil
 }
 

@@ -19,12 +19,14 @@ type commandRecord struct {
 }
 
 type mockHandler struct {
-	mu       sync.Mutex
-	spawns   []spawnRecord
-	commands []commandRecord
-	kills    []string
-	layouts  []string
-	failNext bool
+	mu            sync.Mutex
+	spawns        []spawnRecord
+	commands      []commandRecord
+	kills         []string
+	layouts       []string
+	relayouts     int
+	broadcastKeys []string
+	failNext      bool
 }
 
 func (m *mockHandler) SpawnAgent(_ context.Context, name, dir string) error {
@@ -56,6 +58,20 @@ func (m *mockHandler) SetLayout(_ context.Context, layout string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.layouts = append(m.layouts, layout)
+	return nil
+}
+
+func (m *mockHandler) Relayout(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.relayouts++
+	return nil
+}
+
+func (m *mockHandler) BroadcastKeys(_ context.Context, keys string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastKeys = append(m.broadcastKeys, keys)
 	return nil
 }
 

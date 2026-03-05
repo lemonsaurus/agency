@@ -38,6 +38,12 @@ func main() {
 		runList()
 	case "layout":
 		runLayout(os.Args[2:])
+	case "relayout":
+		runRelayout()
+	case "broadcast-dialog":
+		runBroadcastDialog()
+	case "broadcast-keys":
+		runBroadcastKeys(os.Args[2:])
 	case "attach":
 		runAttach()
 	case "config":
@@ -423,6 +429,47 @@ func runLayout(args []string) {
 	}
 	if resp != "ok" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+}
+
+func runBroadcastDialog() {
+	agencyBin, _ := os.Executable()
+	if agencyBin == "" {
+		agencyBin = "agency"
+	}
+	if err := palette.RunBroadcastDialog(agencyBin); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runBroadcastKeys(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency broadcast-keys <text>")
+		os.Exit(1)
+	}
+	text := strings.Join(args, " ")
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "broadcast-keys:"+text)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+}
+
+func runRelayout() {
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "relayout")
+	if err != nil {
+		// Silently fail — this is called from tmux hooks and agency may not be running.
+		os.Exit(0)
+	}
+	if resp != "ok" {
 		os.Exit(1)
 	}
 }

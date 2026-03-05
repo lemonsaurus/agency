@@ -256,7 +256,7 @@ func TestGenerateConfig(t *testing.T) {
 		"pane-active-border-style",
 		"bind Up select-pane -U",
 		"bind " + cfg.Keys.LayoutTiled + " run-shell",
-		"bind " + cfg.Keys.KillPane + " confirm-before",
+		"bind " + cfg.Keys.KillPane + " display-popup",
 		"bind " + cfg.Keys.KillSession + " display-popup",
 		"Kill session",
 		"bind " + cfg.Keys.Zoom + " resize-pane -Z",

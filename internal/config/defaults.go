@@ -5,6 +5,7 @@ func DefaultConfig() *Config {
 		Session: SessionConfig{
 			Name:          "agency",
 			DefaultLayout: "tiled",
+			MaxRows:       3,
 		},
 		Theme: ThemeConfig{
 			ActiveBorder:   "#89b4fa",
@@ -25,6 +26,7 @@ func DefaultConfig() *Config {
 			KillSession:    "q",
 			Zoom:           "z",
 			Broadcast:      "b",
+			BroadcastInput: "B",
 			Detach:         "d",
 			Respawn:        "r",
 			CopyMode:       "[",

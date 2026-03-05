@@ -130,6 +130,14 @@ func (c *Client) SendKeys(ctx context.Context, paneID, keys string) error {
 	return err
 }
 
+// SendText sends literal text to a pane and presses Enter to submit it.
+// Appends a raw carriage return byte to the text and sends everything in
+// one shot with -l, so there's no timing gap between the text and Enter.
+func (c *Client) SendText(ctx context.Context, paneID, text string) error {
+	_, err := c.Cmd.Run(ctx, "send-keys", "-l", "-t", paneID, text+"\r")
+	return err
+}
+
 func (c *Client) KillPane(ctx context.Context, paneID string) error {
 	_, err := c.Cmd.Run(ctx, "kill-pane", "-t", paneID)
 	return err
@@ -170,6 +178,33 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 func (c *Client) SelectLayout(ctx context.Context, layout string) error {
 	_, err := c.Cmd.Run(ctx, "select-layout", "-t", c.SessionName, layout)
 	return err
+}
+
+// WindowInfo holds the dimensions and pane count of a tmux window.
+type WindowInfo struct {
+	Width     int
+	Height    int
+	PaneCount int
+}
+
+// GetWindowInfo returns the current window dimensions and pane count.
+func (c *Client) GetWindowInfo(ctx context.Context) (WindowInfo, error) {
+	out, err := c.Cmd.Run(ctx,
+		"display-message", "-t", c.SessionName, "-p",
+		"#{window_width}\t#{window_height}\t#{window_panes}",
+	)
+	if err != nil {
+		return WindowInfo{}, err
+	}
+	var info WindowInfo
+	parts := strings.SplitN(out, "\t", 3)
+	if len(parts) < 3 {
+		return WindowInfo{}, fmt.Errorf("unexpected display-message output: %q", out)
+	}
+	info.Width, _ = strconv.Atoi(parts[0])
+	info.Height, _ = strconv.Atoi(parts[1])
+	info.PaneCount, _ = strconv.Atoi(parts[2])
+	return info, nil
 }
 
 // CapturePaneContent captures the last N lines of a pane's visible content.

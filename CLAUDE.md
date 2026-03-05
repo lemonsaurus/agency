@@ -57,6 +57,8 @@ agency/
 │   │   └── config.go            # TOML config loading + defaults
 │   ├── tmux/
 │   │   └── tmux.go              # All tmux CLI interactions
+│   ├── layout/
+│   │   └── layout.go            # Custom tiled layout algorithm
 │   ├── session/
 │   │   └── session.go           # Session + pane state management
 │   ├── agents/
@@ -84,6 +86,7 @@ agency/
 [session]
 name = "agency"
 default_layout = "tiled"         # tiled | columns | rows | main-vertical
+max_rows = 3                     # max panes per column (ultrawide-friendly)
 
 [theme]
 active_border = "#89b4fa"

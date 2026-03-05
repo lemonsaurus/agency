@@ -3,11 +3,32 @@ package tmux
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/lemonsaurus/agency/internal/config"
 )
+
+// clipboardCommand returns the system clipboard command, or empty if none found.
+func clipboardCommand() string {
+	// WSL2: clip.exe pipes to Windows clipboard.
+	if _, err := exec.LookPath("clip.exe"); err == nil {
+		return "clip.exe"
+	}
+	if runtime.GOOS == "darwin" {
+		return "pbcopy"
+	}
+	// Linux: prefer xclip, fall back to xsel.
+	if _, err := exec.LookPath("xclip"); err == nil {
+		return "xclip -selection clipboard"
+	}
+	if _, err := exec.LookPath("xsel"); err == nil {
+		return "xsel --clipboard --input"
+	}
+	return ""
+}
 
 // GenerateConfig writes an agency-specific tmux.conf and returns its path.
 func GenerateConfig(cfg *config.Config, agencyBin string) (string, error) {
@@ -58,6 +79,16 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
 	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n\n")
 
+	// Clipboard: select with mouse → copies to system clipboard, exits copy mode.
+	clipCmd := clipboardCommand()
+	if clipCmd != "" {
+		b.WriteString("# Clipboard\n")
+		fmt.Fprintf(&b, "set -s copy-command '%s'\n", clipCmd)
+		// Emacs copy-mode: mouse drag end copies selection and exits copy mode.
+		fmt.Fprintf(&b, "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel\n")
+		b.WriteString("\n")
+	}
+
 	// Catppuccin Mocha colors.
 	b.WriteString("# Catppuccin Mocha theme\n")
 	fmt.Fprintf(&b, "set -g pane-border-style fg=%s\n", cfg.Theme.InactiveBorder)
@@ -107,6 +138,10 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	}
 	b.WriteString("\n")
 
+	// Auto-reshuffle on window resize.
+	b.WriteString("# Auto-reshuffle layout on resize\n")
+	fmt.Fprintf(&b, "set-hook -g client-resized \"run-shell -b '%s relayout'\"\n\n", agencyBin)
+
 	// Navigation.
 	b.WriteString("# Navigation\n")
 	b.WriteString("bind Up select-pane -U\n")
@@ -128,13 +163,16 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Management.
 	b.WriteString("# Management\n")
-	fmt.Fprintf(&b, "bind %s confirm-before -p \"Kill pane? (y/n)\" kill-pane\n", cfg.Keys.KillPane)
+	killPaneCmd := `printf 'Kill pane? [Enter/y]: '; read -r _k; case "$_k" in ""|y|Y) tmux kill-pane;; esac`
+	escapedKillPane := strings.ReplaceAll(killPaneCmd, `"`, `\"`)
+	fmt.Fprintf(&b, "bind %s display-popup -E -w 44 -h 3 \"%s\"\n", cfg.Keys.KillPane, escapedKillPane)
 	// Kill session: popup accepts Enter or y/Y as confirmation.
 	killCmd := `printf 'Kill session? [Enter/y]: '; read -r _k; case "$_k" in ""|y|Y) tmux kill-session;; esac`
 	escapedKill := strings.ReplaceAll(killCmd, `"`, `\"`)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 44 -h 3 \"%s\"\n", cfg.Keys.KillSession, escapedKill)
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
+	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)
 	fmt.Fprintf(&b, "bind %s detach-client\n", cfg.Keys.Detach)
 	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
 	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)

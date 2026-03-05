@@ -28,6 +28,9 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 		return fmt.Sprintf("%%%d", m.paneIDSeq), nil
 	case "list-panes":
 		return m.listOutput, nil
+	case "display-message":
+		// Return fake window info for custom tiled layout.
+		return "200\t50\t" + fmt.Sprintf("%d", m.paneIDSeq+1), nil
 	case "send-keys":
 		return "", nil
 	case "select-layout":

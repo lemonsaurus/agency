@@ -17,6 +17,8 @@ type Handler interface {
 	SpawnCommand(ctx context.Context, command, dir string) error
 	KillPane(ctx context.Context, paneID string) error
 	SetLayout(ctx context.Context, layout string) error
+	Relayout(ctx context.Context) error
+	BroadcastKeys(ctx context.Context, keys string) error
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -103,6 +105,11 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 func (s *Server) dispatch(line string) error {
+	// Handle commands without arguments.
+	if line == "relayout" {
+		return s.handler.Relayout(s.ctx)
+	}
+
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) < 2 {
 		return fmt.Errorf("invalid message: %q", line)
@@ -123,6 +130,8 @@ func (s *Server) dispatch(line string) error {
 		return s.handler.KillPane(s.ctx, arg)
 	case "layout":
 		return s.handler.SetLayout(s.ctx, arg)
+	case "broadcast-keys":
+		return s.handler.BroadcastKeys(s.ctx, arg)
 	default:
 		return fmt.Errorf("unknown command: %q", cmd)
 	}
