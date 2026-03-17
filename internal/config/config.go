@@ -63,9 +63,20 @@ var validLayouts = map[string]bool{
 	"main-vertical": true,
 }
 
-func Load() (*Config, error) {
-	configDir, err := os.UserConfigDir()
+func xdgConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config")
+}
+
+func Load() (*Config, error) {
+	configDir := xdgConfigDir()
+	if configDir == "" {
 		return DefaultConfig(), nil
 	}
 	path := filepath.Join(configDir, "agency", "config.toml")
