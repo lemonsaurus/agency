@@ -313,7 +313,7 @@ claudejail                    # Linux
 claudejail-mac                # macOS
 ```
 
-Inside agency, `claudejail` (Linux) and `claudejail-mac` (macOS) are both available as agent types. The source files live in `scripts/`.
+Inside agency, `claudejail` is the default `Prefix+2` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail`, `scripts/claudejail.profile`, and `scripts/claudejail-mac`.
 
 ---
 
