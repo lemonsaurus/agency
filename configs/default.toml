@@ -13,6 +13,11 @@ command = "claudejail"
 icon = "🔒"
 border_color = "#f38ba8"         # red
 
+[agents.claudejail-mac]
+command = "claudejail-mac"
+icon = "🔒"
+border_color = "#f388ff"         # pink
+
 [agents.claude]
 command = "claude"
 icon = "🤖"
