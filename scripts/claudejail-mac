@@ -53,6 +53,10 @@ fi
 
 CWD="$(pwd -P)"
 
+# Ensure ~/.claude.json exists as a file before mounting — if it's absent,
+# Docker will create it as a directory, and auth won't persist.
+touch "${HOME}/.claude.json"
+
 # --- Assemble docker run arguments ------------------------------------------
 
 DOCKER_ARGS=(
