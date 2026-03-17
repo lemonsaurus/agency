@@ -16,6 +16,7 @@
 # Options (env vars):
 #   INSTALL_DIR  — where to put binaries (default: ~/.local/bin)
 #   SKIP_DEPS    — set to 1 to skip system dependency installation
+#   REPO_DIR     — path to a local clone of the repo (skips git clone)
 
 set -euo pipefail
 
@@ -25,6 +26,7 @@ main() {
 REPO="lemonsaurus/agency"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 SKIP_DEPS="${SKIP_DEPS:-0}"
+REPO_DIR="${REPO_DIR:-}"
 
 TMUX_VERSION="3.5a"
 GO_VERSION="1.24.1"
@@ -317,28 +319,55 @@ install_go() {
 install_agency() {
     step "4/4" "Installing agency"
 
-    local tmpdir
-    tmpdir="$(mktemp -d)"
+    local src tmpdir=""
 
-    need_cmd git || fail "git is required to clone the repository"
-
-    info "Cloning ${REPO}..."
-    git clone --depth 1 "https://github.com/${REPO}.git" "$tmpdir/agency" 2>/dev/null
+    if [[ -n "$REPO_DIR" ]]; then
+        src="$REPO_DIR"
+        info "Using local repo at ${src}..."
+    else
+        tmpdir="$(mktemp -d)"
+        need_cmd git || fail "git is required to clone the repository"
+        info "Cloning ${REPO}..."
+        git clone --depth 1 "https://github.com/${REPO}.git" "$tmpdir/agency" 2>/dev/null
+        src="$tmpdir/agency"
+    fi
 
     info "Building..."
-    (cd "$tmpdir/agency" && go build -o agency ./cmd/agency) \
+    (cd "$src" && go build -o agency ./cmd/agency) \
         || fail "Build failed"
 
     mkdir -p "$INSTALL_DIR"
-    cp "$tmpdir/agency/agency" "$INSTALL_DIR/"
+    cp "$src/agency" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/agency"
-    cp "$tmpdir/agency/scripts/agency-spawn" "$INSTALL_DIR/"
+    cp "$src/scripts/agency-spawn" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/agency-spawn"
-
-    rm -rf "$tmpdir"
 
     ok "agency       → ${INSTALL_DIR}/agency"
     ok "agency-spawn → ${INSTALL_DIR}/agency-spawn"
+
+    # Install claudejail-mac on macOS
+    if [[ "$OS" == "darwin" ]]; then
+        cp "$src/scripts/claudejail-mac" "$INSTALL_DIR/"
+        chmod +x "$INSTALL_DIR/claudejail-mac"
+        ok "claudejail-mac → ${INSTALL_DIR}/claudejail-mac"
+        if ! need_cmd docker; then
+            warn "Docker not found — claudejail-mac requires Docker Desktop"
+            warn "  https://docs.docker.com/desktop/install/mac-install/"
+        fi
+    fi
+
+    # Set up config if none exists
+    local config_dir="$HOME/.config/agency"
+    local config_file="$config_dir/config.toml"
+    if [[ ! -f "$config_file" ]]; then
+        mkdir -p "$config_dir"
+        cp "$src/configs/default.toml" "$config_file"
+        ok "config       → ${config_file}"
+    else
+        info "Config already exists at ${config_file}, skipping"
+    fi
+
+    [[ -n "$tmpdir" ]] && rm -rf "$tmpdir"
 }
 
 # ============================================================
