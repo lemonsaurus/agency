@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         bash \
         ca-certificates \
+        python3 \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code
@@ -65,10 +67,14 @@ DOCKER_ARGS=(
     -v "${CWD}:/workspace"
     # Claude config/state/memory (auth tokens, settings, memory files)
     -v "${HOME}/.claude:/root/.claude"
+    # Override settings.json with permissive rules — shadows the host's settings.json
+    -v "${HOME}/.claude/settings.permissive.json:/root/.claude/settings.json:ro"
     # Claude auth config (sits next to .claude/, not inside it)
     -v "${HOME}/.claude.json:/root/.claude.json"
     # Working directory inside the container
     -w /workspace
+    # Dashboard UI port
+    -p 7337:7337
 )
 
 # Git identity (read-only — Claude uses git inside the sandbox)
@@ -86,6 +92,4 @@ DOCKER_ARGS=(
 exec docker run "${DOCKER_ARGS[@]}" \
     "$IMAGE" \
     claude \
-    --allowedTools Bash Edit Write Read Glob Grep WebFetch WebSearch NotebookEdit Agent \
-    --settings /root/.claude/settings.permissive.json \
     "$@"
