@@ -249,7 +249,11 @@ Agents are assigned to the number keys (`Prefix+2` through `Prefix+5`) in the or
 
 ## claudejail — sandboxed Claude Code
 
-`claudejail` is a wrapper script included in this repo that runs Claude Code inside a [Firejail](https://firejail.wordpress.com/) sandbox. It restricts Claude's filesystem access to **only the current working directory**, so the agent can't read or modify anything else on your system.
+Agency ships two sandbox wrappers — one for Linux, one for macOS.
+
+### claudejail (Linux)
+
+Runs Claude Code inside a [Firejail](https://firejail.wordpress.com/) sandbox. Restricts Claude's filesystem access to **only the current working directory**.
 
 What the sandbox does:
 
@@ -261,8 +265,6 @@ What the sandbox does:
 - **Restricts `/etc`** to only networking and SSL essentials
 - **Allows network access** (Claude needs the Anthropic API)
 - **Allows subprocess execution** (Claude needs git, npm, bash, etc.)
-
-### Installing claudejail
 
 ```bash
 # Install firejail if you don't have it
@@ -277,14 +279,41 @@ This copies two files:
 - `~/.local/bin/claudejail` — the wrapper script
 - `~/.config/firejail/claudejail.profile` — the sandbox profile
 
-Then just use `claudejail` anywhere you'd use `claude`:
+### claudejail-mac (macOS)
+
+Runs Claude Code inside a Docker container. Firejail is Linux-only, so this is the macOS equivalent. Requires [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/).
+
+What the sandbox does:
+
+- **Mounts only `$PWD`** into the container — Claude cannot see the rest of your home directory
+- **Mounts `~/.claude`** so Claude retains its config, memory, and auth across sessions
+- **Allows network access** (Claude needs the Anthropic API)
+- **Allows subprocess execution** (Claude needs git, npm, bash, etc.)
+- **Uses permissive Claude settings** so long unattended sessions don't stall waiting for permission prompts
+
+The Docker image is built automatically on first run (~1 min).
+
+```bash
+make install-claudejail-mac
+```
+
+This copies one file:
+
+- `~/.local/bin/claudejail-mac` — the wrapper script
+
+The one-liner installer (`curl ... | bash`) handles this automatically on macOS.
+
+---
+
+Then just use either wrapper anywhere you'd use `claude`:
 
 ```bash
 cd ~/projects/myapp
-claudejail                    # Claude can only see ~/projects/myapp
+claudejail                    # Linux
+claudejail-mac                # macOS
 ```
 
-Inside agency, `claudejail` is the default `Prefix+2` agent. The source files live in `scripts/claudejail` and `scripts/claudejail.profile`.
+Inside agency, `claudejail` is the default `Prefix+2` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail`, `scripts/claudejail.profile`, and `scripts/claudejail-mac`.
 
 ---
 
@@ -325,8 +354,15 @@ tail -f $(agency logs)
 ```bash
 make build      # compile
 make install    # build + install to ~/.local/bin/
+make uninstall  # remove all installed binaries
 go test ./...   # run tests
 go vet ./...    # static analysis
+```
+
+To test the installer against your local checkout instead of cloning from GitHub:
+
+```bash
+REPO_DIR=$(pwd) bash install.sh
 ```
 
 See `CLAUDE.md` for the full architecture spec and development guidelines.

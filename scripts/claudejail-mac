@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# claudejail-mac — Run Claude Code in a Docker sandbox restricted to $PWD (macOS)
+#
+# Drop-in macOS equivalent of claudejail (which requires Linux/Firejail).
+# Isolation model: Docker container with only $PWD and ~/.claude mounted.
+# The container cannot see the rest of your home directory.
+set -euo pipefail
+
+IMAGE="claudejail:latest"
+
+# --- Preflight checks -------------------------------------------------------
+
+if ! command -v docker &>/dev/null; then
+    echo "error: docker is not installed" >&2
+    echo "  https://docs.docker.com/desktop/install/mac-install/" >&2
+    exit 1
+fi
+
+if ! docker info &>/dev/null 2>&1; then
+    echo "error: Docker daemon is not running" >&2
+    echo "  Start Docker Desktop and try again" >&2
+    exit 1
+fi
+
+# --- Build image if needed --------------------------------------------------
+
+if ! docker image inspect "$IMAGE" &>/dev/null 2>&1; then
+    echo "claudejail: building sandbox image (first run, ~1 min)..." >&2
+
+    TMPDIR_BUILD="$(mktemp -d)"
+    trap 'rm -rf "$TMPDIR_BUILD"' EXIT
+
+    cat > "${TMPDIR_BUILD}/Dockerfile" <<'DOCKERFILE'
+FROM node:22-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        bash \
+        ca-certificates \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /workspace
+DOCKERFILE
+
+    docker build -t "$IMAGE" "$TMPDIR_BUILD"
+    echo "claudejail: image built successfully" >&2
+fi
+
+# --- Resolve paths -----------------------------------------------------------
+
+CWD="$(pwd -P)"
+
+# Ensure ~/.claude.json exists as a file before mounting — if it's absent,
+# Docker will create it as a directory, and auth won't persist.
+touch "${HOME}/.claude.json"
+
+# --- Assemble docker run arguments ------------------------------------------
+
+DOCKER_ARGS=(
+    --rm --interactive --tty
+    # Workspace: the project directory you launched from
+    -v "${CWD}:/workspace"
+    # Claude config/state/memory (auth tokens, settings, memory files)
+    -v "${HOME}/.claude:/root/.claude"
+    # Override settings.json with permissive rules — shadows the host's settings.json
+    -v "${HOME}/.claude/settings.permissive.json:/root/.claude/settings.json:ro"
+    # Claude auth config (sits next to .claude/, not inside it)
+    -v "${HOME}/.claude.json:/root/.claude.json"
+    # Working directory inside the container
+    -w /workspace
+    # Dashboard UI port
+    -p 7337:7337
+)
+
+# Git identity (read-only — Claude uses git inside the sandbox)
+[[ -f "${HOME}/.gitconfig" ]] && \
+    DOCKER_ARGS+=(-v "${HOME}/.gitconfig:/root/.gitconfig:ro")
+[[ -d "${HOME}/.config/git" ]] && \
+    DOCKER_ARGS+=(-v "${HOME}/.config/git:/root/.config/git:ro")
+
+# Forward API key if already set in the host environment
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && \
+    DOCKER_ARGS+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+
+# --- Launch sandboxed Claude -------------------------------------------------
+
+exec docker run "${DOCKER_ARGS[@]}" \
+    "$IMAGE" \
+    claude \
+    "$@"

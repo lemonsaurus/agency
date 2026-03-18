@@ -1,4 +1,4 @@
-.PHONY: build install install-claudejail run clean test lint
+.PHONY: build install install-claudejail install-claudejail-mac uninstall run clean test lint
 
 BINARY := agency
 INSTALL_DIR := $(HOME)/.local/bin
@@ -23,6 +23,20 @@ install-claudejail:
 	cp scripts/claudejail.profile $(FIREJAIL_PROFILE_DIR)/
 	@echo "Installed claudejail to $(INSTALL_DIR)/claudejail"
 	@echo "Installed firejail profile to $(FIREJAIL_PROFILE_DIR)/claudejail.profile"
+
+install-claudejail-mac:
+	mkdir -p $(INSTALL_DIR)
+	cp scripts/claudejail-mac $(INSTALL_DIR)/
+	chmod +x $(INSTALL_DIR)/claudejail-mac
+	@echo "Installed claudejail-mac to $(INSTALL_DIR)/claudejail-mac"
+	@echo "First run will build the Docker image automatically (~1 min)"
+
+uninstall:
+	rm -f $(INSTALL_DIR)/agency
+	rm -f $(INSTALL_DIR)/agency-spawn
+	rm -f $(INSTALL_DIR)/claudejail
+	rm -f $(INSTALL_DIR)/claudejail-mac
+	@echo "Uninstalled agency from $(INSTALL_DIR)"
 
 run: build
 	./bin/$(BINARY)
