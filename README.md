@@ -253,35 +253,35 @@ Agency ships two sandbox wrappers — one for Linux, one for macOS.
 
 ### claudejail (Linux)
 
-Runs Claude Code inside a [Firejail](https://firejail.wordpress.com/) sandbox. Restricts Claude's filesystem access to **only the current working directory**.
+Runs Claude Code inside a [bubblewrap](https://github.com/containers/bubblewrap) sandbox. Restricts Claude's filesystem access to **only the current working directory**. Bubblewrap uses unprivileged user namespaces — no SUID root, no kernel modules. Works reliably on WSL2.
 
 What the sandbox does:
 
-- **Blacklists your entire `$HOME`**, then whitelists only `$PWD`, `~/.claude`, and the `claude` binary
-- **Drops all Linux capabilities**, enables seccomp filtering
-- **Blocks privilege escalation** (`nonewprivs`, `noroot`)
-- **Isolates IPC, /tmp, and /dev**
-- **Blocks D-Bus, sound, video, 3D**
-- **Restricts `/etc`** to only networking and SSL essentials
+- **Starts with an empty `$HOME`**, then bind-mounts only `$PWD` (read-write), `~/.claude` (read-write), and the `claude` binary (read-only)
+- **Drops all Linux capabilities**
+- **Isolates PID, IPC, and UTS namespaces**
+- **Private `/tmp` and `/dev`**
+- **Read-only system directories** (`/usr`, `/bin`, `/lib`, `/etc`)
+- **Bind-mounts `~/.nvm`, `~/.gitconfig`, `~/.ssh`** read-only (if they exist)
 - **Allows network access** (Claude needs the Anthropic API)
 - **Allows subprocess execution** (Claude needs git, npm, bash, etc.)
+- **Dies with parent** — sandbox is cleaned up if agency exits
 
 ```bash
-# Install firejail if you don't have it
-sudo apt install firejail
+# Install bubblewrap if you don't have it
+sudo apt install bubblewrap
 
-# Install the claudejail script and firejail profile
+# Install the claudejail script
 make install-claudejail
 ```
 
-This copies two files:
+This copies one file:
 
-- `~/.local/bin/claudejail` — the wrapper script
-- `~/.config/firejail/claudejail.profile` — the sandbox profile
+- `~/.local/bin/claudejail` — the wrapper script (sandbox config is inline)
 
 ### claudejail-mac (macOS)
 
-Runs Claude Code inside a Docker container. Firejail is Linux-only, so this is the macOS equivalent. Requires [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/).
+Runs Claude Code inside a Docker container. Bubblewrap is Linux-only, so this is the macOS equivalent. Requires [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/).
 
 What the sandbox does:
 
@@ -313,7 +313,7 @@ claudejail                    # Linux
 claudejail-mac                # macOS
 ```
 
-Inside agency, `claudejail` is the default `Prefix+2` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail`, `scripts/claudejail.profile`, and `scripts/claudejail-mac`.
+Inside agency, `claudejail` is the default `Prefix+2` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail` and `scripts/claudejail-mac`.
 
 ---
 

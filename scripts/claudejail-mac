@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claudejail-mac — Run Claude Code in a Docker sandbox restricted to $PWD (macOS)
 #
-# Drop-in macOS equivalent of claudejail (which requires Linux/Firejail).
+# Drop-in macOS equivalent of claudejail (which requires Linux/bubblewrap).
 # Isolation model: Docker container with only $PWD and ~/.claude mounted.
 # The container cannot see the rest of your home directory.
 set -euo pipefail

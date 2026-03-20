@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# claudejail — Run Claude Code in a Firejail sandbox restricted to $PWD
+# claudejail — Run Claude Code in a bubblewrap sandbox restricted to $PWD
 set -euo pipefail
-
-PROFILE="${HOME}/.config/firejail/claudejail.profile"
 
 # --- Preflight checks -------------------------------------------------------
 
-if ! command -v firejail &>/dev/null; then
-    echo "error: firejail is not installed" >&2
-    echo "  sudo apt install firejail" >&2
+if ! command -v bwrap &>/dev/null; then
+    echo "error: bubblewrap is not installed" >&2
+    echo "  sudo apt install bubblewrap" >&2
     exit 1
 fi
 
@@ -17,24 +15,117 @@ if ! command -v claude &>/dev/null; then
     exit 1
 fi
 
-if [[ ! -f "$PROFILE" ]]; then
-    echo "error: firejail profile not found at ${PROFILE}" >&2
-    echo "  run 'make install-claudejail' from the agency repo to install it" >&2
-    exit 1
-fi
-
-# --- Resolve working directory -----------------------------------------------
+# --- Resolve paths -----------------------------------------------------------
 
 CWD="$(pwd -P)"
+CLAUDE_BIN="$(command -v claude)"
+CLAUDE_BIN_REAL="$(readlink -f "$CLAUDE_BIN")"
+CLAUDE_BIN_DIR="$(dirname "$CLAUDE_BIN_REAL")"
+
+# Resolve nvm/node path if available
+NODE_DIR=""
+if command -v node &>/dev/null; then
+    NODE_REAL="$(readlink -f "$(command -v node)")"
+    NODE_DIR="$(dirname "$(dirname "$NODE_REAL")")"
+fi
+
+# --- Build bwrap arguments ---------------------------------------------------
+
+args=(
+    # --- Filesystem: build up from nothing ---
+
+    # System directories (read-only)
+    --ro-bind /usr /usr
+    --ro-bind /bin /bin
+    --ro-bind /lib /lib
+    --ro-bind /etc /etc
+    --symlink usr/lib64 /lib64
+
+    # Minimal devices and proc
+    --dev /dev
+    --proc /proc
+    --tmpfs /tmp
+    --tmpfs /run
+
+    # --- Home: deny everything, then whitelist ---
+
+    # Empty home as base
+    --tmpfs "$HOME"
+
+    # Working directory (read-write — Claude edits code here)
+    --bind "$CWD" "$CWD"
+
+    # Claude config/state/memory (read-write — Claude writes here)
+    --bind "$HOME/.claude" "$HOME/.claude"
+
+    # Claude binary and its installation
+    --ro-bind "$CLAUDE_BIN_DIR" "$CLAUDE_BIN_DIR"
+)
+
+# Symlink claude into ~/.local/bin if it lives there (common setup)
+if [[ "$CLAUDE_BIN" != "$CLAUDE_BIN_REAL" ]]; then
+    args+=(--ro-bind "$(dirname "$CLAUDE_BIN")" "$(dirname "$CLAUDE_BIN")")
+fi
+
+# Claude runtime data (read-only)
+if [[ -d "$HOME/.local/share/claude" ]]; then
+    args+=(--ro-bind "$HOME/.local/share/claude" "$HOME/.local/share/claude")
+fi
+
+# Node.js via nvm (read-only — Claude needs node)
+if [[ -n "$NODE_DIR" ]]; then
+    args+=(--ro-bind "$NODE_DIR" "$NODE_DIR")
+fi
+if [[ -d "$HOME/.nvm" ]]; then
+    args+=(--ro-bind "$HOME/.nvm" "$HOME/.nvm")
+fi
+
+# Git config (read-only)
+if [[ -f "$HOME/.gitconfig" ]]; then
+    args+=(--ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig")
+fi
+if [[ -d "$HOME/.config/git" ]]; then
+    args+=(--ro-bind "$HOME/.config/git" "$HOME/.config/git")
+fi
+
+# SSH keys (read-only — for git operations)
+if [[ -d "$HOME/.ssh" ]]; then
+    args+=(--ro-bind "$HOME/.ssh" "$HOME/.ssh")
+fi
+
+# Agency socket (read-write — so Claude can self-spawn)
+if [[ -n "${AGENCY_SOCKET:-}" && -S "$AGENCY_SOCKET" ]]; then
+    args+=(--bind "$(dirname "$AGENCY_SOCKET")" "$(dirname "$AGENCY_SOCKET")")
+fi
+
+args+=(
+    # --- Security hardening ---
+
+    # New PID namespace
+    --unshare-pid
+
+    # IPC namespace isolation
+    --unshare-ipc
+
+    # UTS namespace (hostname isolation)
+    --unshare-uts
+
+    # Block privilege escalation
+    --new-session
+
+    # Drop all capabilities
+    --cap-drop ALL
+
+    # Die when parent dies
+    --die-with-parent
+
+    # Set working directory
+    --chdir "$CWD"
+)
 
 # --- Launch sandboxed Claude -------------------------------------------------
 
-exec firejail \
-    --profile="$PROFILE" \
-    --whitelist="$CWD" \
-    --whitelist="${HOME}/.claude" \
-    --whitelist="${HOME}/.local/bin/claude" \
-    -- \
+exec bwrap "${args[@]}" \
     claude \
     --allowedTools Bash Edit Write Read Glob Grep WebFetch WebSearch NotebookEdit Agent \
     "$@"
