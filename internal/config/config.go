@@ -38,9 +38,10 @@ type KeysConfig struct {
 }
 
 type SessionConfig struct {
-	Name          string `toml:"name"`
-	DefaultLayout string `toml:"default_layout"`
-	MaxRows       int    `toml:"max_rows"`
+	Name           string `toml:"name"`
+	DefaultLayout  string `toml:"default_layout"`
+	MaxRows        int    `toml:"max_rows"`
+	MinColumnWidth int    `toml:"min_column_width"`
 }
 
 type ThemeConfig struct {

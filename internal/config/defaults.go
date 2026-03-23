@@ -3,9 +3,10 @@ package config
 func DefaultConfig() *Config {
 	return &Config{
 		Session: SessionConfig{
-			Name:          "agency",
-			DefaultLayout: "tiled",
-			MaxRows:       3,
+			Name:           "agency",
+			DefaultLayout:  "tiled",
+			MaxRows:        3,
+			MinColumnWidth: 120,
 		},
 		Theme: ThemeConfig{
 			ActiveBorder:   "#89b4fa",

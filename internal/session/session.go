@@ -240,12 +240,26 @@ func (m *Manager) applyCustomTiled(ctx context.Context) error {
 	if maxRows <= 0 {
 		maxRows = 3
 	}
-	// Prefer fewer rows when pane count is small (keeps panes taller).
-	// Only use the full maxRows once we exceed what 2 rows can handle
-	// in 3 columns (i.e. more than 6 panes).
-	effectiveMax := min(2, maxRows)
-	if info.PaneCount > effectiveMax*3 {
-		effectiveMax = maxRows
+	minColWidth := m.cfg.Session.MinColumnWidth
+	if minColWidth <= 0 {
+		minColWidth = 120
+	}
+
+	// Prefer 2 rows per column when the window is wide enough.
+	// Calculate how many columns we'd need with maxRows=2, then check
+	// if each column would still be at least minColWidth wide.
+	// If not, fall back to the full maxRows (more rows = fewer columns = wider).
+	effectiveMax := maxRows
+	if maxRows >= 2 {
+		colsNeeded := (info.PaneCount + 1) / 2 // ceil(paneCount / 2)
+		if colsNeeded < 1 {
+			colsNeeded = 1
+		}
+		// Available width per column: subtract separators, divide evenly.
+		widthPerCol := (info.Width - (colsNeeded - 1)) / colsNeeded
+		if widthPerCol >= minColWidth {
+			effectiveMax = 2
+		}
 	}
 
 	columns := layout.Grid(info.PaneCount, effectiveMax)
