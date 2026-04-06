@@ -71,9 +71,9 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g renumber-windows on\n")
 	b.WriteString("set -g default-terminal \"tmux-256color\"\n")
 	b.WriteString("set -ga terminal-overrides \",*256col*:Tc\"\n")
-	// Extended keys: required for modern terminals (Rio, Ghostty, WezTerm, etc.)
-	// that use Kitty keyboard protocol / CSI u to properly pass Ctrl+Space
-	// and other modified keys to tmux.
+	// Extended keys (CSI u): required for tmux to decode modified keys like
+	// Ctrl+Shift+C from modern terminals. Paste bug with csi-u was fixed
+	// in tmux 3.6 (tmux#4175).
 	b.WriteString("set -g extended-keys always\n")
 	b.WriteString("set -gs extended-keys-format csi-u\n")
 	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
@@ -84,13 +84,17 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
 	b.WriteString("set -g allow-passthrough on\n\n")
 
-	// Clipboard: select with mouse → copies to system clipboard, exits copy mode.
+	// Clipboard: drag to select, Ctrl+C to copy.
+	// MouseDragEnd keeps the selection without auto-copying to clipboard.
+	// This prevents spurious drags from overwriting the clipboard.
 	clipCmd := clipboardCommand()
 	if clipCmd != "" {
 		b.WriteString("# Clipboard\n")
 		fmt.Fprintf(&b, "set -s copy-command '%s'\n", clipCmd)
-		// Emacs copy-mode: mouse drag end copies selection and exits copy mode.
-		fmt.Fprintf(&b, "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel\n")
+		// If the drag was zero-distance (same start/end cell), it was a phantom
+		// drag from WezTerm — cancel copy-mode silently. Otherwise keep the selection.
+		b.WriteString("bind-key -T copy-mode MouseDragEnd1Pane if-shell -F '#{&&:#{==:#{selection_start_x},#{selection_end_x}},#{==:#{selection_start_y},#{selection_end_y}}}' 'send-keys -X cancel' 'send-keys -X stop-selection'\n")
+		b.WriteString("bind-key -T copy-mode C-c send-keys -X copy-pipe-and-cancel\n")
 		b.WriteString("\n")
 	}
 
@@ -182,6 +186,5 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
 	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)
 	fmt.Fprintf(&b, "bind %s paste-buffer\n", cfg.Keys.Paste)
-
 	return b.String()
 }
