@@ -78,11 +78,13 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -gs extended-keys-format csi-u\n")
 	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
 	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n")
-	// Hyperlink passthrough: let OSC 8 sequences from agents reach the outer
-	// terminal so URLs are ctrl-clickable.
+	// Hyperlinks: tmux 3.4+ relays OSC 8 natively when the terminal-features
+	// 'hyperlinks' flag is set — no DCS passthrough required. allow-passthrough
+	// was previously enabled here but caused outer-terminal scrollback to record
+	// tmux's full-screen redraws, which made wheel-scroll appear to "loop" the
+	// latest screen.
 	b.WriteString("set -ga terminal-features 'xterm*:hyperlinks'\n")
-	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
-	b.WriteString("set -g allow-passthrough on\n\n")
+	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n\n")
 
 	// Clipboard: drag to select, Ctrl+C to copy.
 	// MouseDragEnd keeps the selection without auto-copying to clipboard.
