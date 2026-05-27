@@ -74,10 +74,13 @@ fi
 # /etc/resolv.conf often symlinks into /run (systemd-resolved,
 # NetworkManager) on modern Debian/Ubuntu. Our --tmpfs /run wipes that
 # target, so DNS breaks inside the sandbox and Claude can't reach
-# api.anthropic.com. Resolve the symlink and bind the real file.
+# api.anthropic.com. We can't bind-mount over /etc/resolv.conf because
+# bwrap follows the symlink and would try to create the file at the
+# (now-missing) target. Instead, bind the real file at its actual host
+# path so the symlink inside the sandbox resolves correctly.
 if [[ -L /etc/resolv.conf ]]; then
     real_resolv="$(readlink -f /etc/resolv.conf)"
-    [[ -f "$real_resolv" ]] && args+=(--ro-bind "$real_resolv" /etc/resolv.conf)
+    [[ -f "$real_resolv" ]] && args+=(--ro-bind "$real_resolv" "$real_resolv")
 fi
 
 # Symlink claude into ~/.local/bin if it lives there (common setup)
