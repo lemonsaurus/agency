@@ -39,7 +39,6 @@ args=(
     --ro-bind /bin /bin
     --ro-bind /lib /lib
     --ro-bind /etc /etc
-    --symlink usr/lib64 /lib64
 
     # Minimal devices and proc
     --dev /dev
@@ -61,6 +60,16 @@ args=(
     # Claude binary and its installation
     --ro-bind "$CLAUDE_BIN_DIR" "$CLAUDE_BIN_DIR"
 )
+
+# /lib64 layout differs by distro: Fedora/RHEL have /lib64 as a symlink
+# into /usr/lib64, Debian/Ubuntu have it as a real directory containing
+# the ELF dynamic linker. Bind whatever the host has; fall back to the
+# Fedora-style symlink only on hosts without /lib64.
+if [[ -e /lib64 ]]; then
+    args+=(--ro-bind /lib64 /lib64)
+else
+    args+=(--symlink usr/lib64 /lib64)
+fi
 
 # Symlink claude into ~/.local/bin if it lives there (common setup)
 if [[ "$CLAUDE_BIN" != "$CLAUDE_BIN_REAL" ]]; then
