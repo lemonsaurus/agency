@@ -71,6 +71,15 @@ else
     args+=(--symlink usr/lib64 /lib64)
 fi
 
+# /etc/resolv.conf often symlinks into /run (systemd-resolved,
+# NetworkManager) on modern Debian/Ubuntu. Our --tmpfs /run wipes that
+# target, so DNS breaks inside the sandbox and Claude can't reach
+# api.anthropic.com. Resolve the symlink and bind the real file.
+if [[ -L /etc/resolv.conf ]]; then
+    real_resolv="$(readlink -f /etc/resolv.conf)"
+    [[ -f "$real_resolv" ]] && args+=(--ro-bind "$real_resolv" /etc/resolv.conf)
+fi
+
 # Symlink claude into ~/.local/bin if it lives there (common setup)
 if [[ "$CLAUDE_BIN" != "$CLAUDE_BIN_REAL" ]]; then
     args+=(--ro-bind "$(dirname "$CLAUDE_BIN")" "$(dirname "$CLAUDE_BIN")")
