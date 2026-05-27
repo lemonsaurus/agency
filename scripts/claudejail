@@ -61,6 +61,13 @@ args=(
     --ro-bind "$CLAUDE_BIN_DIR" "$CLAUDE_BIN_DIR"
 )
 
+# Claude Code 2.x keeps auth + settings in ~/.claude.json (a single file
+# directly in $HOME, not inside ~/.claude/). Our --tmpfs $HOME hides it,
+# so logins don't persist across sandbox invocations. Bind it through.
+if [[ -f "$HOME/.claude.json" ]]; then
+    args+=(--bind "$HOME/.claude.json" "$HOME/.claude.json")
+fi
+
 # /lib64 layout differs by distro: Fedora/RHEL have /lib64 as a symlink
 # into /usr/lib64, Debian/Ubuntu have it as a real directory containing
 # the ELF dynamic linker. Bind whatever the host has; fall back to the
