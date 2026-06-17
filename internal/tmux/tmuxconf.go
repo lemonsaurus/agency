@@ -84,7 +84,12 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// tmux's full-screen redraws, which made wheel-scroll appear to "loop" the
 	// latest screen.
 	b.WriteString("set -ga terminal-features 'xterm*:hyperlinks'\n")
-	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n\n")
+	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
+	// Ctrl+Enter workaround: tmux strips the Ctrl modifier from Enter,
+	// sending plain \r which apps can't distinguish from regular Enter.
+	// Explicitly send the CSI u encoded form so crossterm-based apps
+	// (like Claude Code) see it as Ctrl+Enter.
+	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n\n")
 
 	// Clipboard: drag to select, Ctrl+C to copy.
 	// MouseDragEnd keeps the selection without auto-copying to clipboard.
