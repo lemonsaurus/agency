@@ -242,7 +242,7 @@ func (m *Manager) applyCustomTiled(ctx context.Context) error {
 	}
 	minColWidth := m.cfg.Session.MinColumnWidth
 	if minColWidth <= 0 {
-		minColWidth = 120
+		minColWidth = 90
 	}
 
 	// Prefer 2 rows per column when the window is wide enough.

@@ -6,7 +6,7 @@ func DefaultConfig() *Config {
 			Name:           "agency",
 			DefaultLayout:  "tiled",
 			MaxRows:        3,
-			MinColumnWidth: 120,
+			MinColumnWidth: 90,
 		},
 		Theme: ThemeConfig{
 			ActiveBorder:   "#89b4fa",
