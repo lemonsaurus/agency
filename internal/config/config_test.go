@@ -18,11 +18,11 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.Agents) != 4 {
 		t.Errorf("expected 4 default agents, got %d", len(cfg.Agents))
 	}
-	if cfg.Agents["claude"].Command != "claude" {
-		t.Errorf("expected claude command 'claude', got %q", cfg.Agents["claude"].Command)
+	if cfg.Agents["pi"].Command != "pi" {
+		t.Errorf("expected pi command 'pi', got %q", cfg.Agents["pi"].Command)
 	}
-	if cfg.Agents["claude"].Icon != "🤖" {
-		t.Errorf("expected claude icon '🤖', got %q", cfg.Agents["claude"].Icon)
+	if cfg.Agents["pi"].Icon != "π" {
+		t.Errorf("expected pi icon 'π', got %q", cfg.Agents["pi"].Icon)
 	}
 	if cfg.Keys.Prefix != "C-b" {
 		t.Errorf("expected default prefix 'C-b', got %q", cfg.Keys.Prefix)

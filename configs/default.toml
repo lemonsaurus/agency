@@ -18,11 +18,6 @@ command = "claudejail-mac"
 icon = "🔒"
 border_color = "#f388ff"         # pink
 
-[agents.claude]
-command = "claude"
-icon = "🤖"
-border_color = "#cba6f7"         # mauve
-
 [agents.codex]
 command = "codex"
 icon = "🧠"
@@ -32,6 +27,11 @@ border_color = "#89b4fa"         # blue
 command = "gemini"
 icon = "✦"
 border_color = "#f9e2af"         # yellow
+
+[agents.pi]
+command = "pi"
+icon = "π"
+border_color = "#a6e3a1"         # green
 
 # Keybindings — all values use tmux key notation.
 # Uncomment and change any binding you want to customize.

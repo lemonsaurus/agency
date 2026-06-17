@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/lemonsaurus/agency/main/install.sh 
 
 This handles everything — installs tmux 3.5+ (building from source if your distro's version is too old), Go 1.24+, and agency itself. Sudo is only used for system-level installs (`apt`, `/usr/local`); everything else runs as your user.
 
-You'll also need at least one agent CLI: `claude`, `codex`, `gemini`, or any command you like.
+You'll also need at least one agent CLI: `claude`, `codex`, `gemini`, `pi`, or any command you like.
 
 <details>
 <summary>Manual install</summary>
@@ -66,7 +66,7 @@ make install          # builds and copies to ~/.local/bin/
 
 Agency turns your terminal into a Bloomberg-style multi-terminal workstation. Every pane stays on screen in a tiled grid — no tabs, no alt-tabbing, no context switching. Designed for giant ultrawide monitor nerds who are trying to juggle and keep track of 10+ terminal sessions.
 
-Each pane gets a unique color and a bold `agent@folder` label in its border, so you always know what's running where. Borders dynamically switch color to match the label. Each label has an icon. Hotkeys to start claude, codex and gemini sessions.
+Each pane gets a unique color and a bold `agent@folder` label in its border, so you always know what's running where. Borders dynamically switch color to match the label. Each label has an icon. Hotkeys to start pi, claudejail, codex and gemini sessions.
 
 <sub>PS: This is not really appropriate for a small monitor - for that use case, maybe check out [agent deck](https://github.com/asheshgoplani/agent-deck).</sub>
 
@@ -101,8 +101,8 @@ Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette
 | Shortcut | Action |
 |---|---|
 | `Prefix+1` | New plain terminal (in current pane's directory) |
-| `Prefix+2` | Spawn claudejail (opens directory picker) |
-| `Prefix+3` | Spawn claude |
+| `Prefix+2` | Spawn pi (opens directory picker) |
+| `Prefix+3` | Spawn claudejail |
 | `Prefix+4` | Spawn codex |
 | `Prefix+5` | Spawn gemini |
 | `Prefix+c` | Command palette (all agent types) |
@@ -313,7 +313,7 @@ claudejail                    # Linux
 claudejail-mac                # macOS
 ```
 
-Inside agency, `claudejail` is the default `Prefix+2` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail` and `scripts/claudejail-mac`.
+Inside agency, `claudejail` is the default `Prefix+3` agent (Linux) and `claudejail-mac` is available on macOS. The source files live in `scripts/claudejail` and `scripts/claudejail-mac`.
 
 ---
 
