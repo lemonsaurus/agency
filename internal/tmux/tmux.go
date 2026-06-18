@@ -50,12 +50,12 @@ func (e *ExecCommander) Exec(ctx context.Context, args ...string) error {
 
 // PaneInfo represents a tmux pane.
 type PaneInfo struct {
-	ID      string // e.g. "%0"
-	Index   int    // pane index within window
-	Command string // running command
-	CWD     string // current working directory
-	Active  bool   // whether this pane is focused
-	PID     int    // pane process PID
+	ID      string `json:"id"`      // e.g. "%0"
+	Index   int    `json:"index"`   // pane index within window
+	Command string `json:"command"` // running command
+	CWD     string `json:"cwd"`     // current working directory
+	Active  bool   `json:"active"`  // whether this pane is focused
+	PID     int    `json:"pid"`     // pane process PID
 }
 
 // Client wraps all tmux CLI interactions.
@@ -130,11 +130,12 @@ func (c *Client) SendKeys(ctx context.Context, paneID, keys string) error {
 	return err
 }
 
-// SendText sends literal text to a pane and presses Enter to submit it.
-// Appends a raw carriage return byte to the text and sends everything in
-// one shot with -l, so there's no timing gap between the text and Enter.
-func (c *Client) SendText(ctx context.Context, paneID, text string) error {
-	_, err := c.Cmd.Run(ctx, "send-keys", "-l", "-t", paneID, text+"\r")
+// SendText sends literal text to a pane and optionally presses Enter.
+func (c *Client) SendText(ctx context.Context, paneID, text string, enter bool) error {
+	if enter {
+		text += "\r"
+	}
+	_, err := c.Cmd.Run(ctx, "send-keys", "-l", "-t", paneID, text)
 	return err
 }
 

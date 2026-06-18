@@ -11,9 +11,9 @@ import (
 
 // MockCommander records calls and returns canned responses.
 type MockCommander struct {
-	Calls    [][]string
-	Returns  map[string]mockReturn
-	Default  mockReturn
+	Calls   [][]string
+	Returns map[string]mockReturn
+	Default mockReturn
 }
 
 type mockReturn struct {
@@ -205,6 +205,20 @@ func TestListPanes(t *testing.T) {
 	}
 }
 
+func TestSendText(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	if err := c.SendText(context.Background(), "%3", "hello", true); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+	call := mock.Calls[0]
+	if strings.Join(call, " ") != "send-keys -l -t %3 hello\r" {
+		t.Errorf("unexpected call: %v", call)
+	}
+}
+
 func TestKillPane(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}
@@ -255,7 +269,7 @@ func TestGenerateConfig(t *testing.T) {
 		"#{pane_current_command}",
 		"pane-active-border-style",
 		"terminal-features 'xterm*:hyperlinks'",
-		"allow-passthrough on",
+		"terminal-features 'tmux*:hyperlinks'",
 		"bind Up select-pane -U",
 		"bind " + cfg.Keys.LayoutTiled + " run-shell",
 		"bind " + cfg.Keys.KillPane + " display-popup",
@@ -310,6 +324,10 @@ func TestCapturePaneContent(t *testing.T) {
 	}
 	if out != "some output\nfrom pane" {
 		t.Errorf("unexpected output: %q", out)
+	}
+	call := mock.Calls[0]
+	if strings.Join(call, " ") != "capture-pane -t %0 -p -S -30" {
+		t.Errorf("unexpected call: %v", call)
 	}
 }
 

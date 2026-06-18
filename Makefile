@@ -10,7 +10,8 @@ build:
 
 install: build
 	mkdir -p $(INSTALL_DIR)
-	cp bin/$(BINARY) $(INSTALL_DIR)/
+	cp bin/$(BINARY) $(INSTALL_DIR)/$(BINARY).new
+	mv $(INSTALL_DIR)/$(BINARY).new $(INSTALL_DIR)/$(BINARY)
 	cp scripts/agency-spawn $(INSTALL_DIR)/
 	chmod +x $(INSTALL_DIR)/agency-spawn
 	@echo "Installed to $(INSTALL_DIR)/agency and $(INSTALL_DIR)/agency-spawn"

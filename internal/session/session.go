@@ -338,7 +338,7 @@ func (m *Manager) BroadcastKeys(ctx context.Context, keys string) error {
 	m.mu.Unlock()
 
 	for _, id := range ids {
-		if err := m.tmux.SendText(ctx, id, keys); err != nil {
+		if err := m.tmux.SendText(ctx, id, keys, true); err != nil {
 			return fmt.Errorf("sending keys to pane %s: %w", id, err)
 		}
 	}

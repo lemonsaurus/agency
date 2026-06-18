@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -30,12 +31,16 @@ func main() {
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
 		runSpawnDialog(os.Args[2:])
+	case "send":
+		runSend(os.Args[2:])
+	case "capture":
+		runCapture(os.Args[2:])
 	case "kill":
 		runKill(os.Args[2:])
 	case "kill-all":
 		runKillAll()
 	case "list":
-		runList()
+		runList(os.Args[2:])
 	case "layout":
 		runLayout(os.Args[2:])
 	case "relayout":
@@ -69,6 +74,8 @@ Usage:
   agency spawn <agent> [dir...]     Spawn agent pane(s) — one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
+  agency send <pane-id> <text>      Send text to a pane and press Enter
+  agency capture <pane-id> [lines]  Capture pane output
   agency kill <pane-id>             Kill a specific pane
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
@@ -347,6 +354,46 @@ func extractDirArg(args []string) (command []string, dir string) {
 	return args, currentDir()
 }
 
+func runSend(args []string) {
+	enter := true
+	if len(args) > 0 && args[0] == "--no-enter" {
+		enter = false
+		args = args[1:]
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency send [--no-enter] <pane-id> <text>")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	if err := tc.SendText(context.Background(), args[0], strings.Join(args[1:], " "), enter); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runCapture(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency capture <pane-id> [lines]")
+		os.Exit(1)
+	}
+	lines := 200
+	if len(args) >= 2 {
+		if _, err := fmt.Sscanf(args[1], "%d", &lines); err != nil || lines <= 0 {
+			fmt.Fprintln(os.Stderr, "Error: lines must be a positive integer")
+			os.Exit(1)
+		}
+	}
+	cfg := loadConfig()
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	out, err := tc.CapturePaneContent(context.Background(), args[0], lines)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(out)
+}
+
 func runKill(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: agency kill <pane-id>")
@@ -384,7 +431,7 @@ func runKillAll() {
 	}
 }
 
-func runList() {
+func runList(args []string) {
 	cfg := loadConfig()
 	tc := tmux.NewClient(cfg.Session.Name, "")
 	ctx := context.Background()
@@ -392,6 +439,14 @@ func runList() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if len(args) > 0 && args[0] == "--json" {
+		if err := json.NewEncoder(os.Stdout).Encode(panes); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	registry := agents.NewRegistry(cfg.Agents, cfg.AgentOrder)
