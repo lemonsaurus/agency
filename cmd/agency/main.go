@@ -71,8 +71,9 @@ func printUsage() {
 
 Usage:
   agency                            Launch new session (or reattach)
-  agency spawn <agent> [dir...]     Spawn agent pane(s) — one per dir (claude, codex, ...)
+  agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
+  agency spawn --window <name> ...   Spawn into a named tmux window
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
   agency send <pane-id> <text>      Send text to a pane and press Enter
   agency capture <pane-id> [lines]  Capture pane output
@@ -243,8 +244,18 @@ func runSpawn(args []string) {
 	sockPath := socketPath(cfg.Session.Name)
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency spawn <agent> [dir] or agency spawn --cmd \"command\" [dir]")
+		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] <agent> [dir] or agency spawn [--window name] --cmd \"command\" [dir]")
 		os.Exit(1)
+	}
+
+	windowName := ""
+	if args[0] == "--window" {
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency spawn --window <name> <agent|--cmd> [dir]")
+			os.Exit(1)
+		}
+		windowName = args[1]
+		args = args[2:]
 	}
 
 	var msgs []string
@@ -254,7 +265,7 @@ func runSpawn(args []string) {
 			os.Exit(1)
 		}
 		command, dir := extractDirArg(args[1:])
-		msgs = []string{"spawn:cmd:" + strings.Join(command, " ") + dirSuffix(dir)}
+		msgs = []string{spawnCommandMessage(windowName, strings.Join(command, " "), dir)}
 	} else {
 		name := args[0]
 		dirs := args[1:]
@@ -266,7 +277,7 @@ func runSpawn(args []string) {
 			if !ok {
 				continue
 			}
-			msgs = append(msgs, "spawn:"+name+dirSuffix(abs))
+			msgs = append(msgs, spawnAgentMessage(windowName, name, abs))
 		}
 		if len(msgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Error: no valid directories to spawn in")
@@ -305,6 +316,29 @@ func runSpawnDialog(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+type spawnWindowPayload struct {
+	Window  string `json:"window"`
+	Agent   string `json:"agent,omitempty"`
+	Command string `json:"command,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+}
+
+func spawnAgentMessage(windowName, name, dir string) string {
+	if windowName == "" {
+		return "spawn:" + name + dirSuffix(dir)
+	}
+	payload, _ := json.Marshal(spawnWindowPayload{Window: windowName, Agent: name, Dir: dir})
+	return "spawn-window:" + string(payload)
+}
+
+func spawnCommandMessage(windowName, command, dir string) string {
+	if windowName == "" {
+		return "spawn:cmd:" + command + dirSuffix(dir)
+	}
+	payload, _ := json.Marshal(spawnWindowPayload{Window: windowName, Command: command, Dir: dir})
+	return "spawn-window:" + string(payload)
 }
 
 // dirSuffix returns the @/path IPC suffix for a directory, or empty string.
@@ -441,7 +475,7 @@ func runList(args []string) {
 		os.Exit(1)
 	}
 
-	if len(args) > 0 && args[0] == "--json" {
+	if listAsJSON(args) {
 		if err := json.NewEncoder(os.Stdout).Encode(panes); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -467,8 +501,20 @@ func runList(args []string) {
 		if pane.Active {
 			active = " *"
 		}
-		fmt.Printf("  %s  %s%s  %s%s\n", pane.ID, icon, pane.Command, pane.CWD, active)
+		window := pane.WindowName
+		if window != "" {
+			window += " "
+		}
+		fmt.Printf("  %s  %s%s%s  %s%s\n", pane.ID, window, icon, pane.Command, pane.CWD, active)
 	}
+}
+
+func listAsJSON(args []string) bool {
+	if len(args) > 0 && args[0] == "--json" {
+		return true
+	}
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice == 0
 }
 
 func runLayout(args []string) {

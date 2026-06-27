@@ -3,6 +3,7 @@ package ipc
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,11 +15,20 @@ import (
 // Handler processes IPC commands from the socket.
 type Handler interface {
 	SpawnAgent(ctx context.Context, name, dir string) error
+	SpawnAgentWindow(ctx context.Context, windowName, name, dir string) error
 	SpawnCommand(ctx context.Context, command, dir string) error
+	SpawnCommandWindow(ctx context.Context, windowName, command, dir string) error
 	KillPane(ctx context.Context, paneID string) error
 	SetLayout(ctx context.Context, layout string) error
 	Relayout(ctx context.Context) error
 	BroadcastKeys(ctx context.Context, keys string) error
+}
+
+type spawnWindowPayload struct {
+	Window  string `json:"window"`
+	Agent   string `json:"agent,omitempty"`
+	Command string `json:"command,omitempty"`
+	Dir     string `json:"dir,omitempty"`
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -126,6 +136,21 @@ func (s *Server) dispatch(line string) error {
 		}
 		name, dir := splitDirSuffix(arg)
 		return s.handler.SpawnAgent(s.ctx, name, dir)
+	case "spawn-window":
+		var payload spawnWindowPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return fmt.Errorf("invalid spawn-window payload: %w", err)
+		}
+		if payload.Window == "" {
+			return fmt.Errorf("window name is required")
+		}
+		if payload.Command != "" {
+			return s.handler.SpawnCommandWindow(s.ctx, payload.Window, payload.Command, payload.Dir)
+		}
+		if payload.Agent == "" {
+			return fmt.Errorf("agent or command is required")
+		}
+		return s.handler.SpawnAgentWindow(s.ctx, payload.Window, payload.Agent, payload.Dir)
 	case "kill":
 		return s.handler.KillPane(s.ctx, arg)
 	case "layout":

@@ -9,11 +9,13 @@ import (
 )
 
 type spawnRecord struct {
-	name string
-	dir  string
+	window string
+	name   string
+	dir    string
 }
 
 type commandRecord struct {
+	window  string
 	command string
 	dir     string
 }
@@ -40,10 +42,24 @@ func (m *mockHandler) SpawnAgent(_ context.Context, name, dir string) error {
 	return nil
 }
 
+func (m *mockHandler) SpawnAgentWindow(_ context.Context, windowName, name, dir string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir})
+	return nil
+}
+
 func (m *mockHandler) SpawnCommand(_ context.Context, command, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.commands = append(m.commands, commandRecord{command: command, dir: dir})
+	return nil
+}
+
+func (m *mockHandler) SpawnCommandWindow(_ context.Context, windowName, command, dir string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir})
 	return nil
 }
 
@@ -164,6 +180,29 @@ func TestServerSpawnCommandWithDir(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.commands) != 1 || h.commands[0].command != "aider --yes" || h.commands[0].dir != "/tmp/work" {
 		t.Errorf("expected command 'aider --yes' in '/tmp/work', got %v", h.commands)
+	}
+}
+
+func TestServerSpawnWindow(t *testing.T) {
+	h := &mockHandler{}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	resp, err := SendMessage(sockPath, `spawn-window:{"window":"casts-review","agent":"pi","dir":"/tmp/work"}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if resp != "ok" {
+		t.Errorf("expected 'ok', got %q", resp)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.spawns) != 1 || h.spawns[0].window != "casts-review" || h.spawns[0].name != "pi" || h.spawns[0].dir != "/tmp/work" {
+		t.Errorf("expected windowed spawn, got %v", h.spawns)
 	}
 }
 

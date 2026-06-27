@@ -32,11 +32,12 @@ var paneColors = []string{
 
 // TrackedPane holds state for a single managed pane.
 type TrackedPane struct {
-	PaneID    string
-	AgentType string // empty for custom commands
-	AgentName string // display name like "🔒 claudejail@myproject"
-	Command   string
-	Status    string
+	PaneID     string
+	WindowName string
+	AgentType  string // empty for custom commands
+	AgentName  string // display name like "🔒 claudejail@myproject"
+	Command    string
+	Status     string
 }
 
 // Manager tracks panes, handles spawn/kill, and satisfies ipc.Handler.
@@ -71,21 +72,39 @@ func (m *Manager) SpawnAgent(ctx context.Context, name, dir string) error {
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, name, agent.Command, dir)
+	return m.spawnPane(ctx, "", name, agent.Command, dir)
+}
+
+func (m *Manager) SpawnAgentWindow(ctx context.Context, windowName, name, dir string) error {
+	agent, ok := m.registry.Get(name)
+	if !ok {
+		return fmt.Errorf("unknown agent type: %q", name)
+	}
+	return m.spawnPane(ctx, windowName, name, agent.Command, dir)
 }
 
 // SpawnCommand spawns a pane running an arbitrary command.
 func (m *Manager) SpawnCommand(ctx context.Context, command, dir string) error {
-	return m.spawnPane(ctx, "", command, dir)
+	return m.spawnPane(ctx, "", "", command, dir)
 }
 
-func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string) error {
+func (m *Manager) SpawnCommandWindow(ctx context.Context, windowName, command, dir string) error {
+	return m.spawnPane(ctx, windowName, "", command, dir)
+}
+
+func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	paneID, err := m.tmux.SplitWindow(ctx, command, dir)
+	var paneID string
+	var err error
+	if windowName != "" {
+		paneID, err = m.tmux.NewWindow(ctx, windowName, command, dir)
+	} else {
+		paneID, err = m.tmux.SplitWindow(ctx, command, dir)
+	}
 	if err != nil {
-		return fmt.Errorf("splitting window: %w", err)
+		return fmt.Errorf("spawning pane: %w", err)
 	}
 
 	// Pick the next unique color from the palette.
@@ -116,11 +135,12 @@ func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string)
 	m.stylePaneLabel(ctx, paneID, displayName, color)
 
 	tracked := &TrackedPane{
-		PaneID:    paneID,
-		AgentType: agentType,
-		AgentName: displayName,
-		Command:   command,
-		Status:    status.StatusRunning,
+		PaneID:     paneID,
+		WindowName: windowName,
+		AgentType:  agentType,
+		AgentName:  displayName,
+		Command:    command,
+		Status:     status.StatusRunning,
 	}
 	m.panes[paneID] = tracked
 
@@ -128,7 +148,9 @@ func (m *Manager) spawnPane(ctx context.Context, agentType, command, dir string)
 		m.poller.Track(paneID, agentType)
 	}
 
-	_ = m.applyLayout(ctx, m.cfg.Session.DefaultLayout)
+	if windowName == "" {
+		_ = m.applyLayout(ctx, m.cfg.Session.DefaultLayout)
+	}
 
 	return nil
 }
@@ -309,11 +331,12 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 		m.stylePaneLabel(ctx, pane.ID, displayName, color)
 
 		tracked := &TrackedPane{
-			PaneID:    pane.ID,
-			AgentType: agentType,
-			AgentName: displayName,
-			Command:   pane.Command,
-			Status:    status.StatusIdle,
+			PaneID:     pane.ID,
+			WindowName: pane.WindowName,
+			AgentType:  agentType,
+			AgentName:  displayName,
+			Command:    pane.Command,
+			Status:     status.StatusIdle,
 		}
 		m.panes[pane.ID] = tracked
 

@@ -147,6 +147,25 @@ func TestSplitWindowWithDir(t *testing.T) {
 	}
 }
 
+func TestNewWindow(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "%7", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	paneID, err := c.NewWindow(context.Background(), "casts-review", "pi", "/tmp/project")
+	if err != nil {
+		t.Fatalf("NewWindow failed: %v", err)
+	}
+	if paneID != "%7" {
+		t.Errorf("expected pane ID '%%7', got %q", paneID)
+	}
+	call := mock.Calls[0]
+	want := []string{"new-window", "-t", "test", "-n", "casts-review", "-P", "-F", "#{pane_id}", "-c", "/tmp/project", "pi"}
+	if strings.Join(call, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("unexpected call: %v", call)
+	}
+}
+
 func TestSetPaneOption(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}
@@ -176,7 +195,7 @@ func TestSetPaneTitle(t *testing.T) {
 }
 
 func TestListPanes(t *testing.T) {
-	output := "%0\t0\tclaude\t/home/user\t1\t1234\n%1\t1\tcodex\t/home/user/proj\t0\t5678"
+	output := "1\tπ pi\t%0\t0\tpi\t/home/user\t1\t1234\n2\tcasts-review\t%1\t1\tcodex\t/home/user/proj\t0\t5678"
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: output, Err: nil}
 	c := &Client{Cmd: mock, SessionName: "test"}
@@ -191,8 +210,11 @@ func TestListPanes(t *testing.T) {
 	if panes[0].ID != "%0" {
 		t.Errorf("expected pane ID '%%0', got %q", panes[0].ID)
 	}
-	if panes[0].Command != "claude" {
-		t.Errorf("expected command 'claude', got %q", panes[0].Command)
+	if panes[0].WindowName != "π pi" {
+		t.Errorf("expected unicode window name, got %q", panes[0].WindowName)
+	}
+	if panes[0].Command != "pi" {
+		t.Errorf("expected command 'pi', got %q", panes[0].Command)
 	}
 	if !panes[0].Active {
 		t.Error("expected first pane to be active")

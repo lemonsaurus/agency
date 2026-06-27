@@ -50,12 +50,14 @@ func (e *ExecCommander) Exec(ctx context.Context, args ...string) error {
 
 // PaneInfo represents a tmux pane.
 type PaneInfo struct {
-	ID      string `json:"id"`      // e.g. "%0"
-	Index   int    `json:"index"`   // pane index within window
-	Command string `json:"command"` // running command
-	CWD     string `json:"cwd"`     // current working directory
-	Active  bool   `json:"active"`  // whether this pane is focused
-	PID     int    `json:"pid"`     // pane process PID
+	ID          string `json:"id"`          // e.g. "%0"
+	Index       int    `json:"index"`       // pane index within window
+	WindowIndex int    `json:"windowIndex"` // tmux window index
+	WindowName  string `json:"windowName"`  // tmux window name
+	Command     string `json:"command"`     // running command
+	CWD         string `json:"cwd"`         // current working directory
+	Active      bool   `json:"active"`      // whether this pane is focused
+	PID         int    `json:"pid"`         // pane process PID
 }
 
 // Client wraps all tmux CLI interactions.
@@ -112,6 +114,16 @@ func (c *Client) SplitWindow(ctx context.Context, command, dir string) (string, 
 	return strings.TrimSpace(out), err
 }
 
+func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (string, error) {
+	args := []string{"new-window", "-t", c.SessionName, "-n", name, "-P", "-F", "#{pane_id}"}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	args = append(args, command)
+	out, err := c.Cmd.Run(ctx, args...)
+	return strings.TrimSpace(out), err
+}
+
 // SetPaneOption sets a per-pane user option (e.g. @agent_color).
 func (c *Client) SetPaneOption(ctx context.Context, paneID, option, value string) error {
 	_, err := c.Cmd.Run(ctx, "set-option", "-p", "-t", paneID, option, value)
@@ -145,9 +157,9 @@ func (c *Client) KillPane(ctx context.Context, paneID string) error {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}"
 	out, err := c.Cmd.Run(ctx,
-		"list-panes", "-t", c.SessionName, "-F", format,
+		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
 	if err != nil {
 		return nil, err
@@ -158,19 +170,35 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 
 	var panes []PaneInfo
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) < 6 {
+		parts := strings.SplitN(line, "\t", 8)
+		if len(parts) == 6 {
+			idx, _ := strconv.Atoi(parts[1])
+			pid, _ := strconv.Atoi(parts[5])
+			panes = append(panes, PaneInfo{
+				ID:      parts[0],
+				Index:   idx,
+				Command: parts[2],
+				CWD:     parts[3],
+				Active:  parts[4] == "1",
+				PID:     pid,
+			})
 			continue
 		}
-		idx, _ := strconv.Atoi(parts[1])
-		pid, _ := strconv.Atoi(parts[5])
+		if len(parts) < 8 {
+			continue
+		}
+		windowIdx, _ := strconv.Atoi(parts[0])
+		idx, _ := strconv.Atoi(parts[3])
+		pid, _ := strconv.Atoi(parts[7])
 		panes = append(panes, PaneInfo{
-			ID:      parts[0],
-			Index:   idx,
-			Command: parts[2],
-			CWD:     parts[3],
-			Active:  parts[4] == "1",
-			PID:     pid,
+			ID:          parts[2],
+			Index:       idx,
+			WindowIndex: windowIdx,
+			WindowName:  parts[1],
+			Command:     parts[4],
+			CWD:         parts[5],
+			Active:      parts[6] == "1",
+			PID:         pid,
 		})
 	}
 	return panes, nil

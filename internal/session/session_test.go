@@ -23,7 +23,7 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 	key := args[0]
 
 	switch key {
-	case "split-window":
+	case "split-window", "new-window":
 		m.paneIDSeq++
 		return fmt.Sprintf("%%%d", m.paneIDSeq), nil
 	case "list-panes":
@@ -197,6 +197,29 @@ func TestSpawnCommand(t *testing.T) {
 	}
 	if panes[0].Command != "htop" {
 		t.Errorf("expected command 'htop', got %q", panes[0].Command)
+	}
+}
+
+func TestSpawnAgentWindow(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+
+	if err := mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "/tmp/project"); err != nil {
+		t.Fatalf("SpawnAgentWindow failed: %v", err)
+	}
+
+	if mock.findCall("new-window") == nil {
+		t.Fatal("expected new-window call")
+	}
+	if mock.findCall("select-layout") != nil {
+		t.Fatal("did not expect relayout for a task window")
+	}
+	panes := mgr.ListPanes()
+	if len(panes) != 1 {
+		t.Fatalf("expected 1 pane, got %d", len(panes))
+	}
+	if panes[0].WindowName != "casts-review" {
+		t.Errorf("expected window name, got %q", panes[0].WindowName)
 	}
 }
 
