@@ -13,9 +13,10 @@ import (
 
 // testMock implements tmux.Commander for session tests.
 type testMock struct {
-	calls      [][]string
-	paneIDSeq  int
-	listOutput string
+	calls        [][]string
+	paneIDSeq    int
+	listOutput   string
+	windowOutput string
 }
 
 func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
@@ -28,6 +29,8 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 		return fmt.Sprintf("%%%d", m.paneIDSeq), nil
 	case "list-panes":
 		return m.listOutput, nil
+	case "list-windows":
+		return m.windowOutput, nil
 	case "display-message":
 		// Return fake window info for custom tiled layout.
 		return "200\t50\t" + fmt.Sprintf("%d", m.paneIDSeq+1), nil
@@ -35,7 +38,7 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 		return "", nil
 	case "select-layout":
 		return "", nil
-	case "kill-pane":
+	case "kill-pane", "kill-window", "rename-window":
 		return "", nil
 	case "set-environment":
 		return "", nil
@@ -223,6 +226,26 @@ func TestSpawnAgentWindow(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
+	mock := &testMock{windowOutput: "casts-review"}
+	mgr := newTestManager(mock)
+
+	if err := mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "/tmp/project"); err != nil {
+		t.Fatalf("SpawnAgentWindow failed: %v", err)
+	}
+
+	if mock.findCall("new-window") != nil {
+		t.Fatal("did not expect new-window call")
+	}
+	splitCall := mock.findCall("split-window")
+	if splitCall == nil {
+		t.Fatal("expected split-window call")
+	}
+	if splitCall[2] != "test:casts-review" {
+		t.Errorf("expected target test:casts-review, got %v", splitCall)
+	}
+}
+
 func TestKillPane(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
@@ -240,6 +263,42 @@ func TestKillPane(t *testing.T) {
 
 	if mgr.PaneCount() != 0 {
 		t.Errorf("expected 0 panes after kill, got %d", mgr.PaneCount())
+	}
+}
+
+func TestKillWindow(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+
+	_ = mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "")
+	if mgr.PaneCount() != 1 {
+		t.Fatalf("expected 1 pane, got %d", mgr.PaneCount())
+	}
+
+	if err := mgr.KillWindow(context.Background(), "casts-review"); err != nil {
+		t.Fatalf("KillWindow failed: %v", err)
+	}
+	if mgr.PaneCount() != 0 {
+		t.Errorf("expected 0 panes after kill, got %d", mgr.PaneCount())
+	}
+}
+
+func TestRenameWindow(t *testing.T) {
+	mock := &testMock{windowOutput: "@1\t1\tcasts-review"}
+	mgr := newTestManager(mock)
+
+	_ = mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "")
+	mock.listOutput = "1\thammerbound\t%1\t0\tpi\t/tmp\t1\t123"
+	if err := mgr.RenameWindow(context.Background(), "casts-review", "hammerbound"); err != nil {
+		t.Fatalf("RenameWindow failed: %v", err)
+	}
+	panes := mgr.ListPanes()
+	if panes[0].WindowName != "hammerbound" {
+		t.Errorf("expected window name hammerbound, got %q", panes[0].WindowName)
+	}
+	renameCall := mock.findCall("rename-window")
+	if renameCall == nil || renameCall[2] != "@1" || renameCall[3] != "hammerbound" {
+		t.Errorf("unexpected rename-window call: %v", renameCall)
 	}
 }
 

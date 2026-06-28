@@ -99,7 +99,15 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 	var paneID string
 	var err error
 	if windowName != "" {
-		paneID, err = m.tmux.NewWindow(ctx, windowName, command, dir)
+		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
+		if existsErr != nil {
+			return fmt.Errorf("checking window: %w", existsErr)
+		}
+		if exists {
+			paneID, err = m.tmux.SplitWindowInWindow(ctx, windowName, command, dir)
+		} else {
+			paneID, err = m.tmux.NewWindow(ctx, windowName, command, dir)
+		}
 	} else {
 		paneID, err = m.tmux.SplitWindow(ctx, command, dir)
 	}
@@ -190,6 +198,44 @@ func (m *Manager) KillPane(ctx context.Context, paneID string) error {
 		m.poller.Untrack(paneID)
 	}
 	delete(m.panes, paneID)
+	return nil
+}
+
+func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.tmux.KillWindow(ctx, windowName); err != nil {
+		return err
+	}
+	for id, pane := range m.panes {
+		if pane.WindowName != windowName {
+			continue
+		}
+		if m.poller != nil {
+			m.poller.Untrack(id)
+		}
+		delete(m.panes, id)
+	}
+	return nil
+}
+
+func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.tmux.RenameWindow(ctx, target, name); err != nil {
+		return err
+	}
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, pane := range panes {
+		if tracked, ok := m.panes[pane.ID]; ok {
+			tracked.WindowName = pane.WindowName
+		}
+	}
 	return nil
 }
 

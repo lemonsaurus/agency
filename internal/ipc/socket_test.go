@@ -20,11 +20,18 @@ type commandRecord struct {
 	dir     string
 }
 
+type renameRecord struct {
+	target string
+	name   string
+}
+
 type mockHandler struct {
 	mu            sync.Mutex
 	spawns        []spawnRecord
 	commands      []commandRecord
 	kills         []string
+	windowKills   []string
+	renames       []renameRecord
 	layouts       []string
 	relayouts     int
 	broadcastKeys []string
@@ -67,6 +74,20 @@ func (m *mockHandler) KillPane(_ context.Context, paneID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.kills = append(m.kills, paneID)
+	return nil
+}
+
+func (m *mockHandler) KillWindow(_ context.Context, windowName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.windowKills = append(m.windowKills, windowName)
+	return nil
+}
+
+func (m *mockHandler) RenameWindow(_ context.Context, target, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.renames = append(m.renames, renameRecord{target: target, name: name})
 	return nil
 }
 
@@ -244,6 +265,46 @@ func TestServerKillPane(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.kills) != 1 || h.kills[0] != "3" {
 		t.Errorf("expected kill of '3', got %v", h.kills)
+	}
+}
+
+func TestServerKillWindow(t *testing.T) {
+	h := &mockHandler{}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	_, err := SendMessage(sockPath, "kill-window:casts-review")
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.windowKills) != 1 || h.windowKills[0] != "casts-review" {
+		t.Errorf("expected kill of casts-review, got %v", h.windowKills)
+	}
+}
+
+func TestServerRenameWindow(t *testing.T) {
+	h := &mockHandler{}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	_, err := SendMessage(sockPath, `rename-window:{"target":"pi","name":"hammerbound"}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.renames) != 1 || h.renames[0].target != "pi" || h.renames[0].name != "hammerbound" {
+		t.Errorf("expected rename pi to hammerbound, got %v", h.renames)
 	}
 }
 

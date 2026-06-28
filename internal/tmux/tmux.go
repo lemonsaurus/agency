@@ -60,6 +60,12 @@ type PaneInfo struct {
 	PID         int    `json:"pid"`         // pane process PID
 }
 
+type windowRef struct {
+	ID    string
+	Index int
+	Name  string
+}
+
 // Client wraps all tmux CLI interactions.
 type Client struct {
 	Cmd         Commander
@@ -114,6 +120,16 @@ func (c *Client) SplitWindow(ctx context.Context, command, dir string) (string, 
 	return strings.TrimSpace(out), err
 }
 
+func (c *Client) SplitWindowInWindow(ctx context.Context, windowName, command, dir string) (string, error) {
+	args := []string{"split-window", "-t", c.windowTarget(windowName), "-P", "-F", "#{pane_id}"}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	args = append(args, command)
+	out, err := c.Cmd.Run(ctx, args...)
+	return strings.TrimSpace(out), err
+}
+
 func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (string, error) {
 	args := []string{"new-window", "-t", c.SessionName, "-n", name, "-P", "-F", "#{pane_id}"}
 	if dir != "" {
@@ -122,6 +138,63 @@ func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (stri
 	args = append(args, command)
 	out, err := c.Cmd.Run(ctx, args...)
 	return strings.TrimSpace(out), err
+}
+
+func (c *Client) WindowExists(ctx context.Context, name string) (bool, error) {
+	windows, err := c.listWindowRefs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, window := range windows {
+		if window.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) listWindowRefs(ctx context.Context) ([]windowRef, error) {
+	out, err := c.Cmd.Run(ctx, "list-windows", "-t", c.SessionName, "-F", "#{window_id}\t#{window_index}\t#{window_name}")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	windows := []windowRef{}
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) == 1 {
+			windows = append(windows, windowRef{Name: parts[0]})
+			continue
+		}
+		if len(parts) < 3 {
+			continue
+		}
+		idx, _ := strconv.Atoi(parts[1])
+		windows = append(windows, windowRef{ID: parts[0], Index: idx, Name: parts[2]})
+	}
+	return windows, nil
+}
+
+func (c *Client) resolveWindowTarget(ctx context.Context, target string) (string, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", fmt.Errorf("window target is required")
+	}
+	windows, err := c.listWindowRefs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, window := range windows {
+		if window.ID == target || strconv.Itoa(window.Index) == target || window.Name == target {
+			if window.ID != "" {
+				return window.ID, nil
+			}
+			return c.windowTarget(window.Name), nil
+		}
+	}
+	return "", fmt.Errorf("window %q not found", target)
 }
 
 // SetPaneOption sets a per-pane user option (e.g. @agent_color).
@@ -154,6 +227,27 @@ func (c *Client) SendText(ctx context.Context, paneID, text string, enter bool) 
 func (c *Client) KillPane(ctx context.Context, paneID string) error {
 	_, err := c.Cmd.Run(ctx, "kill-pane", "-t", paneID)
 	return err
+}
+
+func (c *Client) KillWindow(ctx context.Context, windowName string) error {
+	_, err := c.Cmd.Run(ctx, "kill-window", "-t", c.windowTarget(windowName))
+	return err
+}
+
+func (c *Client) RenameWindow(ctx context.Context, target, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("window name is required")
+	}
+	resolved, err := c.resolveWindowTarget(ctx, target)
+	if err != nil {
+		return err
+	}
+	_, err = c.Cmd.Run(ctx, "rename-window", "-t", resolved, name)
+	return err
+}
+
+func (c *Client) windowTarget(windowName string) string {
+	return c.SessionName + ":" + windowName
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {

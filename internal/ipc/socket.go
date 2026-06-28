@@ -19,6 +19,8 @@ type Handler interface {
 	SpawnCommand(ctx context.Context, command, dir string) error
 	SpawnCommandWindow(ctx context.Context, windowName, command, dir string) error
 	KillPane(ctx context.Context, paneID string) error
+	KillWindow(ctx context.Context, windowName string) error
+	RenameWindow(ctx context.Context, target, name string) error
 	SetLayout(ctx context.Context, layout string) error
 	Relayout(ctx context.Context) error
 	BroadcastKeys(ctx context.Context, keys string) error
@@ -29,6 +31,11 @@ type spawnWindowPayload struct {
 	Agent   string `json:"agent,omitempty"`
 	Command string `json:"command,omitempty"`
 	Dir     string `json:"dir,omitempty"`
+}
+
+type renameWindowPayload struct {
+	Target string `json:"target"`
+	Name   string `json:"name"`
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -153,6 +160,17 @@ func (s *Server) dispatch(line string) error {
 		return s.handler.SpawnAgentWindow(s.ctx, payload.Window, payload.Agent, payload.Dir)
 	case "kill":
 		return s.handler.KillPane(s.ctx, arg)
+	case "kill-window":
+		return s.handler.KillWindow(s.ctx, arg)
+	case "rename-window":
+		var payload renameWindowPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return fmt.Errorf("invalid rename-window payload: %w", err)
+		}
+		if payload.Target == "" || payload.Name == "" {
+			return fmt.Errorf("target and name are required")
+		}
+		return s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
 	case "layout":
 		return s.handler.SetLayout(s.ctx, arg)
 	case "broadcast-keys":

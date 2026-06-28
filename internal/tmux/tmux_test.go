@@ -166,6 +166,38 @@ func TestNewWindow(t *testing.T) {
 	}
 }
 
+func TestSplitWindowInWindow(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "%8", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	paneID, err := c.SplitWindowInWindow(context.Background(), "casts-review", "pi", "/tmp/project")
+	if err != nil {
+		t.Fatalf("SplitWindowInWindow failed: %v", err)
+	}
+	if paneID != "%8" {
+		t.Errorf("expected pane ID '%%8', got %q", paneID)
+	}
+	want := []string{"split-window", "-t", "test:casts-review", "-P", "-F", "#{pane_id}", "-c", "/tmp/project", "pi"}
+	if strings.Join(mock.Calls[0], "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("unexpected call: %v", mock.Calls[0])
+	}
+}
+
+func TestWindowExists(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "pi\ncasts-review", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	exists, err := c.WindowExists(context.Background(), "casts-review")
+	if err != nil {
+		t.Fatalf("WindowExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected window to exist")
+	}
+}
+
 func TestSetPaneOption(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}
@@ -252,6 +284,44 @@ func TestKillPane(t *testing.T) {
 	call := mock.Calls[0]
 	if call[0] != "kill-pane" || call[2] != "%3" {
 		t.Errorf("unexpected call: %v", call)
+	}
+}
+
+func TestKillWindow(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	if err := c.KillWindow(context.Background(), "casts-review"); err != nil {
+		t.Fatalf("KillWindow failed: %v", err)
+	}
+	call := mock.Calls[0]
+	if call[0] != "kill-window" || call[2] != "test:casts-review" {
+		t.Errorf("unexpected call: %v", call)
+	}
+}
+
+func TestRenameWindow(t *testing.T) {
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{target: "casts-review", want: "@2"},
+		{target: "2", want: "@2"},
+		{target: "@2", want: "@2"},
+	}
+	for _, tt := range tests {
+		mock := NewMockCommander()
+		mock.Default = mockReturn{Output: "@1\t1\tpi\n@2\t2\tcasts-review", Err: nil}
+		c := &Client{Cmd: mock, SessionName: "test"}
+
+		if err := c.RenameWindow(context.Background(), tt.target, "hammerbound"); err != nil {
+			t.Fatalf("RenameWindow(%q) failed: %v", tt.target, err)
+		}
+		call := mock.Calls[1]
+		if call[0] != "rename-window" || call[2] != tt.want || call[3] != "hammerbound" {
+			t.Errorf("unexpected call for target %q: %v", tt.target, call)
+		}
 	}
 }
 

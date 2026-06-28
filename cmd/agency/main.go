@@ -37,6 +37,8 @@ func main() {
 		runCapture(os.Args[2:])
 	case "kill":
 		runKill(os.Args[2:])
+	case "rename-window":
+		runRenameWindow(os.Args[2:])
 	case "kill-all":
 		runKillAll()
 	case "list":
@@ -78,6 +80,8 @@ Usage:
   agency send <pane-id> <text>      Send text to a pane and press Enter
   agency capture <pane-id> [lines]  Capture pane output
   agency kill <pane-id>             Kill a specific pane
+  agency kill --window <name>       Kill a specific window
+  agency rename-window <target> <name> Rename a window by name, index, or id
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
   agency layout <layout>            Switch layout (tiled, columns, rows, main-vertical)
@@ -325,6 +329,11 @@ type spawnWindowPayload struct {
 	Dir     string `json:"dir,omitempty"`
 }
 
+type renameWindowPayload struct {
+	Target string `json:"target"`
+	Name   string `json:"name"`
+}
+
 func spawnAgentMessage(windowName, name, dir string) string {
 	if windowName == "" {
 		return "spawn:" + name + dirSuffix(dir)
@@ -430,11 +439,19 @@ func runCapture(args []string) {
 
 func runKill(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency kill <pane-id>")
+		fmt.Fprintln(os.Stderr, "Usage: agency kill <pane-id> or agency kill --window <name>")
 		os.Exit(1)
 	}
 	cfg := loadConfig()
-	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "kill:"+args[0])
+	message := "kill:" + args[0]
+	if args[0] == "--window" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency kill --window <name>")
+			os.Exit(1)
+		}
+		message = "kill-window:" + args[1]
+	}
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), message)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -443,6 +460,25 @@ func runKill(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
 		os.Exit(1)
 	}
+}
+
+func runRenameWindow(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency rename-window <target> <name>")
+		os.Exit(1)
+	}
+	payload, _ := json.Marshal(renameWindowPayload{Target: args[0], Name: strings.Join(args[1:], " ")})
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "rename-window:"+string(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+	fmt.Printf("renamed window %s to %s\n", args[0], strings.Join(args[1:], " "))
 }
 
 func runKillAll() {
