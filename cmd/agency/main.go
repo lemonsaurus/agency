@@ -449,7 +449,14 @@ func runKill(args []string) {
 			fmt.Fprintln(os.Stderr, "Usage: agency kill --window <name>")
 			os.Exit(1)
 		}
+		if agencyRole() == "worker" {
+			fmt.Fprintln(os.Stderr, "Error: worker panes cannot kill windows")
+			os.Exit(1)
+		}
 		message = "kill-window:" + args[1]
+	} else if agencyRole() == "worker" && os.Getenv("AGENCY_PANE_ID") != args[0] {
+		fmt.Fprintln(os.Stderr, "Error: worker panes may only kill their own pane")
+		os.Exit(1)
 	}
 	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), message)
 	if err != nil {
@@ -482,6 +489,10 @@ func runRenameWindow(args []string) {
 }
 
 func runKillAll() {
+	if agencyRole() == "worker" {
+		fmt.Fprintln(os.Stderr, "Error: worker panes cannot kill all panes")
+		os.Exit(1)
+	}
 	cfg := loadConfig()
 	// Kill all is done via the session manager. For now, use tmux directly.
 	tc := tmux.NewClient(cfg.Session.Name, "")
@@ -499,6 +510,13 @@ func runKillAll() {
 			fmt.Fprintf(os.Stderr, "Error killing %s: %s\n", pane.ID, resp)
 		}
 	}
+}
+
+func agencyRole() string {
+	if role := os.Getenv("AGENCY_ROLE"); role != "" {
+		return role
+	}
+	return "manager"
 }
 
 func runList(args []string) {

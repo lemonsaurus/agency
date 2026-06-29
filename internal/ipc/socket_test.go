@@ -268,6 +268,19 @@ func TestServerKillPane(t *testing.T) {
 	}
 }
 
+func TestWorkerRequesterCanOnlyKillOwnPane(t *testing.T) {
+	req := requesterFromEnv([]byte("AGENCY_ROLE=worker\x00AGENCY_PANE_ID=%7\x00"))
+	if !req.canKillPane("%7") {
+		t.Fatal("worker should be allowed to kill its own pane")
+	}
+	if req.canKillPane("%8") {
+		t.Fatal("worker should not be allowed to kill another pane")
+	}
+	if req.canKillWindow() {
+		t.Fatal("worker should not be allowed to kill windows")
+	}
+}
+
 func TestServerKillWindow(t *testing.T) {
 	h := &mockHandler{}
 	sockPath := filepath.Join(t.TempDir(), "test.sock")

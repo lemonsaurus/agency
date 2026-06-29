@@ -38,6 +38,19 @@ type renameWindowPayload struct {
 	Name   string `json:"name"`
 }
 
+type requester struct {
+	Role   string
+	PaneID string
+}
+
+func (r requester) canKillPane(paneID string) bool {
+	return r.Role != "worker" || (r.PaneID != "" && r.PaneID == paneID)
+}
+
+func (r requester) canKillWindow() bool {
+	return r.Role != "worker"
+}
+
 // Server listens on a unix socket for agent spawn/control requests.
 type Server struct {
 	path     string
@@ -113,7 +126,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if line == "" {
 		return
 	}
-	if err := s.dispatch(line); err != nil {
+	if err := s.dispatch(line, requesterForConn(conn)); err != nil {
 		log.Printf("ipc: dispatch %q: %v", line, err)
 		fmt.Fprintf(conn, "error: %v\n", err)
 		return
@@ -121,7 +134,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	fmt.Fprintf(conn, "ok\n")
 }
 
-func (s *Server) dispatch(line string) error {
+func (s *Server) dispatch(line string, requester requester) error {
 	// Handle commands without arguments.
 	if line == "relayout" {
 		return s.handler.Relayout(s.ctx)
@@ -159,8 +172,14 @@ func (s *Server) dispatch(line string) error {
 		}
 		return s.handler.SpawnAgentWindow(s.ctx, payload.Window, payload.Agent, payload.Dir)
 	case "kill":
+		if !requester.canKillPane(arg) {
+			return fmt.Errorf("worker panes may only kill their own pane")
+		}
 		return s.handler.KillPane(s.ctx, arg)
 	case "kill-window":
+		if !requester.canKillWindow() {
+			return fmt.Errorf("worker panes cannot kill windows")
+		}
 		return s.handler.KillWindow(s.ctx, arg)
 	case "rename-window":
 		var payload renameWindowPayload
@@ -178,6 +197,25 @@ func (s *Server) dispatch(line string) error {
 	default:
 		return fmt.Errorf("unknown command: %q", cmd)
 	}
+}
+
+func requesterFromEnv(environ []byte) requester {
+	req := requester{Role: "manager"}
+	for _, entry := range strings.Split(string(environ), "\x00") {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "AGENCY_ROLE":
+			if value != "" {
+				req.Role = value
+			}
+		case "AGENCY_PANE_ID":
+			req.PaneID = value
+		}
+	}
+	return req
 }
 
 // splitDirSuffix splits a string on "@/" to extract an optional absolute

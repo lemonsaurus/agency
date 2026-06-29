@@ -96,6 +96,8 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	spawnCommand := workerCommand(command)
+
 	var paneID string
 	var err error
 	if windowName != "" {
@@ -104,12 +106,12 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 			return fmt.Errorf("checking window: %w", existsErr)
 		}
 		if exists {
-			paneID, err = m.tmux.SplitWindowInWindow(ctx, windowName, command, dir)
+			paneID, err = m.tmux.SplitWindowInWindow(ctx, windowName, spawnCommand, dir)
 		} else {
-			paneID, err = m.tmux.NewWindow(ctx, windowName, command, dir)
+			paneID, err = m.tmux.NewWindow(ctx, windowName, spawnCommand, dir)
 		}
 	} else {
-		paneID, err = m.tmux.SplitWindow(ctx, command, dir)
+		paneID, err = m.tmux.SplitWindow(ctx, spawnCommand, dir)
 	}
 	if err != nil {
 		return fmt.Errorf("spawning pane: %w", err)
@@ -161,6 +163,10 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 	}
 
 	return nil
+}
+
+func workerCommand(command string) string {
+	return `AGENCY_ROLE=worker AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" ` + command
 }
 
 // stylePaneLabel stores the display label and color as pane user options.
