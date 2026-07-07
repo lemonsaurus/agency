@@ -131,7 +131,9 @@ func (c *Client) SplitWindowInWindow(ctx context.Context, windowName, command, d
 }
 
 func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (string, error) {
-	args := []string{"new-window", "-t", c.SessionName, "-n", name, "-P", "-F", "#{pane_id}"}
+	// Trailing colon: a bare session name resolves to its current window,
+	// making new-window fail with "index in use". The colon picks the next free index.
+	args := []string{"new-window", "-t", c.SessionName + ":", "-n", name, "-P", "-F", "#{pane_id}"}
 	if dir != "" {
 		args = append(args, "-c", dir)
 	}

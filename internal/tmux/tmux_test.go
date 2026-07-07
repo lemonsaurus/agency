@@ -160,7 +160,7 @@ func TestNewWindow(t *testing.T) {
 		t.Errorf("expected pane ID '%%7', got %q", paneID)
 	}
 	call := mock.Calls[0]
-	want := []string{"new-window", "-t", "test", "-n", "casts-review", "-P", "-F", "#{pane_id}", "-c", "/tmp/project", "pi"}
+	want := []string{"new-window", "-t", "test:", "-n", "casts-review", "-P", "-F", "#{pane_id}", "-c", "/tmp/project", "pi"}
 	if strings.Join(call, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("unexpected call: %v", call)
 	}
