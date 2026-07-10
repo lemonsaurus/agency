@@ -78,7 +78,7 @@ Each pane gets a unique color and a bold `agent@folder` label in its border, so 
 - **Per-pane color labels** — every pane gets a unique color and a `claudejail@myapp` style border label
 - **Directory-aware spawning** — `agency spawn claude ~/projects/api ~/projects/frontend` opens one pane per directory
 - **Glob support** — `agency spawn claude ~/projects/client-*` expands via your shell
-- **Agent self-spawning** — agents call `agency-spawn claude` from inside a pane to request new sibling panes
+- **Bounded delegation**: controllers create managers, managers create workers, workers cannot spawn
 - **Spawn dialog** — `Prefix+2/3/4/5` opens a directory picker pre-filled with the current pane's path
 - **Command palette** — `Prefix+c` fuzzy-searches all configured agent types
 - **Crash recovery** — if agency restarts, it re-adopts existing tmux panes automatically
@@ -115,6 +115,8 @@ Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette
 agency                              Launch session (or reattach if one exists)
 agency spawn <agent> [dir...]       Spawn one pane per directory
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
+agency spawn --role <role> ...       Request a manager or worker pane
+agency whoami                        Print the current pane's role
 agency kill <pane-id>               Kill a specific pane
 agency kill-all                     Kill all managed panes
 agency list                         List all panes
@@ -181,7 +183,15 @@ The tmux prefix is **`Ctrl+Space`**.
 
 ---
 
-## How agent self-spawning works
+## How delegation works
+
+Agency assigns three roles:
+
+- `controller`: the initial pane, creates managers or workers
+- `manager`: creates workers
+- `worker`: cannot create panes or windows
+
+One controller exists per session. Agency records each pane's role, parent, and root in tmux pane options and validates socket callers from their process ancestry. Agency enforces every role transition.
 
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.
 
@@ -193,7 +203,7 @@ agency-spawn claude --dir ~/projects/api # spawn in a specific directory
 agency-spawn --cmd "aider --yes"         # spawn an arbitrary command
 ```
 
-A Claude Code agent given instructions like *"when you need to work on the backend, run `agency-spawn claude --dir ~/api`"* will request a new sibling pane over the socket. Agency receives the message, spawns the pane, and re-tiles the grid — all without leaving the terminal.
+A manager given instructions like *"when you need to work on the backend, run `agency-spawn pi --dir ~/api`"* requests a worker over the socket. A worker receives an error if it tries the same call.
 
 The protocol is plain text over the unix socket:
 
@@ -219,6 +229,9 @@ cp configs/default.toml ~/.config/agency/config.toml
 [session]
 name = "agency"
 default_layout = "tiled"         # tiled | columns | rows | main-vertical
+max_panes = 32
+max_managers = 12
+max_workers_per_manager = 8
 
 [theme]
 active_border = "#89b4fa"

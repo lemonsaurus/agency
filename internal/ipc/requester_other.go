@@ -1,9 +1,9 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package ipc
 
 import "net"
 
-func requesterForConn(_ net.Conn) requester {
-	return requester{Role: "manager"}
+func peerPIDForConn(_ net.Conn) int {
+	return 0
 }

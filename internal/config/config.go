@@ -38,10 +38,13 @@ type KeysConfig struct {
 }
 
 type SessionConfig struct {
-	Name           string `toml:"name"`
-	DefaultLayout  string `toml:"default_layout"`
-	MaxRows        int    `toml:"max_rows"`
-	MinColumnWidth int    `toml:"min_column_width"`
+	Name                 string `toml:"name"`
+	DefaultLayout        string `toml:"default_layout"`
+	MaxRows              int    `toml:"max_rows"`
+	MinColumnWidth       int    `toml:"min_column_width"`
+	MaxPanes             int    `toml:"max_panes"`
+	MaxManagers          int    `toml:"max_managers"`
+	MaxWorkersPerManager int    `toml:"max_workers_per_manager"`
 }
 
 type ThemeConfig struct {

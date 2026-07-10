@@ -8,6 +8,7 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
@@ -89,11 +90,13 @@ func newTestManager(mock *testMock) *Manager {
 	return NewManager(tc, reg, cfg, nil)
 }
 
+var testController = control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0"}
+
 func TestSpawnAgent(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), "claude", ""); err != nil {
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 
@@ -133,13 +136,24 @@ func TestSpawnAgent(t *testing.T) {
 	if !foundColor {
 		t.Error("expected set-option call for @agent_color")
 	}
+	roleSet := false
+	for _, c := range optionCalls {
+		for _, arg := range c {
+			if arg == "@agency_role" {
+				roleSet = true
+			}
+		}
+	}
+	if !roleSet {
+		t.Error("expected set-option call for @agency_role")
+	}
 }
 
 func TestSpawnAgentWithDir(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), "claude", "/tmp/project"); err != nil {
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/project"); err != nil {
 		t.Fatalf("SpawnAgent with dir failed: %v", err)
 	}
 
@@ -163,10 +177,10 @@ func TestSpawnTwoPanes(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), "claude", ""); err != nil {
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", ""); err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
-	if err := mgr.SpawnAgent(context.Background(), "codex", ""); err != nil {
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", ""); err != nil {
 		t.Fatalf("second spawn: %v", err)
 	}
 
@@ -176,11 +190,32 @@ func TestSpawnTwoPanes(t *testing.T) {
 	}
 }
 
+func TestSpawnLimits(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+	mgr.cfg.Session.MaxManagers = 1
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", ""); err == nil {
+		t.Fatal("expected manager limit error")
+	}
+
+	mgr.cfg.Session.MaxWorkersPerManager = 1
+	manager := control.Requester{PaneID: "%1", Role: control.RoleManager, RootID: "%0"}
+	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", ""); err == nil {
+		t.Fatal("expected worker limit error")
+	}
+}
+
 func TestSpawnUnknownAgent(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	err := mgr.SpawnAgent(context.Background(), "nonexistent", "")
+	err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -190,7 +225,7 @@ func TestSpawnCommand(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnCommand(context.Background(), "htop", ""); err != nil {
+	if err := mgr.SpawnCommand(context.Background(), testController, control.RoleWorker, "htop", ""); err != nil {
 		t.Fatalf("SpawnCommand failed: %v", err)
 	}
 
@@ -207,7 +242,7 @@ func TestSpawnAgentWindow(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "/tmp/project"); err != nil {
+	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project"); err != nil {
 		t.Fatalf("SpawnAgentWindow failed: %v", err)
 	}
 
@@ -230,7 +265,7 @@ func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
 	mock := &testMock{windowOutput: "casts-review"}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "/tmp/project"); err != nil {
+	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project"); err != nil {
 		t.Fatalf("SpawnAgentWindow failed: %v", err)
 	}
 
@@ -250,7 +285,7 @@ func TestKillPane(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), "claude", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "")
 	panes := mgr.ListPanes()
 	if len(panes) != 1 {
 		t.Fatalf("expected 1 pane, got %d", len(panes))
@@ -270,7 +305,7 @@ func TestKillWindow(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "")
+	_ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "")
 	if mgr.PaneCount() != 1 {
 		t.Fatalf("expected 1 pane, got %d", mgr.PaneCount())
 	}
@@ -287,7 +322,7 @@ func TestRenameWindow(t *testing.T) {
 	mock := &testMock{windowOutput: "@1\t1\tcasts-review"}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgentWindow(context.Background(), "casts-review", "claude", "")
+	_ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "")
 	mock.listOutput = "1\thammerbound\t%1\t0\tpi\t/tmp\t1\t123"
 	if err := mgr.RenameWindow(context.Background(), "casts-review", "hammerbound"); err != nil {
 		t.Fatalf("RenameWindow failed: %v", err)
@@ -306,8 +341,8 @@ func TestKillAll(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), "claude", "")
-	_ = mgr.SpawnAgent(context.Background(), "codex", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", "")
 	if mgr.PaneCount() != 2 {
 		t.Fatalf("expected 2 panes, got %d", mgr.PaneCount())
 	}
@@ -364,6 +399,25 @@ func TestTmuxLayout(t *testing.T) {
 	}
 }
 
+func TestResolveRequesterFromProcessAncestry(t *testing.T) {
+	mock := &testMock{listOutput: "1\tjournalia\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0"}
+	mgr := newTestManager(mock)
+	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 200 && ancestor == 100 }
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	req, err := mgr.ResolveRequester(context.Background(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.PaneID != "%0" || req.Role != control.RoleController {
+		t.Fatalf("unexpected requester: %+v", req)
+	}
+	if _, err := mgr.ResolveRequester(context.Background(), 201); err == nil {
+		t.Fatal("expected unknown process to be rejected")
+	}
+}
+
 func TestAdoptOrphans(t *testing.T) {
 	mock := &testMock{
 		listOutput: "%0\t0\tclaude\t/home/user/myproject\t1\t1234\n%1\t1\tcodex\t/home/user/backend\t0\t5678",
@@ -404,7 +458,7 @@ func TestSpawnAgentFolderLabel(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), "claude", "/home/user/myproject"); err != nil {
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/home/user/myproject"); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 
@@ -441,9 +495,9 @@ func TestPaletteColors(t *testing.T) {
 	mgr := newTestManager(mock)
 
 	// Spawn 3 panes — each should get a different color.
-	_ = mgr.SpawnAgent(context.Background(), "claude", "/proj/a")
-	_ = mgr.SpawnAgent(context.Background(), "claude", "/proj/b")
-	_ = mgr.SpawnAgent(context.Background(), "claude", "/proj/c")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/a")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/b")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/c")
 
 	// Each pane gets its own set-option calls. Collect all @agent_color values.
 	colors := map[string]bool{}
@@ -463,9 +517,9 @@ func TestInstanceCounters(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), "claude", "")
-	_ = mgr.SpawnAgent(context.Background(), "claude", "")
-	_ = mgr.SpawnAgent(context.Background(), "claude", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "")
+	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "")
 
 	panes := mgr.ListPanes()
 	if len(panes) != 3 {

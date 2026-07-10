@@ -1,6 +1,9 @@
 [session]
 name = "agency"
 default_layout = "tiled"         # tiled | columns | rows | main-vertical
+max_panes = 32
+max_managers = 12
+max_workers_per_manager = 8
 
 [theme]
 active_border = "#89b4fa"        # Catppuccin blue

@@ -6,18 +6,22 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/lemonsaurus/agency/internal/control"
 )
 
 type spawnRecord struct {
 	window string
 	name   string
 	dir    string
+	role   control.Role
 }
 
 type commandRecord struct {
 	window  string
 	command string
 	dir     string
+	role    control.Role
 }
 
 type renameRecord struct {
@@ -36,37 +40,45 @@ type mockHandler struct {
 	relayouts     int
 	broadcastKeys []string
 	failNext      bool
+	requester     control.Requester
 }
 
-func (m *mockHandler) SpawnAgent(_ context.Context, name, dir string) error {
+func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Requester, error) {
+	if m.requester.Role != "" {
+		return m.requester, nil
+	}
+	return control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0"}, nil
+}
+
+func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failNext {
 		m.failNext = false
 		return fmt.Errorf("spawn failed")
 	}
-	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir})
+	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role})
 	return nil
 }
 
-func (m *mockHandler) SpawnAgentWindow(_ context.Context, windowName, name, dir string) error {
+func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir})
+	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role})
 	return nil
 }
 
-func (m *mockHandler) SpawnCommand(_ context.Context, command, dir string) error {
+func (m *mockHandler) SpawnCommand(_ context.Context, _ control.Requester, role control.Role, command, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.commands = append(m.commands, commandRecord{command: command, dir: dir})
+	m.commands = append(m.commands, commandRecord{command: command, dir: dir, role: role})
 	return nil
 }
 
-func (m *mockHandler) SpawnCommandWindow(_ context.Context, windowName, command, dir string) error {
+func (m *mockHandler) SpawnCommandWindow(_ context.Context, _ control.Requester, role control.Role, windowName, command, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir})
+	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir, role: role})
 	return nil
 }
 
@@ -227,6 +239,64 @@ func TestServerSpawnWindow(t *testing.T) {
 	}
 }
 
+func TestSpawnRoleTransitions(t *testing.T) {
+	tests := []struct {
+		name      string
+		requester control.Requester
+		message   string
+		wantRole  control.Role
+		wantError bool
+	}{
+		{
+			name:      "controller defaults to manager",
+			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
+			message:   "spawn:pi@/tmp",
+			wantRole:  control.RoleManager,
+		},
+		{
+			name:      "controller requests worker",
+			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker"}`,
+			wantRole:  control.RoleWorker,
+		},
+		{
+			name:      "manager defaults to worker",
+			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
+			message:   "spawn:pi@/tmp",
+			wantRole:  control.RoleWorker,
+		},
+		{
+			name:      "manager cannot create manager",
+			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager"}`,
+			wantError: true,
+		},
+		{
+			name:      "worker cannot spawn",
+			requester: control.Requester{PaneID: "%2", Role: control.RoleWorker},
+			message:   "spawn:pi@/tmp",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &mockHandler{requester: tt.requester}
+			srv := NewServer("", h)
+			_, err := srv.dispatch(tt.message, 123)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tt.wantError)
+			}
+			if tt.wantError {
+				return
+			}
+			if len(h.spawns) != 1 || h.spawns[0].role != tt.wantRole {
+				t.Fatalf("spawns = %+v, want role %s", h.spawns, tt.wantRole)
+			}
+		})
+	}
+}
+
 func TestSplitDirSuffix(t *testing.T) {
 	tests := []struct {
 		input     string
@@ -269,14 +339,14 @@ func TestServerKillPane(t *testing.T) {
 }
 
 func TestWorkerRequesterCanOnlyKillOwnPane(t *testing.T) {
-	req := requesterFromEnv([]byte("AGENCY_ROLE=worker\x00AGENCY_PANE_ID=%7\x00"))
-	if !req.canKillPane("%7") {
+	req := control.Requester{Role: control.RoleWorker, PaneID: "%7"}
+	if !req.CanKillPane("%7") {
 		t.Fatal("worker should be allowed to kill its own pane")
 	}
-	if req.canKillPane("%8") {
+	if req.CanKillPane("%8") {
 		t.Fatal("worker should not be allowed to kill another pane")
 	}
-	if req.canKillWindow() {
+	if req.CanKillWindow() {
 		t.Fatal("worker should not be allowed to kill windows")
 	}
 }

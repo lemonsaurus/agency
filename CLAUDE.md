@@ -9,7 +9,7 @@ A terminal-native TUI app (Go) that manages multiple AI coding agent sessions in
 - **Everything visible at once.** No tabs, no switching. Every agent pane is on screen in a tiled grid.
 - **Terminal-native.** No web UI, no Electron. Lives in tmux, operated from the keyboard.
 - **Agent-agnostic.** Supports Claude Code, Codex CLI, Gemini CLI, and any arbitrary command.
-- **Agents can self-spawn.** An agent running inside a pane can request new panes via a unix socket.
+- **Delegation is bounded.** Controllers create managers, managers create workers, workers stop.
 - **Keep it simple.** No animations, no over-engineering. Just fast, reliable pane management.
 
 ## Architecture
@@ -87,6 +87,9 @@ agency/
 name = "agency"
 default_layout = "tiled"         # tiled | columns | rows | main-vertical
 max_rows = 3                     # max panes per column (ultrawide-friendly)
+max_panes = 32
+max_managers = 12
+max_workers_per_manager = 8
 
 [theme]
 active_border = "#89b4fa"
@@ -199,7 +202,11 @@ Prefix + d         → Detach (session keeps running)
 
 Selecting "Custom command..." prompts for a command string. The palette calls `agency spawn <agent>` which handles the tmux pane creation.
 
-## How agent self-spawning works
+## How delegation works
+
+The initial pane is the sole `controller`. Controllers create `manager` or `worker` panes. Managers create workers. Workers cannot spawn. Agency resolves each socket caller from its peer PID and tmux pane ancestry, then applies the transition before creating anything.
+
+Role, parent, and root IDs live in tmux pane options so restart adoption keeps the control tree. Session caps bound managers, workers per manager, and total panes.
 
 When agency launches, it starts a unix socket server at `/tmp/agency-{session}.sock`. It also sets the env var `AGENCY_SOCKET` in every spawned pane so agents know where to reach it.
 
@@ -213,9 +220,9 @@ The `scripts/agency-spawn` script is a tiny bash wrapper:
 echo "spawn:${1}" | socat - UNIX-CONNECT:"$AGENCY_SOCKET"
 ```
 
-An agent (like Claude Code) can be instructed to run `agency-spawn claude` to request a new sibling pane. The socket server receives the message, spawns the pane, and re-tiles.
+A manager can run `agency-spawn pi` to request a worker. The socket server rejects the same request from a worker.
 
-The protocol is dead simple — newline-delimited messages:
+The protocol is newline-delimited:
 - `spawn:claude` → spawn a claude pane
 - `spawn:codex` → spawn a codex pane
 - `spawn:cmd:aider --yes` → spawn arbitrary command

@@ -10,14 +10,17 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/lemonsaurus/agency/internal/control"
 )
 
 // Handler processes IPC commands from the socket.
 type Handler interface {
-	SpawnAgent(ctx context.Context, name, dir string) error
-	SpawnAgentWindow(ctx context.Context, windowName, name, dir string) error
-	SpawnCommand(ctx context.Context, command, dir string) error
-	SpawnCommandWindow(ctx context.Context, windowName, command, dir string) error
+	ResolveRequester(ctx context.Context, pid int) (control.Requester, error)
+	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir string) error
+	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir string) error
+	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir string) error
+	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir string) error
 	KillPane(ctx context.Context, paneID string) error
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
@@ -26,29 +29,17 @@ type Handler interface {
 	BroadcastKeys(ctx context.Context, keys string) error
 }
 
-type spawnWindowPayload struct {
-	Window  string `json:"window"`
+type spawnPayload struct {
+	Window  string `json:"window,omitempty"`
 	Agent   string `json:"agent,omitempty"`
 	Command string `json:"command,omitempty"`
 	Dir     string `json:"dir,omitempty"`
+	Role    string `json:"role,omitempty"`
 }
 
 type renameWindowPayload struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
-}
-
-type requester struct {
-	Role   string
-	PaneID string
-}
-
-func (r requester) canKillPane(paneID string) bool {
-	return r.Role != "worker" || (r.PaneID != "" && r.PaneID == paneID)
-}
-
-func (r requester) canKillWindow() bool {
-	return r.Role != "worker"
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -79,7 +70,6 @@ func (s *Server) Path() string {
 
 // Start begins listening on the socket. Call Close() to stop.
 func (s *Server) Start() error {
-	// Remove stale socket file if present.
 	_ = os.Remove(s.path)
 
 	listener, err := net.Listen("unix", s.path)
@@ -126,23 +116,53 @@ func (s *Server) handleConn(conn net.Conn) {
 	if line == "" {
 		return
 	}
-	if err := s.dispatch(line, requesterForConn(conn)); err != nil {
+	response, err := s.dispatch(line, peerPIDForConn(conn))
+	if err != nil {
 		log.Printf("ipc: dispatch %q: %v", line, err)
 		fmt.Fprintf(conn, "error: %v\n", err)
 		return
 	}
-	fmt.Fprintf(conn, "ok\n")
+	if response == "" {
+		response = "ok"
+	}
+	fmt.Fprintln(conn, response)
 }
 
-func (s *Server) dispatch(line string, requester requester) error {
-	// Handle commands without arguments.
+func (s *Server) requester(pid int) (control.Requester, error) {
+	if pid <= 0 {
+		return control.Requester{}, fmt.Errorf("cannot identify agency requester")
+	}
+	return s.handler.ResolveRequester(s.ctx, pid)
+}
+
+func requestedRole(requester control.Requester, value string) (control.Role, error) {
+	var role control.Role
+	var err error
+	if value != "" {
+		role, err = control.ParseRole(value)
+		if err != nil {
+			return "", err
+		}
+	}
+	return requester.ChildRole(role)
+}
+
+func (s *Server) dispatch(line string, pid int) (string, error) {
 	if line == "relayout" {
-		return s.handler.Relayout(s.ctx)
+		return "", s.handler.Relayout(s.ctx)
+	}
+	if line == "whoami" {
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(requester)
+		return string(data), nil
 	}
 
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) < 2 {
-		return fmt.Errorf("invalid message: %q", line)
+		return "", fmt.Errorf("invalid message: %q", line)
 	}
 
 	cmd := parts[0]
@@ -150,77 +170,87 @@ func (s *Server) dispatch(line string, requester requester) error {
 
 	switch cmd {
 	case "spawn":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		role, err := requestedRole(requester, "")
+		if err != nil {
+			return "", err
+		}
 		if strings.HasPrefix(arg, "cmd:") {
 			command, dir := splitDirSuffix(strings.TrimPrefix(arg, "cmd:"))
-			return s.handler.SpawnCommand(s.ctx, command, dir)
+			return "", s.handler.SpawnCommand(s.ctx, requester, role, command, dir)
 		}
 		name, dir := splitDirSuffix(arg)
-		return s.handler.SpawnAgent(s.ctx, name, dir)
-	case "spawn-window":
-		var payload spawnWindowPayload
-		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
-			return fmt.Errorf("invalid spawn-window payload: %w", err)
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir)
+	case "spawn-role", "spawn-window":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
 		}
-		if payload.Window == "" {
-			return fmt.Errorf("window name is required")
+		var payload spawnPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid %s payload: %w", cmd, err)
+		}
+		if cmd == "spawn-window" && payload.Window == "" {
+			return "", fmt.Errorf("window name is required")
+		}
+		role, err := requestedRole(requester, payload.Role)
+		if err != nil {
+			return "", err
 		}
 		if payload.Command != "" {
-			return s.handler.SpawnCommandWindow(s.ctx, payload.Window, payload.Command, payload.Dir)
+			if payload.Window != "" {
+				return "", s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir)
+			}
+			return "", s.handler.SpawnCommand(s.ctx, requester, role, payload.Command, payload.Dir)
 		}
 		if payload.Agent == "" {
-			return fmt.Errorf("agent or command is required")
+			return "", fmt.Errorf("agent or command is required")
 		}
-		return s.handler.SpawnAgentWindow(s.ctx, payload.Window, payload.Agent, payload.Dir)
+		if payload.Window != "" {
+			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir)
+		}
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir)
 	case "kill":
-		if !requester.canKillPane(arg) {
-			return fmt.Errorf("worker panes may only kill their own pane")
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
 		}
-		return s.handler.KillPane(s.ctx, arg)
+		if !requester.CanKillPane(arg) {
+			return "", fmt.Errorf("worker panes may only kill their own pane")
+		}
+		return "", s.handler.KillPane(s.ctx, arg)
 	case "kill-window":
-		if !requester.canKillWindow() {
-			return fmt.Errorf("worker panes cannot kill windows")
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
 		}
-		return s.handler.KillWindow(s.ctx, arg)
+		if !requester.CanKillWindow() {
+			return "", fmt.Errorf("worker panes cannot kill windows")
+		}
+		return "", s.handler.KillWindow(s.ctx, arg)
 	case "rename-window":
 		var payload renameWindowPayload
 		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
-			return fmt.Errorf("invalid rename-window payload: %w", err)
+			return "", fmt.Errorf("invalid rename-window payload: %w", err)
 		}
 		if payload.Target == "" || payload.Name == "" {
-			return fmt.Errorf("target and name are required")
+			return "", fmt.Errorf("target and name are required")
 		}
-		return s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
+		return "", s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
 	case "layout":
-		return s.handler.SetLayout(s.ctx, arg)
+		return "", s.handler.SetLayout(s.ctx, arg)
 	case "broadcast-keys":
-		return s.handler.BroadcastKeys(s.ctx, arg)
+		return "", s.handler.BroadcastKeys(s.ctx, arg)
 	default:
-		return fmt.Errorf("unknown command: %q", cmd)
+		return "", fmt.Errorf("unknown command: %q", cmd)
 	}
-}
-
-func requesterFromEnv(environ []byte) requester {
-	req := requester{Role: "manager"}
-	for _, entry := range strings.Split(string(environ), "\x00") {
-		key, value, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
-		}
-		switch key {
-		case "AGENCY_ROLE":
-			if value != "" {
-				req.Role = value
-			}
-		case "AGENCY_PANE_ID":
-			req.PaneID = value
-		}
-	}
-	return req
 }
 
 // splitDirSuffix splits a string on "@/" to extract an optional absolute
 // directory path suffix. For example "claude@/home/user" returns ("claude", "/home/user").
-// If no "@/" is found, dir is empty.
 func splitDirSuffix(s string) (value, dir string) {
 	idx := strings.Index(s, "@/")
 	if idx < 0 {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
 	"github.com/lemonsaurus/agency/internal/palette"
 	"github.com/lemonsaurus/agency/internal/session"
@@ -31,6 +32,8 @@ func main() {
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
 		runSpawnDialog(os.Args[2:])
+	case "whoami":
+		runWhoAmI()
 	case "send":
 		runSend(os.Args[2:])
 	case "capture":
@@ -76,7 +79,9 @@ Usage:
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn --window <name> ...   Spawn into a named tmux window
+  agency spawn --role <role> ...     Request a manager or worker pane
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
+  agency whoami                     Print the current pane's role
   agency send <pane-id> <text>      Send text to a pane and press Enter
   agency capture <pane-id> [lines]  Capture pane output
   agency kill <pane-id>             Kill a specific pane
@@ -248,18 +253,36 @@ func runSpawn(args []string) {
 	sockPath := socketPath(cfg.Session.Name)
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] <agent> [dir] or agency spawn [--window name] --cmd \"command\" [dir]")
+		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] <agent|--cmd> [dir]")
 		os.Exit(1)
 	}
 
 	windowName := ""
-	if args[0] == "--window" {
-		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: agency spawn --window <name> <agent|--cmd> [dir]")
+	role := ""
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") && args[0] != "--cmd" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Error: spawn option needs a value")
 			os.Exit(1)
 		}
-		windowName = args[1]
+		switch args[0] {
+		case "--window":
+			windowName = args[1]
+		case "--role":
+			parsed, err := control.ParseRole(args[1])
+			if err != nil || parsed == control.RoleController {
+				fmt.Fprintln(os.Stderr, "Error: role must be manager or worker")
+				os.Exit(1)
+			}
+			role = string(parsed)
+		default:
+			fmt.Fprintf(os.Stderr, "Error: unknown spawn option %s\n", args[0])
+			os.Exit(1)
+		}
 		args = args[2:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: agent or command is required")
+		os.Exit(1)
 	}
 
 	var msgs []string
@@ -269,7 +292,7 @@ func runSpawn(args []string) {
 			os.Exit(1)
 		}
 		command, dir := extractDirArg(args[1:])
-		msgs = []string{spawnCommandMessage(windowName, strings.Join(command, " "), dir)}
+		msgs = []string{spawnCommandMessage(windowName, role, strings.Join(command, " "), dir)}
 	} else {
 		name := args[0]
 		dirs := args[1:]
@@ -281,7 +304,7 @@ func runSpawn(args []string) {
 			if !ok {
 				continue
 			}
-			msgs = append(msgs, spawnAgentMessage(windowName, name, abs))
+			msgs = append(msgs, spawnAgentMessage(windowName, role, name, abs))
 		}
 		if len(msgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Error: no valid directories to spawn in")
@@ -300,6 +323,20 @@ func runSpawn(args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+func runWhoAmI() {
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(resp, "error:") {
+		fmt.Fprintln(os.Stderr, resp)
+		os.Exit(1)
+	}
+	fmt.Println(resp)
 }
 
 func runSpawnDialog(args []string) {
@@ -322,11 +359,12 @@ func runSpawnDialog(args []string) {
 	}
 }
 
-type spawnWindowPayload struct {
-	Window  string `json:"window"`
+type spawnPayload struct {
+	Window  string `json:"window,omitempty"`
 	Agent   string `json:"agent,omitempty"`
 	Command string `json:"command,omitempty"`
 	Dir     string `json:"dir,omitempty"`
+	Role    string `json:"role,omitempty"`
 }
 
 type renameWindowPayload struct {
@@ -334,19 +372,25 @@ type renameWindowPayload struct {
 	Name   string `json:"name"`
 }
 
-func spawnAgentMessage(windowName, name, dir string) string {
-	if windowName == "" {
+func spawnAgentMessage(windowName, role, name, dir string) string {
+	if windowName == "" && role == "" {
 		return "spawn:" + name + dirSuffix(dir)
 	}
-	payload, _ := json.Marshal(spawnWindowPayload{Window: windowName, Agent: name, Dir: dir})
+	payload, _ := json.Marshal(spawnPayload{Window: windowName, Agent: name, Dir: dir, Role: role})
+	if windowName == "" {
+		return "spawn-role:" + string(payload)
+	}
 	return "spawn-window:" + string(payload)
 }
 
-func spawnCommandMessage(windowName, command, dir string) string {
-	if windowName == "" {
+func spawnCommandMessage(windowName, role, command, dir string) string {
+	if windowName == "" && role == "" {
 		return "spawn:cmd:" + command + dirSuffix(dir)
 	}
-	payload, _ := json.Marshal(spawnWindowPayload{Window: windowName, Command: command, Dir: dir})
+	payload, _ := json.Marshal(spawnPayload{Window: windowName, Command: command, Dir: dir, Role: role})
+	if windowName == "" {
+		return "spawn-role:" + string(payload)
+	}
 	return "spawn-window:" + string(payload)
 }
 

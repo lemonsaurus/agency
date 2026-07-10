@@ -58,6 +58,9 @@ type PaneInfo struct {
 	CWD         string `json:"cwd"`         // current working directory
 	Active      bool   `json:"active"`      // whether this pane is focused
 	PID         int    `json:"pid"`         // pane process PID
+	Role        string `json:"role,omitempty"`
+	ParentID    string `json:"parentId,omitempty"`
+	RootID      string `json:"rootId,omitempty"`
 }
 
 type windowRef struct {
@@ -253,7 +256,7 @@ func (c *Client) windowTarget(windowName string) string {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}"
 	out, err := c.Cmd.Run(ctx,
 		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
@@ -266,7 +269,7 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 
 	var panes []PaneInfo
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 8)
+		parts := strings.Split(line, "\t")
 		if len(parts) == 6 {
 			idx, _ := strconv.Atoi(parts[1])
 			pid, _ := strconv.Atoi(parts[5])
@@ -286,7 +289,7 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		windowIdx, _ := strconv.Atoi(parts[0])
 		idx, _ := strconv.Atoi(parts[3])
 		pid, _ := strconv.Atoi(parts[7])
-		panes = append(panes, PaneInfo{
+		pane := PaneInfo{
 			ID:          parts[2],
 			Index:       idx,
 			WindowIndex: windowIdx,
@@ -295,7 +298,13 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 			CWD:         parts[5],
 			Active:      parts[6] == "1",
 			PID:         pid,
-		})
+		}
+		if len(parts) >= 11 {
+			pane.Role = parts[8]
+			pane.ParentID = parts[9]
+			pane.RootID = parts[10]
+		}
+		panes = append(panes, pane)
 	}
 	return panes, nil
 }

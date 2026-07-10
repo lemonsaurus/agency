@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/layout"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
@@ -38,6 +40,9 @@ type TrackedPane struct {
 	AgentName  string // display name like "🔒 claudejail@myproject"
 	Command    string
 	Status     string
+	Role       control.Role
+	ParentID   string
+	RootID     string
 }
 
 // Manager tracks panes, handles spawn/kill, and satisfies ipc.Handler.
@@ -48,55 +53,64 @@ type Manager struct {
 	cfg      *config.Config
 	poller   *status.Poller
 
-	panes         map[string]*TrackedPane // keyed by pane ID
-	counters      map[string]int          // instance counters per agent type (fallback when no dir)
-	colorIndex    int                     // cycles through paneColors
-	currentLayout string                  // last applied layout name (for relayout)
+	panes          map[string]*TrackedPane // keyed by pane ID
+	counters       map[string]int          // instance counters per agent type (fallback when no dir)
+	colorIndex     int                     // cycles through paneColors
+	currentLayout  string                  // last applied layout name (for relayout)
+	processOwnedBy func(pid, ancestor int) bool
 }
 
 // NewManager creates a session manager.
 func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.Config, poller *status.Poller) *Manager {
 	return &Manager{
-		tmux:     tmuxClient,
-		registry: registry,
-		cfg:      cfg,
-		poller:   poller,
-		panes:    make(map[string]*TrackedPane),
-		counters: make(map[string]int),
+		tmux:           tmuxClient,
+		registry:       registry,
+		cfg:            cfg,
+		poller:         poller,
+		panes:          make(map[string]*TrackedPane),
+		counters:       make(map[string]int),
+		processOwnedBy: processDescendsFrom,
 	}
 }
 
 // SpawnAgent spawns a new pane running the named agent.
-func (m *Manager) SpawnAgent(ctx context.Context, name, dir string) error {
+func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, "", name, agent.Command, dir)
+	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir)
 }
 
-func (m *Manager) SpawnAgentWindow(ctx context.Context, windowName, name, dir string) error {
+func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, windowName, name, agent.Command, dir)
+	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir)
 }
 
 // SpawnCommand spawns a pane running an arbitrary command.
-func (m *Manager) SpawnCommand(ctx context.Context, command, dir string) error {
-	return m.spawnPane(ctx, "", "", command, dir)
+func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir string) error {
+	return m.spawnPane(ctx, requester, role, "", "", command, dir)
 }
 
-func (m *Manager) SpawnCommandWindow(ctx context.Context, windowName, command, dir string) error {
-	return m.spawnPane(ctx, windowName, "", command, dir)
+func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir string) error {
+	return m.spawnPane(ctx, requester, role, windowName, "", command, dir)
 }
 
-func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command, dir string) error {
+func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	spawnCommand := workerCommand(command)
+	if err := m.checkSpawnLimit(requester, role); err != nil {
+		return err
+	}
+	rootID := requester.RootID
+	if rootID == "" {
+		rootID = requester.PaneID
+	}
+	spawnCommand := roleCommand(command, role, requester.PaneID, rootID)
 
 	var paneID string
 	var err error
@@ -151,8 +165,12 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 		AgentName:  displayName,
 		Command:    command,
 		Status:     status.StatusRunning,
+		Role:       role,
+		ParentID:   requester.PaneID,
+		RootID:     rootID,
 	}
 	m.panes[paneID] = tracked
+	m.stylePaneControl(ctx, tracked)
 
 	if m.poller != nil {
 		m.poller.Track(paneID, agentType)
@@ -165,8 +183,46 @@ func (m *Manager) spawnPane(ctx context.Context, windowName, agentType, command,
 	return nil
 }
 
-func workerCommand(command string) string {
-	return `AGENCY_ROLE=worker AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" ` + command
+func roleCommand(command string, role control.Role, parentID, rootID string) string {
+	return fmt.Sprintf(
+		`AGENCY_ROLE=%s AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%q %s`,
+		role, parentID, rootID, command,
+	)
+}
+
+func (m *Manager) checkSpawnLimit(requester control.Requester, role control.Role) error {
+	if max := m.cfg.Session.MaxPanes; max > 0 && len(m.panes) >= max {
+		return fmt.Errorf("agency pane limit reached (%d)", max)
+	}
+	if role == control.RoleManager {
+		count := 0
+		for _, pane := range m.panes {
+			if pane.Role == control.RoleManager {
+				count++
+			}
+		}
+		if max := m.cfg.Session.MaxManagers; max > 0 && count >= max {
+			return fmt.Errorf("agency manager limit reached (%d)", max)
+		}
+	}
+	if role == control.RoleWorker {
+		count := 0
+		for _, pane := range m.panes {
+			if pane.Role == control.RoleWorker && pane.ParentID == requester.PaneID {
+				count++
+			}
+		}
+		if max := m.cfg.Session.MaxWorkersPerManager; max > 0 && count >= max {
+			return fmt.Errorf("worker limit reached for %s (%d)", requester.PaneID, max)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) stylePaneControl(ctx context.Context, pane *TrackedPane) {
+	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_role", string(pane.Role))
+	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_parent", pane.ParentID)
+	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_root", pane.RootID)
 }
 
 // stylePaneLabel stores the display label and color as pane user options.
@@ -190,6 +246,27 @@ func folderLabel(dir string) string {
 		return ""
 	}
 	return base
+}
+
+func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Requester, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return control.Requester{}, err
+	}
+	for _, pane := range panes {
+		if !m.processOwnedBy(pid, pane.PID) {
+			continue
+		}
+		tracked := m.panes[pane.ID]
+		if tracked == nil || tracked.Role == "" {
+			return control.Requester{}, fmt.Errorf("pane %s has no agency role", pane.ID)
+		}
+		return control.Requester{PaneID: pane.ID, Role: tracked.Role, RootID: tracked.RootID}, nil
+	}
+	return control.Requester{}, fmt.Errorf("requester process %d does not belong to an agency pane", pid)
 }
 
 // KillPane kills a specific pane.
@@ -350,6 +427,23 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing panes for adoption: %w", err)
 	}
+	sort.Slice(panes, func(i, j int) bool {
+		if panes[i].WindowIndex != panes[j].WindowIndex {
+			return panes[i].WindowIndex < panes[j].WindowIndex
+		}
+		return panes[i].Index < panes[j].Index
+	})
+
+	controllerID := ""
+	for _, pane := range panes {
+		if pane.Role == string(control.RoleController) {
+			controllerID = pane.ID
+			break
+		}
+	}
+	if controllerID == "" && len(panes) > 0 {
+		controllerID = panes[0].ID
+	}
 
 	for _, pane := range panes {
 		if _, exists := m.panes[pane.ID]; exists {
@@ -382,6 +476,28 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 
 		m.stylePaneLabel(ctx, pane.ID, displayName, color)
 
+		role, err := control.ParseRole(pane.Role)
+		if err != nil {
+			if pane.ID == controllerID {
+				role = control.RoleController
+			} else {
+				role = control.RoleManager
+			}
+		}
+		parentID := pane.ParentID
+		rootID := pane.RootID
+		if role == control.RoleController {
+			parentID = ""
+			rootID = pane.ID
+		} else {
+			if parentID == "" {
+				parentID = controllerID
+			}
+			if rootID == "" {
+				rootID = controllerID
+			}
+		}
+
 		tracked := &TrackedPane{
 			PaneID:     pane.ID,
 			WindowName: pane.WindowName,
@@ -389,8 +505,12 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			AgentName:  displayName,
 			Command:    pane.Command,
 			Status:     status.StatusIdle,
+			Role:       role,
+			ParentID:   parentID,
+			RootID:     rootID,
 		}
 		m.panes[pane.ID] = tracked
+		m.stylePaneControl(ctx, tracked)
 
 		if m.poller != nil {
 			m.poller.Track(pane.ID, agentType)

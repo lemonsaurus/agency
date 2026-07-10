@@ -3,21 +3,18 @@
 package ipc
 
 import (
-	"fmt"
 	"net"
-	"os"
 	"syscall"
 )
 
-func requesterForConn(conn net.Conn) requester {
-	fallback := requester{Role: "manager"}
+func peerPIDForConn(conn net.Conn) int {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
-		return fallback
+		return 0
 	}
 	raw, err := unixConn.SyscallConn()
 	if err != nil {
-		return fallback
+		return 0
 	}
 	var pid int
 	if err := raw.Control(func(fd uintptr) {
@@ -25,12 +22,8 @@ func requesterForConn(conn net.Conn) requester {
 		if err == nil {
 			pid = int(cred.Pid)
 		}
-	}); err != nil || pid == 0 {
-		return fallback
+	}); err != nil {
+		return 0
 	}
-	environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
-	if err != nil {
-		return fallback
-	}
-	return requesterFromEnv(environ)
+	return pid
 }
