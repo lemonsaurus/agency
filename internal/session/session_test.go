@@ -33,6 +33,11 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 	case "list-windows":
 		return m.windowOutput, nil
 	case "display-message":
+		for _, a := range args {
+			if a == "#{pid}" {
+				return "42", nil // fake tmux server PID
+			}
+		}
 		// Return fake window info for custom tiled layout.
 		return "200\t50\t" + fmt.Sprintf("%d", m.paneIDSeq+1), nil
 	case "send-keys":
@@ -453,6 +458,23 @@ func TestPruneDead(t *testing.T) {
 	}
 	if len(removed) != 0 {
 		t.Fatalf("expected no panes pruned, got %v", removed)
+	}
+}
+
+func TestResolveRequesterFromTmuxServer(t *testing.T) {
+	mock := &testMock{listOutput: "1\tjournalia\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0"}
+	mgr := newTestManager(mock)
+	// pid 300 descends from the tmux server (42), not from any pane.
+	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 300 && ancestor == 42 }
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	req, err := mgr.ResolveRequester(context.Background(), 300)
+	if err != nil {
+		t.Fatalf("keybinding process should resolve as controller: %v", err)
+	}
+	if req.PaneID != "%0" || req.Role != control.RoleController {
+		t.Fatalf("unexpected requester: %+v", req)
 	}
 }
 

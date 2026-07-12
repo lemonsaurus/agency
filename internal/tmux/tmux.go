@@ -145,6 +145,15 @@ func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (stri
 	return strings.TrimSpace(out), err
 }
 
+// ServerPID returns the tmux server's process ID.
+func (c *Client) ServerPID(ctx context.Context) (int, error) {
+	out, err := c.Cmd.Run(ctx, "display-message", "-p", "#{pid}")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(out))
+}
+
 func (c *Client) WindowExists(ctx context.Context, name string) (bool, error) {
 	windows, err := c.listWindowRefs(ctx)
 	if err != nil {
