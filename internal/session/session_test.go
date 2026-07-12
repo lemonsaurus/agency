@@ -418,6 +418,44 @@ func TestResolveRequesterFromProcessAncestry(t *testing.T) {
 	}
 }
 
+func TestPruneDead(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "claude", ""); err != nil {
+		t.Fatalf("SpawnAgent failed: %v", err)
+	}
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "codex", ""); err != nil {
+		t.Fatalf("SpawnAgent failed: %v", err)
+	}
+	if mgr.PaneCount() != 2 {
+		t.Fatalf("expected 2 panes, got %d", mgr.PaneCount())
+	}
+
+	// Only %1 is still alive in tmux; %2 died outside agency.
+	mock.listOutput = "1\ttest\t%1\t0\tclaude\t/tmp\t1\t123\tworker\t%0\t%0"
+
+	removed, err := mgr.PruneDead(context.Background())
+	if err != nil {
+		t.Fatalf("PruneDead failed: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "%2" {
+		t.Fatalf("expected [%%2] pruned, got %v", removed)
+	}
+	if mgr.PaneCount() != 1 {
+		t.Fatalf("expected 1 pane after prune, got %d", mgr.PaneCount())
+	}
+
+	// Pruning again is a no-op.
+	removed, err = mgr.PruneDead(context.Background())
+	if err != nil {
+		t.Fatalf("PruneDead failed: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("expected no panes pruned, got %v", removed)
+	}
+}
+
 func TestAdoptOrphans(t *testing.T) {
 	mock := &testMock{
 		listOutput: "%0\t0\tclaude\t/home/user/myproject\t1\t1234\n%1\t1\tcodex\t/home/user/backend\t0\t5678",

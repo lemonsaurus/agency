@@ -339,6 +339,35 @@ func (m *Manager) KillAll(ctx context.Context) error {
 	return nil
 }
 
+// PruneDead removes tracked panes that no longer exist in tmux, so the
+// poller stops chasing ghosts and spawn limits stay accurate. Returns the
+// pruned pane IDs.
+func (m *Manager) PruneDead(ctx context.Context) ([]string, error) {
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	alive := make(map[string]bool, len(panes))
+	for _, pane := range panes {
+		alive[pane.ID] = true
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var removed []string
+	for id := range m.panes {
+		if alive[id] {
+			continue
+		}
+		if m.poller != nil {
+			m.poller.Untrack(id)
+		}
+		delete(m.panes, id)
+		removed = append(removed, id)
+	}
+	return removed, nil
+}
+
 // ListPanes returns all tracked panes.
 func (m *Manager) ListPanes() []TrackedPane {
 	m.mu.Lock()

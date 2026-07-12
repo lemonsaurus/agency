@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/config"
@@ -234,6 +235,27 @@ func runLaunch() {
 
 	// Start status poller.
 	go poller.Run(ctx)
+
+	// Prune panes that die outside agency (crashes, /quit) so the poller
+	// stops polling them and spawn limits stay accurate.
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				removed, err := mgr.PruneDead(ctx)
+				if err != nil {
+					continue
+				}
+				for _, id := range removed {
+					log.Printf("pruned dead pane %s", id)
+				}
+			}
+		}
+	}()
 
 	// Attach to tmux (this blocks until detach or session end).
 	log.Printf("Attaching to tmux session %q...", sessionName)
