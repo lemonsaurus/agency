@@ -20,7 +20,10 @@ func clipboardCommand() string {
 	if runtime.GOOS == "darwin" {
 		return "pbcopy"
 	}
-	// Linux: prefer xclip, fall back to xsel.
+	// Linux: prefer wl-copy on Wayland, then xclip, then xsel.
+	if _, err := exec.LookPath("wl-copy"); err == nil {
+		return "wl-copy"
+	}
 	if _, err := exec.LookPath("xclip"); err == nil {
 		return "xclip -selection clipboard"
 	}
