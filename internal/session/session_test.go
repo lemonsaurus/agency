@@ -478,6 +478,23 @@ func TestResolveRequesterFromTmuxServer(t *testing.T) {
 	}
 }
 
+func TestResolveRequesterFromTmuxServerWithoutControllerPane(t *testing.T) {
+	// Only a manager pane is alive; the controller pane was closed.
+	mock := &testMock{listOutput: "1\tjournalia\t%1\t0\tpi\t/tmp\t1\t100\tmanager\t%0\t%0"}
+	mgr := newTestManager(mock)
+	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 300 && ancestor == 42 }
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	req, err := mgr.ResolveRequester(context.Background(), 300)
+	if err != nil {
+		t.Fatalf("keybinding process should resolve as controller: %v", err)
+	}
+	if req.PaneID != "" || req.Role != control.RoleController {
+		t.Fatalf("unexpected requester: %+v", req)
+	}
+}
+
 func TestAdoptOrphans(t *testing.T) {
 	mock := &testMock{
 		listOutput: "%0\t0\tclaude\t/home/user/myproject\t1\t1234\n%1\t1\tcodex\t/home/user/backend\t0\t5678",

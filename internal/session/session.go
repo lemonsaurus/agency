@@ -267,7 +267,8 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 		return control.Requester{PaneID: pane.ID, Role: tracked.Role, RootID: tracked.RootID}, nil
 	}
 	// Keybindings, hooks, and popups run as children of the tmux server
-	// rather than of any pane. They act for the human: controller authority.
+	// rather than of any pane. They act for the human: controller authority,
+	// whether or not a controller pane is still alive.
 	if serverPID, err := m.tmux.ServerPID(ctx); err == nil && m.processOwnedBy(pid, serverPID) {
 		for _, pane := range panes {
 			tracked := m.panes[pane.ID]
@@ -275,6 +276,7 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 				return control.Requester{PaneID: pane.ID, Role: control.RoleController, RootID: tracked.RootID}, nil
 			}
 		}
+		return control.Requester{Role: control.RoleController}, nil
 	}
 	return control.Requester{}, fmt.Errorf("requester process %d does not belong to an agency pane", pid)
 }
