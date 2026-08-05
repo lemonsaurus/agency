@@ -114,22 +114,28 @@ func (c *Client) Attach(ctx context.Context) error {
 // SplitWindow creates a new pane by splitting, running the given command.
 // If dir is non-empty, the pane starts in that directory.
 func (c *Client) SplitWindow(ctx context.Context, command, dir string) (string, error) {
-	args := []string{"split-window", "-t", c.SessionName, "-P", "-F", "#{pane_id}"}
-	if dir != "" {
-		args = append(args, "-c", dir)
-	}
-	args = append(args, command)
-	out, err := c.Cmd.Run(ctx, args...)
-	return strings.TrimSpace(out), err
+	return c.splitWithRetile(ctx, c.SessionName, command, dir)
 }
 
 func (c *Client) SplitWindowInWindow(ctx context.Context, windowName, command, dir string) (string, error) {
-	args := []string{"split-window", "-t", c.windowTarget(windowName), "-P", "-F", "#{pane_id}"}
+	return c.splitWithRetile(ctx, c.windowTarget(windowName), command, dir)
+}
+
+// splitWithRetile splits the target's active pane. When the active pane is too
+// small tmux fails with "no space for a new pane"; retile the window and retry
+// once.
+func (c *Client) splitWithRetile(ctx context.Context, target, command, dir string) (string, error) {
+	args := []string{"split-window", "-t", target, "-P", "-F", "#{pane_id}"}
 	if dir != "" {
 		args = append(args, "-c", dir)
 	}
 	args = append(args, command)
 	out, err := c.Cmd.Run(ctx, args...)
+	if err != nil && strings.Contains(err.Error()+out, "no space for a new pane") {
+		if _, layoutErr := c.Cmd.Run(ctx, "select-layout", "-t", target, "tiled"); layoutErr == nil {
+			out, err = c.Cmd.Run(ctx, args...)
+		}
+	}
 	return strings.TrimSpace(out), err
 }
 
