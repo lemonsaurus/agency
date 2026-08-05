@@ -25,6 +25,7 @@ type Handler interface {
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
 	MovePane(ctx context.Context, paneID, windowName string) error
+	SendText(ctx context.Context, requester control.Requester, paneID, text string, enter bool) error
 	SetLayout(ctx context.Context, layout string) error
 	Relayout(ctx context.Context) error
 	BroadcastKeys(ctx context.Context, keys string) error
@@ -41,6 +42,12 @@ type spawnPayload struct {
 type renameWindowPayload struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
+}
+
+type sendPayload struct {
+	Pane  string `json:"pane"`
+	Text  string `json:"text"`
+	Enter bool   `json:"enter"`
 }
 
 type movePayload struct {
@@ -246,6 +253,19 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", fmt.Errorf("target and name are required")
 		}
 		return "", s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
+	case "send":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		var payload sendPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid send payload: %w", err)
+		}
+		if payload.Pane == "" {
+			return "", fmt.Errorf("pane is required")
+		}
+		return "", s.handler.SendText(s.ctx, requester, payload.Pane, payload.Text, payload.Enter)
 	case "move":
 		requester, err := s.requester(pid)
 		if err != nil {

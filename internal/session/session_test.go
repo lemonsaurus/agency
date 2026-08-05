@@ -342,6 +342,24 @@ func TestRenameWindow(t *testing.T) {
 	}
 }
 
+func TestSendTextAttribution(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+
+	requester := control.Requester{PaneID: "%7", Role: control.RoleWorker, RootID: "%0"}
+	if err := mgr.SendText(context.Background(), requester, "%8", "give test steps", true); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+	call := mock.findCall("send-keys")
+	if call == nil {
+		t.Fatal("expected a send-keys call")
+	}
+	text := call[len(call)-1]
+	if !strings.HasPrefix(text, "[from %7 worker] give test steps") {
+		t.Errorf("expected attribution prefix, got %q", text)
+	}
+}
+
 func TestKillAll(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)

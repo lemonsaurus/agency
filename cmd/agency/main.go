@@ -443,6 +443,12 @@ type spawnPayload struct {
 	Role    string `json:"role,omitempty"`
 }
 
+type sendPayload struct {
+	Pane  string `json:"pane"`
+	Text  string `json:"text"`
+	Enter bool   `json:"enter"`
+}
+
 type movePayload struct {
 	Pane   string `json:"pane"`
 	Window string `json:"window"`
@@ -532,10 +538,15 @@ func runSend(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: agency send [--no-enter] <pane-id> <text>")
 		os.Exit(1)
 	}
+	payload, _ := json.Marshal(sendPayload{Pane: args[0], Text: strings.Join(args[1:], " "), Enter: enter})
 	cfg := loadConfig()
-	tc := tmux.NewClient(cfg.Session.Name, "")
-	if err := tc.SendText(context.Background(), args[0], strings.Join(args[1:], " "), enter); err != nil {
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "send:"+string(payload))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
 		os.Exit(1)
 	}
 }

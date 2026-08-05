@@ -315,6 +315,18 @@ func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
 	return nil
 }
 
+// SendText delivers text to a pane, prefixed with the sender's pane id
+// and role so agents can tell relayed messages from human keystrokes.
+// The requester is resolved server-side from the caller's PID, so the
+// attribution cannot be forged or omitted.
+func (m *Manager) SendText(ctx context.Context, requester control.Requester, paneID, text string, enter bool) error {
+	label := string(requester.Role)
+	if requester.PaneID != "" {
+		label = requester.PaneID + " " + label
+	}
+	return m.tmux.SendText(ctx, paneID, fmt.Sprintf("[from %s] %s", label, text), enter)
+}
+
 // MovePane moves a pane into the named window.
 func (m *Manager) MovePane(ctx context.Context, paneID, windowName string) error {
 	m.mu.Lock()

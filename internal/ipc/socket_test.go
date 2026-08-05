@@ -30,6 +30,13 @@ type renameRecord struct {
 	name   string
 }
 
+type sendRecord struct {
+	requester control.Requester
+	pane      string
+	text      string
+	enter     bool
+}
+
 type moveRecord struct {
 	pane   string
 	window string
@@ -43,6 +50,7 @@ type mockHandler struct {
 	windowKills   []string
 	renames       []renameRecord
 	moves         []moveRecord
+	sends         []sendRecord
 	layouts       []string
 	relayouts     int
 	broadcastKeys []string
@@ -107,6 +115,13 @@ func (m *mockHandler) RenameWindow(_ context.Context, target, name string) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.renames = append(m.renames, renameRecord{target: target, name: name})
+	return nil
+}
+
+func (m *mockHandler) SendText(_ context.Context, requester control.Requester, paneID, text string, enter bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sends = append(m.sends, sendRecord{requester: requester, pane: paneID, text: text, enter: enter})
 	return nil
 }
 
@@ -402,6 +417,33 @@ func TestServerRenameWindow(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.renames) != 1 || h.renames[0].target != "pi" || h.renames[0].name != "hammerbound" {
 		t.Errorf("expected rename pi to hammerbound, got %v", h.renames)
+	}
+}
+
+func TestServerSendText(t *testing.T) {
+	h := &mockHandler{requester: control.Requester{PaneID: "%1", Role: control.RoleWorker, RootID: "%0"}}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	_, err := SendMessage(sockPath, `send:{"pane":"%8","text":"hello","enter":true}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.sends) != 1 {
+		t.Fatalf("expected 1 send, got %v", h.sends)
+	}
+	send := h.sends[0]
+	if send.pane != "%8" || send.text != "hello" || !send.enter {
+		t.Errorf("unexpected send %+v", send)
+	}
+	if send.requester.PaneID != "%1" || send.requester.Role != control.RoleWorker {
+		t.Errorf("expected server-resolved worker requester, got %+v", send.requester)
 	}
 }
 
