@@ -217,6 +217,13 @@ func (c *Client) SetPaneOption(ctx context.Context, paneID, option, value string
 	return err
 }
 
+// SetWindowOption sets a window user option, targeting the window that
+// contains the given pane.
+func (c *Client) SetWindowOption(ctx context.Context, paneID, option, value string) error {
+	_, err := c.Cmd.Run(ctx, "set-option", "-w", "-t", paneID, option, value)
+	return err
+}
+
 // SetPaneTitle sets the title of a specific pane.
 func (c *Client) SetPaneTitle(ctx context.Context, paneID, title string) error {
 	_, err := c.Cmd.Run(ctx, "select-pane", "-t", paneID, "-T", title)

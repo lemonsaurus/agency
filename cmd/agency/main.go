@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -199,9 +200,13 @@ func runLaunch() {
 	// Create agent registry.
 	registry := agents.NewRegistry(cfg.Agents, cfg.AgentOrder)
 
-	// Create status poller.
-	poller := status.NewPoller(tc, func(paneID, agentType, s string) {
+	// Create status poller. Status changes light up window names for
+	// windows containing panes that wait for input.
+	attention := &attentionTracker{tc: tc, last: make(map[int]bool)}
+	var poller *status.Poller
+	poller = status.NewPoller(tc, func(paneID, agentType, s string) {
 		log.Printf("status: %s (%s) → %s", paneID, agentType, s)
+		attention.update(ctx, poller.Snapshot())
 	})
 
 	// Create session manager.
@@ -253,6 +258,9 @@ func runLaunch() {
 				for _, id := range removed {
 					log.Printf("pruned dead pane %s", id)
 				}
+				if len(removed) > 0 {
+					attention.update(ctx, poller.Snapshot())
+				}
 			}
 		}
 	}()
@@ -268,6 +276,46 @@ func runLaunch() {
 
 	cancel()
 	log.Println("Shutting down.")
+}
+
+// attentionTracker mirrors waiting-pane state onto @agency_attention window
+// options so the status bar can highlight windows that need input.
+type attentionTracker struct {
+	tc   *tmux.Client
+	mu   sync.Mutex
+	last map[int]bool // window index → attention currently set
+}
+
+func (a *attentionTracker) update(ctx context.Context, statuses map[string]string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	panes, err := a.tc.ListPanes(ctx)
+	if err != nil {
+		return
+	}
+	waiting := make(map[int]bool)
+	sample := make(map[int]string) // window index → any pane ID in it
+	for _, p := range panes {
+		if _, ok := sample[p.WindowIndex]; !ok {
+			sample[p.WindowIndex] = p.ID
+		}
+		if statuses[p.ID] == status.StatusWaiting {
+			waiting[p.WindowIndex] = true
+		}
+	}
+	for idx, paneID := range sample {
+		if a.last[idx] == waiting[idx] {
+			continue
+		}
+		val := ""
+		if waiting[idx] {
+			val = "1"
+		}
+		if err := a.tc.SetWindowOption(ctx, paneID, "@agency_attention", val); err == nil {
+			a.last[idx] = waiting[idx]
+		}
+	}
 }
 
 func runSpawn(args []string) {

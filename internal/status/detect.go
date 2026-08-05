@@ -136,6 +136,17 @@ func (p *Poller) Track(paneID, agentType string) {
 	}
 }
 
+// Snapshot returns the current status of every tracked pane.
+func (p *Poller) Snapshot() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]string, len(p.panes))
+	for id, ps := range p.panes {
+		out[id] = ps.Status
+	}
+	return out
+}
+
 // Untrack removes a pane from polling.
 func (p *Poller) Untrack(paneID string) {
 	p.mu.Lock()

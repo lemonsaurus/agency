@@ -135,6 +135,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("# Window styling\n")
 	fmt.Fprintf(&b, "set -g window-status-style fg=%s\n", cfg.Theme.StatusFG)
 	b.WriteString("set -g window-status-current-style fg=#89b4fa,bold\n")
+	// Attention: window name lights up when an agent inside waits for input.
+	b.WriteString("set -g window-status-format \"#{?#{@agency_attention},#[fg=#f9e2af#,bold],}#I:#W#F\"\n")
 	fmt.Fprintf(&b, "set -g message-style bg=%s,fg=%s\n\n", cfg.Theme.StatusBG, cfg.Theme.StatusFG)
 
 	// Spawn keybindings.
