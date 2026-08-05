@@ -11,6 +11,12 @@ import (
 	"github.com/lemonsaurus/agency/internal/config"
 )
 
+// MouseUpPaneFallback selects the clicked pane on mouse-up, mirroring the
+// default MouseDown1Pane behavior. Ghostty drops some mouse-down events with
+// tmux mouse mode on (ghostty#11342), so clicks needed 2-3 tries; acting on
+// mouse-up as well makes a single click reliable.
+const MouseUpPaneFallback = "if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { select-pane -t = ; send-keys -M } { select-pane -t = }"
+
 // clipboardCommand returns the system clipboard command, or empty if none found.
 func clipboardCommand() string {
 	// WSL2: clip.exe pipes to Windows clipboard.
@@ -93,6 +99,12 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Explicitly send the CSI u encoded form so crossterm-based apps
 	// (like Claude Code) see it as Ctrl+Enter.
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n\n")
+
+	// Mouse-up click fallbacks: Ghostty drops some mouse-down events
+	// (ghostty#11342), so pane/status clicks needed multiple tries.
+	b.WriteString("# Mouse-up click fallbacks (Ghostty drops some mouse-downs, ghostty#11342)\n")
+	fmt.Fprintf(&b, "bind -T root MouseUp1Pane %s\n", MouseUpPaneFallback)
+	b.WriteString("bind -T root MouseUp1Status select-window -t =\n\n")
 
 	// Clipboard: drag to select, Ctrl+C to copy.
 	// MouseDragEnd keeps the selection without auto-copying to clipboard.

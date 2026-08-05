@@ -64,6 +64,8 @@ func main() {
 		runPalette()
 	case "logs":
 		runLogs()
+	case "debug-mouse":
+		runDebugMouse(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -96,6 +98,7 @@ Usage:
   agency config                     Print resolved config
   agency palette                    Open command palette (used by tmux keybinding)
   agency logs                       Print path to log file (tail -f it)
+  agency debug-mouse [off]          Log mouse click events to a file (diagnose dropped clicks)
   agency help                       Show this help`)
 }
 
@@ -785,6 +788,41 @@ func runLogs() {
 	cfg := loadConfig()
 	path := logPath(cfg.Session.Name)
 	fmt.Println(path)
+}
+
+// runDebugMouse instruments the live tmux session's click bindings with
+// timestamped logging so dropped mouse-down events (e.g. ghostty#11342) can
+// be counted. "agency debug-mouse off" restores the normal bindings.
+func runDebugMouse(args []string) {
+	cfg := loadConfig()
+	ctx := context.Background()
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	logFile := fmt.Sprintf("/tmp/agency-mouse-%s.log", cfg.Session.Name)
+
+	if len(args) > 0 && args[0] == "off" {
+		// Restore the default down binding and agency's up fallback.
+		if _, err := tc.Cmd.Run(ctx, "bind", "-T", "root", "MouseDown1Pane", "select-pane -t = ; send-keys -M"); err != nil {
+			log.Fatalf("restoring MouseDown1Pane: %v", err)
+		}
+		if _, err := tc.Cmd.Run(ctx, "bind", "-T", "root", "MouseUp1Pane", tmux.MouseUpPaneFallback); err != nil {
+			log.Fatalf("restoring MouseUp1Pane: %v", err)
+		}
+		fmt.Println("Mouse debug logging off.")
+		return
+	}
+
+	logPart := func(event string) string {
+		return fmt.Sprintf(`run-shell -b 'echo "$(date +%%H:%%M:%%S.%%3N) %s pane=#{mouse_pane} x=#{mouse_x} y=#{mouse_y} active=#{pane_id}" >> %s'`, event, logFile)
+	}
+	down := logPart("down1") + " ; select-pane -t = ; send-keys -M"
+	up := logPart("up1") + " ; " + tmux.MouseUpPaneFallback
+	if _, err := tc.Cmd.Run(ctx, "bind", "-T", "root", "MouseDown1Pane", down); err != nil {
+		log.Fatalf("binding MouseDown1Pane: %v", err)
+	}
+	if _, err := tc.Cmd.Run(ctx, "bind", "-T", "root", "MouseUp1Pane", up); err != nil {
+		log.Fatalf("binding MouseUp1Pane: %v", err)
+	}
+	fmt.Printf("Mouse debug logging on. Click around, then:\n  tail -f %s\nEach click should log one down1 and one up1. Missing down1 lines = the terminal dropped the press.\nDisable with: agency debug-mouse off\n", logFile)
 }
 
 func runPalette() {
