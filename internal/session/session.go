@@ -315,6 +315,20 @@ func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
 	return nil
 }
 
+// MovePane moves a pane into the named window.
+func (m *Manager) MovePane(ctx context.Context, paneID, windowName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.tmux.MovePane(ctx, paneID, windowName); err != nil {
+		return err
+	}
+	if tracked, ok := m.panes[paneID]; ok {
+		tracked.WindowName = windowName
+	}
+	return nil
+}
+
 func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

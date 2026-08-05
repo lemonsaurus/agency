@@ -261,6 +261,28 @@ func (c *Client) KillWindow(ctx context.Context, windowName string) error {
 	return err
 }
 
+// MovePane moves a pane into the named window via join-pane, creating
+// the window with break-pane when it does not exist. Joins retry once
+// after retiling, like splits.
+func (c *Client) MovePane(ctx context.Context, paneID, windowName string) error {
+	exists, err := c.WindowExists(ctx, windowName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		_, err = c.Cmd.Run(ctx, "break-pane", "-d", "-s", paneID, "-n", windowName, "-t", c.SessionName+":")
+		return err
+	}
+	target := c.windowTarget(windowName)
+	out, err := c.Cmd.Run(ctx, "join-pane", "-d", "-s", paneID, "-t", target)
+	if err != nil && strings.Contains(err.Error()+out, "no space for a new pane") {
+		if _, layoutErr := c.Cmd.Run(ctx, "select-layout", "-t", target, "tiled"); layoutErr == nil {
+			_, err = c.Cmd.Run(ctx, "join-pane", "-d", "-s", paneID, "-t", target)
+		}
+	}
+	return err
+}
+
 func (c *Client) RenameWindow(ctx context.Context, target, name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("window name is required")

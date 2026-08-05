@@ -51,6 +51,10 @@ func (r Requester) CanKillPane(paneID string) bool {
 	return r.Role != RoleWorker || r.PaneID == paneID
 }
 
+func (r Requester) CanMovePane(paneID string) bool {
+	return r.Role != RoleWorker || r.PaneID == paneID
+}
+
 func (r Requester) CanKillWindow() bool {
 	return r.Role != RoleWorker
 }

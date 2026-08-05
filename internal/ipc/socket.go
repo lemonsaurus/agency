@@ -24,6 +24,7 @@ type Handler interface {
 	KillPane(ctx context.Context, paneID string) error
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
+	MovePane(ctx context.Context, paneID, windowName string) error
 	SetLayout(ctx context.Context, layout string) error
 	Relayout(ctx context.Context) error
 	BroadcastKeys(ctx context.Context, keys string) error
@@ -40,6 +41,11 @@ type spawnPayload struct {
 type renameWindowPayload struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
+}
+
+type movePayload struct {
+	Pane   string `json:"pane"`
+	Window string `json:"window"`
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -240,6 +246,22 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", fmt.Errorf("target and name are required")
 		}
 		return "", s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
+	case "move":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		var payload movePayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid move payload: %w", err)
+		}
+		if payload.Pane == "" || payload.Window == "" {
+			return "", fmt.Errorf("pane and window are required")
+		}
+		if !requester.CanMovePane(payload.Pane) {
+			return "", fmt.Errorf("worker panes may only move their own pane")
+		}
+		return "", s.handler.MovePane(s.ctx, payload.Pane, payload.Window)
 	case "layout":
 		return "", s.handler.SetLayout(s.ctx, arg)
 	case "broadcast-keys":

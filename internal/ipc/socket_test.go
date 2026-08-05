@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,6 +30,11 @@ type renameRecord struct {
 	name   string
 }
 
+type moveRecord struct {
+	pane   string
+	window string
+}
+
 type mockHandler struct {
 	mu            sync.Mutex
 	spawns        []spawnRecord
@@ -36,6 +42,7 @@ type mockHandler struct {
 	kills         []string
 	windowKills   []string
 	renames       []renameRecord
+	moves         []moveRecord
 	layouts       []string
 	relayouts     int
 	broadcastKeys []string
@@ -100,6 +107,13 @@ func (m *mockHandler) RenameWindow(_ context.Context, target, name string) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.renames = append(m.renames, renameRecord{target: target, name: name})
+	return nil
+}
+
+func (m *mockHandler) MovePane(_ context.Context, paneID, windowName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.moves = append(m.moves, moveRecord{pane: paneID, window: windowName})
 	return nil
 }
 
@@ -388,6 +402,49 @@ func TestServerRenameWindow(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.renames) != 1 || h.renames[0].target != "pi" || h.renames[0].name != "hammerbound" {
 		t.Errorf("expected rename pi to hammerbound, got %v", h.renames)
+	}
+}
+
+func TestServerMovePane(t *testing.T) {
+	h := &mockHandler{}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	_, err := SendMessage(sockPath, `move:{"pane":"%7","window":"journalia"}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.moves) != 1 || h.moves[0].pane != "%7" || h.moves[0].window != "journalia" {
+		t.Errorf("expected move %%7 to journalia, got %v", h.moves)
+	}
+}
+
+func TestServerMovePaneWorkerDenied(t *testing.T) {
+	h := &mockHandler{requester: control.Requester{PaneID: "%1", Role: control.RoleWorker, RootID: "%0"}}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	resp, err := SendMessage(sockPath, `move:{"pane":"%7","window":"journalia"}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if !strings.Contains(resp, "only move their own pane") {
+		t.Errorf("expected denial, got %q", resp)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.moves) != 0 {
+		t.Errorf("expected no moves, got %v", h.moves)
 	}
 }
 

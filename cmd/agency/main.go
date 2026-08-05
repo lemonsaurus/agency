@@ -42,6 +42,8 @@ func main() {
 		runCapture(os.Args[2:])
 	case "kill":
 		runKill(os.Args[2:])
+	case "move":
+		runMove(os.Args[2:])
 	case "rename-window":
 		runRenameWindow(os.Args[2:])
 	case "kill-all":
@@ -90,6 +92,7 @@ Usage:
   agency capture <pane-id> [lines]  Capture pane output
   agency kill <pane-id>             Kill a specific pane
   agency kill --window <name>       Kill a specific window
+  agency move <pane-id> <window>   Move a pane into a window (created if missing)
   agency rename-window <target> <name> Rename a window by name, index, or id
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
@@ -440,6 +443,11 @@ type spawnPayload struct {
 	Role    string `json:"role,omitempty"`
 }
 
+type movePayload struct {
+	Pane   string `json:"pane"`
+	Window string `json:"window"`
+}
+
 type renameWindowPayload struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
@@ -584,6 +592,30 @@ func runKill(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
 		os.Exit(1)
 	}
+}
+
+func runMove(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency move <pane-id> <window-name>")
+		os.Exit(1)
+	}
+	if agencyRole() == "worker" && os.Getenv("AGENCY_PANE_ID") != args[0] {
+		fmt.Fprintln(os.Stderr, "Error: worker panes may only move their own pane")
+		os.Exit(1)
+	}
+	window := strings.Join(args[1:], " ")
+	payload, _ := json.Marshal(movePayload{Pane: args[0], Window: window})
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "move:"+string(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+	fmt.Printf("moved %s to window %s\n", args[0], window)
 }
 
 func runRenameWindow(args []string) {
