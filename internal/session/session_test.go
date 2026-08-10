@@ -14,10 +14,11 @@ import (
 
 // testMock implements tmux.Commander for session tests.
 type testMock struct {
-	calls        [][]string
-	paneIDSeq    int
-	listOutput   string
-	windowOutput string
+	calls            [][]string
+	paneIDSeq        int
+	listOutput       string
+	windowOutput     string
+	windowInfoOutput string
 }
 
 func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
@@ -37,6 +38,9 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 			if a == "#{pid}" {
 				return "42", nil // fake tmux server PID
 			}
+		}
+		if m.windowInfoOutput != "" {
+			return m.windowInfoOutput, nil
 		}
 		// Return fake window info for custom tiled layout.
 		return "200\t50\t" + fmt.Sprintf("%d", m.paneIDSeq+1), nil
@@ -244,7 +248,7 @@ func TestSpawnCommand(t *testing.T) {
 }
 
 func TestSpawnAgentWindow(t *testing.T) {
-	mock := &testMock{}
+	mock := &testMock{windowInfoOutput: "200\t50\t1"}
 	mgr := newTestManager(mock)
 
 	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project"); err != nil {
@@ -267,7 +271,10 @@ func TestSpawnAgentWindow(t *testing.T) {
 }
 
 func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
-	mock := &testMock{windowOutput: "casts-review"}
+	mock := &testMock{
+		windowOutput:     "casts-review",
+		windowInfoOutput: "200\t50\t2",
+	}
 	mgr := newTestManager(mock)
 
 	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project"); err != nil {
@@ -283,6 +290,13 @@ func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
 	}
 	if splitCall[2] != "test:casts-review" {
 		t.Errorf("expected target test:casts-review, got %v", splitCall)
+	}
+	layoutCall := mock.findCall("select-layout")
+	if layoutCall == nil {
+		t.Fatal("expected relayout after spawning into an existing window")
+	}
+	if layoutCall[2] != "%1" {
+		t.Errorf("expected layout target %%1, got %v", layoutCall)
 	}
 }
 

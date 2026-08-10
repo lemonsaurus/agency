@@ -353,8 +353,8 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 	return panes, nil
 }
 
-func (c *Client) SelectLayout(ctx context.Context, layout string) error {
-	_, err := c.Cmd.Run(ctx, "select-layout", "-t", c.SessionName, layout)
+func (c *Client) SelectLayoutForWindow(ctx context.Context, target, layout string) error {
+	_, err := c.Cmd.Run(ctx, "select-layout", "-t", target, layout)
 	return err
 }
 
@@ -365,10 +365,9 @@ type WindowInfo struct {
 	PaneCount int
 }
 
-// GetWindowInfo returns the current window dimensions and pane count.
-func (c *Client) GetWindowInfo(ctx context.Context) (WindowInfo, error) {
+func (c *Client) GetWindowInfoForWindow(ctx context.Context, target string) (WindowInfo, error) {
 	out, err := c.Cmd.Run(ctx,
-		"display-message", "-t", c.SessionName, "-p",
+		"display-message", "-t", target, "-p",
 		"#{window_width}\t#{window_height}\t#{window_panes}",
 	)
 	if err != nil {

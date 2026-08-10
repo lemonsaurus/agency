@@ -176,9 +176,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 		m.poller.Track(paneID, agentType)
 	}
 
-	if windowName == "" {
-		_ = m.applyLayout(ctx, m.cfg.Session.DefaultLayout)
-	}
+	_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, paneID)
 
 	return nil
 }
@@ -438,17 +436,20 @@ func (m *Manager) Relayout(ctx context.Context) error {
 }
 
 func (m *Manager) applyLayout(ctx context.Context, name string) error {
-	if name == "tiled" {
-		return m.applyCustomTiled(ctx)
-	}
-	return m.tmux.SelectLayout(ctx, tmuxLayout(name))
+	return m.applyLayoutForWindow(ctx, name, m.tmux.SessionName)
 }
 
-func (m *Manager) applyCustomTiled(ctx context.Context) error {
-	info, err := m.tmux.GetWindowInfo(ctx)
+func (m *Manager) applyLayoutForWindow(ctx context.Context, name, target string) error {
+	if name == "tiled" {
+		return m.applyCustomTiledForWindow(ctx, target)
+	}
+	return m.tmux.SelectLayoutForWindow(ctx, target, tmuxLayout(name))
+}
+
+func (m *Manager) applyCustomTiledForWindow(ctx context.Context, target string) error {
+	info, err := m.tmux.GetWindowInfoForWindow(ctx, target)
 	if err != nil {
-		// Fallback to tmux's built-in tiled.
-		return m.tmux.SelectLayout(ctx, "tiled")
+		return m.tmux.SelectLayoutForWindow(ctx, target, "tiled")
 	}
 	if info.PaneCount <= 1 {
 		return nil
@@ -482,7 +483,7 @@ func (m *Manager) applyCustomTiled(ctx context.Context) error {
 
 	columns := layout.Grid(info.PaneCount, effectiveMax)
 	layoutStr := layout.BuildCustomLayout(info.Width, info.Height, columns)
-	return m.tmux.SelectLayout(ctx, layoutStr)
+	return m.tmux.SelectLayoutForWindow(ctx, target, layoutStr)
 }
 
 // AdoptOrphans scans existing tmux panes and rebuilds internal state.

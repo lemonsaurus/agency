@@ -325,16 +325,16 @@ func TestRenameWindow(t *testing.T) {
 	}
 }
 
-func TestSelectLayout(t *testing.T) {
+func TestSelectLayoutForWindow(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}
 	c := &Client{Cmd: mock, SessionName: "test"}
 
-	if err := c.SelectLayout(context.Background(), "tiled"); err != nil {
-		t.Fatalf("SelectLayout failed: %v", err)
+	if err := c.SelectLayoutForWindow(context.Background(), "%5", "tiled"); err != nil {
+		t.Fatalf("SelectLayoutForWindow failed: %v", err)
 	}
 	call := mock.Calls[0]
-	if call[0] != "select-layout" || call[3] != "tiled" {
+	if call[0] != "select-layout" || call[2] != "%5" || call[3] != "tiled" {
 		t.Errorf("unexpected call: %v", call)
 	}
 }
