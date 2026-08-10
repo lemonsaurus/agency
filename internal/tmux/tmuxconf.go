@@ -196,13 +196,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Management.
 	b.WriteString("# Management\n")
-	killPaneCmd := `printf 'Kill pane? [Enter/y]: '; read -r _k; case "$_k" in ""|y|Y) tmux kill-pane;; esac`
-	escapedKillPane := strings.ReplaceAll(killPaneCmd, `"`, `\"`)
-	fmt.Fprintf(&b, "bind %s display-popup -E -w 44 -h 3 \"%s\"\n", cfg.Keys.KillPane, escapedKillPane)
-	// Kill session: popup accepts Enter or y/Y as confirmation.
-	killCmd := `printf 'Kill session? [Enter/y]: '; read -r _k; case "$_k" in ""|y|Y) tmux kill-session;; esac`
-	escapedKill := strings.ReplaceAll(killCmd, `"`, `\"`)
-	fmt.Fprintf(&b, "bind %s display-popup -E -w 44 -h 3 \"%s\"\n", cfg.Keys.KillSession, escapedKill)
+	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill pane? (y/n)' kill-pane\n", cfg.Keys.KillPane)
+	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill session? (y/n)' kill-session\n", cfg.Keys.KillSession)
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)
