@@ -102,6 +102,18 @@ func TestNewSessionWithConfig(t *testing.T) {
 	}
 }
 
+func TestSourceConfig(t *testing.T) {
+	mock := NewMockCommander()
+	c := &Client{Cmd: mock, ConfigPath: "/tmp/test.conf"}
+
+	if err := c.SourceConfig(context.Background()); err != nil {
+		t.Fatalf("SourceConfig failed: %v", err)
+	}
+	if got := strings.Join(mock.Calls[0], " "); got != "source-file /tmp/test.conf" {
+		t.Errorf("unexpected command: %s", got)
+	}
+}
+
 func TestSplitWindow(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "%5", Err: nil}
@@ -346,10 +358,18 @@ func TestGenerateConfig(t *testing.T) {
 	checks := []string{
 		"set -g prefix " + cfg.Keys.Prefix,
 		"set -g mouse on",
+		"set -s set-clipboard on",
 		"set -g history-limit 50000",
 		"set -g mode-keys emacs",
 		"pane-border-status top",
 		"bind " + cfg.Keys.Palette + " display-popup",
+		"set -as terminal-features 'xterm*:clipboard'",
+		"bind -T root MouseDown3Pane display-menu -t = -x M -y M",
+		"set -g menu-style bg=" + cfg.Theme.StatusBG + ",fg=" + cfg.Theme.StatusFG,
+		"set -g menu-selected-style bg=" + cfg.Theme.ActiveBorder,
+		"set -g menu-border-style fg=" + cfg.Theme.ActiveBorder,
+		"set -g menu-border-lines rounded",
+		"×  Kill",
 		"bind " + cfg.Keys.CopyMode + " copy-mode",
 		"bind " + cfg.Keys.Paste + " paste-buffer",
 		"bind " + cfg.Keys.Terminal + " run-shell",

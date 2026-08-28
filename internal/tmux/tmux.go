@@ -102,6 +102,14 @@ func (c *Client) NewSession(ctx context.Context) error {
 	return err
 }
 
+func (c *Client) SourceConfig(ctx context.Context) error {
+	if c.ConfigPath == "" {
+		return nil
+	}
+	_, err := c.Cmd.Run(ctx, "source-file", c.ConfigPath)
+	return err
+}
+
 func (c *Client) KillSession(ctx context.Context) error {
 	_, err := c.Cmd.Run(ctx, "kill-session", "-t", c.SessionName)
 	return err

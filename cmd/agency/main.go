@@ -220,6 +220,9 @@ func runLaunch() {
 
 	// Check if tmux session already exists (crash recovery).
 	if tc.SessionExists(ctx) {
+		if err := tc.SourceConfig(ctx); err != nil {
+			log.Printf("Warning: reloading tmux config: %v", err)
+		}
 		log.Printf("Existing tmux session found, adopting orphan panes...")
 	} else {
 		if err := tc.NewSession(ctx); err != nil {

@@ -16,6 +16,29 @@ import (
 // tmux mouse mode on (ghostty#11342), so clicks needed 2-3 tries; acting on
 // mouse-up as well makes a single click reliable.
 const MouseUpPaneFallback = "if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { select-pane -t = ; send-keys -M } { select-pane -t = }"
+const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@agent_color},bold] #{@agency_label} '` +
+	` '#{?#{m/r:(copy|view)-mode,#{pane_mode}},⇡  Go To Top,}' '<' {send -X history-top}` +
+	` '#{?#{m/r:(copy|view)-mode,#{pane_mode}},⇣  Go To Bottom,}' '>' {send -X history-bottom}` +
+	` '' '' ''` +
+	` '#{?mouse_word,⌕  Search For #[underscore]#{=/9/...:mouse_word},}' 'C-r' {if -F '#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}' 'copy-mode -t='; send -Xt= search-backward -- "#{q:mouse_word}"}` +
+	` '#{?mouse_word,⌨  Type #[underscore]#{=/9/...:mouse_word},}' 'C-y' {copy-mode -q; send-keys -l -- "#{q:mouse_word}"}` +
+	` '#{?mouse_word,⧉  Copy #[underscore]#{=/9/...:mouse_word},}' 'c' {copy-mode -q; set-buffer -- "#{q:mouse_word}"}` +
+	` '#{?mouse_line,≡  Copy Line,}' 'l' {copy-mode -q; set-buffer -- "#{q:mouse_line}"}` +
+	` '' '' ''` +
+	` '#{?mouse_hyperlink,↗  Type #[underscore]#{=/9/...:mouse_hyperlink},}' 'C-h' {copy-mode -q; send-keys -l -- "#{q:mouse_hyperlink}"}` +
+	` '#{?mouse_hyperlink,⛓  Copy #[underscore]#{=/9/...:mouse_hyperlink},}' 'h' {copy-mode -q; set-buffer -- "#{q:mouse_hyperlink}"}` +
+	` '' '' ''` +
+	` '↔  Horizontal Split' 'h' {split-window -h}` +
+	` '↕  Vertical Split' 'v' {split-window -v}` +
+	` '' '' ''` +
+	` '#{?#{>:#{window_panes},1},,-}⇡  Swap Up' 'u' {swap-pane -U}` +
+	` '#{?#{>:#{window_panes},1},,-}⇣  Swap Down' 'd' {swap-pane -D}` +
+	` '#{?pane_marked_set,,-}⇄  Swap Marked' 's' {swap-pane}` +
+	` '' '' ''` +
+	` '#[fg=#f38ba8,bold]×  Kill#[default]' 'X' {kill-pane}` +
+	` '#[fg=#f9e2af]↻  Respawn#[default]' 'R' {respawn-pane -k}` +
+	` '#{?pane_marked,◇  Unmark,◆  Mark}' 'm' {select-pane -m}` +
+	` '#{?#{>:#{window_panes},1},,-}□  #{?window_zoomed_flag,Unzoom,Zoom}' 'z' {resize-pane -Z}`
 
 // clipboardCommand returns the system clipboard command, or empty if none found.
 func clipboardCommand() string {
@@ -72,6 +95,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// General settings.
 	b.WriteString("# General\n")
 	b.WriteString("set -g mouse on\n")
+	b.WriteString("set -s set-clipboard on\n")
 	b.WriteString("set -g history-limit 50000\n")
 	b.WriteString("set -g mode-keys emacs\n")
 	b.WriteString("set -g status-keys emacs\n")
@@ -87,6 +111,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -gs extended-keys-format csi-u\n")
 	b.WriteString("set -as terminal-features 'xterm*:extkeys'\n")
 	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n")
+	b.WriteString("set -as terminal-features 'xterm*:clipboard'\n")
 	// Hyperlinks: tmux 3.4+ relays OSC 8 natively when the terminal-features
 	// 'hyperlinks' flag is set — no DCS passthrough required. allow-passthrough
 	// was previously enabled here but caused outer-terminal scrollback to record
@@ -100,6 +125,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// (like Claude Code) see it as Ctrl+Enter.
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n\n")
 
+	// Keep the pane menu available when a fullscreen application captures mouse input.
+	fmt.Fprintf(&b, "bind -T root MouseDown3Pane %s\n", PaneContextMenu)
 	// Mouse-up click fallbacks: Ghostty drops some mouse-down events
 	// (ghostty#11342), so pane/status clicks needed multiple tries.
 	b.WriteString("# Mouse-up click fallbacks (Ghostty drops some mouse-downs, ghostty#11342)\n")
@@ -125,6 +152,10 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "set -g pane-border-style fg=%s\n", cfg.Theme.InactiveBorder)
 	// Active border: dynamically resolves to the focused pane's @agent_color.
 	fmt.Fprintf(&b, "set -g pane-active-border-style \"#{?#{@agent_color},fg=#{@agent_color},fg=%s}\"\n", cfg.Theme.ActiveBorder)
+	fmt.Fprintf(&b, "set -g menu-style bg=%s,fg=%s\n", cfg.Theme.StatusBG, cfg.Theme.StatusFG)
+	fmt.Fprintf(&b, "set -g menu-selected-style bg=%s,fg=%s,bold\n", cfg.Theme.ActiveBorder, cfg.Theme.StatusBG)
+	fmt.Fprintf(&b, "set -g menu-border-style fg=%s\n", cfg.Theme.ActiveBorder)
+	b.WriteString("set -g menu-border-lines rounded\n")
 	b.WriteString("set -g pane-border-status top\n")
 	b.WriteString("set -g pane-border-lines single\n")
 	// Label format: show @agency_label with colored badge for agency panes,
