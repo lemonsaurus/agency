@@ -14,7 +14,7 @@ func TestGrid(t *testing.T) {
 	}{
 		{0, 3, nil},
 		{1, 3, []int{1}},
-		{2, 3, []int{2}},
+		{2, 3, []int{1, 1}},
 		{3, 3, []int{3}},
 		{4, 3, []int{2, 2}},
 		{5, 3, []int{3, 2}},
@@ -134,11 +134,9 @@ func TestBuildCustomLayoutTrivial(t *testing.T) {
 }
 
 func TestBuildCustomLayoutTwoPanes(t *testing.T) {
-	// 2 panes in 1 column (stacked).
-	got := BuildCustomLayout(200, 50, []int{2})
-	// Should contain a vertical split [...].
-	if !strings.Contains(got, "[") {
-		t.Errorf("expected vertical split for 2-pane column, got %q", got)
+	got := BuildCustomLayout(200, 50, []int{1, 1})
+	if !strings.Contains(got, "{") {
+		t.Errorf("expected horizontal split for 2-pane columns, got %q", got)
 	}
 	// Should start with a 4-char hex checksum.
 	if len(got) < 5 || got[4] != ',' {

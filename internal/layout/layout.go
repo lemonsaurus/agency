@@ -19,6 +19,9 @@ func Grid(paneCount, maxRows int) []int {
 	if maxRows <= 0 {
 		maxRows = 3
 	}
+	if paneCount == 2 {
+		return []int{1, 1}
+	}
 	if paneCount <= maxRows {
 		// Everything fits in one column.
 		return []int{paneCount}
