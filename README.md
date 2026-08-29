@@ -364,6 +364,8 @@ tail -f $(agency logs)
 
 ## Development
 
+Work directly on `main`. Don't create feature branches, worktrees, or pull requests. Start with a clean checkout; if it isn't clean, finish or resolve that work first. Commit every finished change and push `main`. Don't leave dirty files behind.
+
 ```bash
 make build      # compile
 make install    # build + install to ~/.local/bin/
