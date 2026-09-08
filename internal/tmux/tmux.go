@@ -50,17 +50,19 @@ func (e *ExecCommander) Exec(ctx context.Context, args ...string) error {
 
 // PaneInfo represents a tmux pane.
 type PaneInfo struct {
-	ID          string `json:"id"`          // e.g. "%0"
-	Index       int    `json:"index"`       // pane index within window
-	WindowIndex int    `json:"windowIndex"` // tmux window index
-	WindowName  string `json:"windowName"`  // tmux window name
-	Command     string `json:"command"`     // running command
-	CWD         string `json:"cwd"`         // current working directory
-	Active      bool   `json:"active"`      // whether this pane is focused
-	PID         int    `json:"pid"`         // pane process PID
-	Role        string `json:"role,omitempty"`
-	ParentID    string `json:"parentId,omitempty"`
-	RootID      string `json:"rootId,omitempty"`
+	ID               string `json:"id"`          // e.g. "%0"
+	Index            int    `json:"index"`       // pane index within window
+	WindowIndex      int    `json:"windowIndex"` // tmux window index
+	WindowName       string `json:"windowName"`  // tmux window name
+	Command          string `json:"command"`     // running command
+	CWD              string `json:"cwd"`         // current working directory
+	Active           bool   `json:"active"`      // whether this pane is focused
+	PID              int    `json:"pid"`         // pane process PID
+	Role             string `json:"role,omitempty"`
+	ParentID         string `json:"parentId,omitempty"`
+	RootID           string `json:"rootId,omitempty"`
+	PendingPromotion string `json:"pendingPromotion,omitempty"`
+	AgencyCommand    string `json:"agencyCommand,omitempty"`
 }
 
 type windowRef struct {
@@ -97,7 +99,7 @@ func (c *Client) SessionExists(ctx context.Context) bool {
 }
 
 func (c *Client) NewSession(ctx context.Context) error {
-	args := c.tmuxArgs("new-session", "-d", "-s", c.SessionName, "-x", "200", "-y", "50")
+	args := c.tmuxArgs("new-session", "-d", "-s", c.SessionName, "-n", "control", "-x", "200", "-y", "50")
 	_, err := c.Cmd.Run(ctx, args...)
 	return err
 }
@@ -127,6 +129,55 @@ func (c *Client) SplitWindow(ctx context.Context, command, dir string) (string, 
 
 func (c *Client) SplitWindowInWindow(ctx context.Context, windowName, command, dir string) (string, error) {
 	return c.splitWithRetile(ctx, c.windowTarget(windowName), command, dir)
+}
+
+// SplitWindowAt creates a pane in the window containing targetPaneID.
+func (c *Client) SplitWindowAt(ctx context.Context, targetPaneID, command, dir string) (string, error) {
+	return c.splitWithRetile(ctx, targetPaneID, command, dir)
+}
+
+func (c *Client) firstWindow(ctx context.Context) (windowRef, error) {
+	windows, err := c.listWindowRefs(ctx)
+	if err != nil {
+		return windowRef{}, err
+	}
+	if len(windows) == 0 {
+		return windowRef{}, fmt.Errorf("session has no windows")
+	}
+	first := windows[0]
+	for _, window := range windows[1:] {
+		if window.Index < first.Index {
+			first = window
+		}
+	}
+	return first, nil
+}
+
+func (c *Client) NameFirstWindow(ctx context.Context, name string) error {
+	first, err := c.firstWindow(ctx)
+	if err != nil || first.Name == name {
+		return err
+	}
+	target := first.ID
+	if target == "" {
+		target = c.windowTarget(first.Name)
+	}
+	_, err = c.Cmd.Run(ctx, "rename-window", "-t", target, name)
+	return err
+}
+
+// SplitWindowInFirstWindow creates a pane in the session's lowest-indexed window.
+func (c *Client) SplitWindowInFirstWindow(ctx context.Context, command, dir string) (string, string, error) {
+	first, err := c.firstWindow(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	target := first.ID
+	if target == "" {
+		target = c.windowTarget(first.Name)
+	}
+	paneID, err := c.splitWithRetile(ctx, target, command, dir)
+	return paneID, first.Name, err
 }
 
 // splitWithRetile splits the target's active pane. When the active pane is too
@@ -308,7 +359,7 @@ func (c *Client) windowTarget(windowName string) string {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}"
 	out, err := c.Cmd.Run(ctx,
 		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
@@ -355,6 +406,12 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 			pane.Role = parts[8]
 			pane.ParentID = parts[9]
 			pane.RootID = parts[10]
+		}
+		if len(parts) >= 12 {
+			pane.PendingPromotion = parts[11]
+		}
+		if len(parts) >= 13 {
+			pane.AgencyCommand = parts[12]
 		}
 		panes = append(panes, pane)
 	}

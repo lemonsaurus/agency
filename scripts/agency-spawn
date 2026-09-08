@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# agency-spawn — request a new agent pane from inside an existing one
+# agency-spawn requests a child, replacement, or promotion from an agency pane.
 #
-# Usage (from inside an agency pane):
-#   agency-spawn claude                  # spawn a Claude Code pane in $PWD
-#   agency-spawn codex                   # spawn a Codex pane in $PWD
-#   agency-spawn gemini                  # spawn a Gemini pane in $PWD
-#   agency-spawn --cmd "aider"           # spawn arbitrary command in $PWD
-#   agency-spawn claude --dir /tmp       # spawn in a specific directory
-#   agency-spawn --cmd "aider" --dir /x  # arbitrary command in specific dir
-#
-# This works because agency sets AGENCY_SOCKET in every pane's env.
+# Usage:
+#   agency-spawn claude [--dir /path]
+#   agency-spawn --cmd "aider --yes" [--dir /path]
+#   agency-spawn --replace
+#   agency-spawn --request-promotion "reason"
 
 set -euo pipefail
 
@@ -23,19 +19,56 @@ if [[ ! -S "$AGENCY_SOCKET" ]]; then
     exit 1
 fi
 
-if ! command -v socat &>/dev/null; then
-    # Fallback if socat isn't installed: use bash /dev/tcp or nc
-    if command -v nc &>/dev/null; then
-        SEND_CMD="nc -U"
+send_message() {
+    if command -v socat &>/dev/null; then
+        printf '%s\n' "$1" | socat - "UNIX-CONNECT:$AGENCY_SOCKET"
+    elif command -v nc &>/dev/null; then
+        printf '%s\n' "$1" | nc -U "$AGENCY_SOCKET"
     else
         echo "Error: Need socat or nc (netcat) installed." >&2
         exit 1
     fi
-else
-    SEND_CMD="socat - UNIX-CONNECT:"
+}
+
+json_escape() {
+    local value=$1
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '%s' "$value"
+}
+
+if [[ "${1:-}" == "--replace" ]]; then
+    send_message "replace"
+    exit
 fi
 
-# Parse --dir flag from anywhere in args.
+if [[ "${1:-}" == "--request-promotion" ]]; then
+    shift
+    REASON="${*:?Usage: agency-spawn --request-promotion \"reason\"}"
+    send_message "promotion-request:{\"reason\":\"$(json_escape "$REASON")\"}"
+    exit
+fi
+
+ROLE="$(agency whoami --role 2>/dev/null || true)"
+if [[ -z "$ROLE" ]]; then
+    ROLE="${AGENCY_ROLE:-}"
+fi
+case "$ROLE" in
+    controller) CHILD_ROLE="manager" ;;
+    manager) CHILD_ROLE="worker" ;;
+    worker)
+        echo "Error: worker panes cannot spawn." >&2
+        exit 1
+        ;;
+    *)
+        echo "Error: Cannot determine agency pane role." >&2
+        exit 1
+        ;;
+esac
+
 DIR=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -52,26 +85,17 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${ARGS[@]}"
 
-# Default to current working directory.
 if [[ -z "$DIR" ]]; then
     DIR="$PWD"
 fi
 
-# Build the dir suffix for the IPC message.
-DIR_SUFFIX=""
-if [[ -n "$DIR" ]]; then
-    DIR_SUFFIX="@${DIR}"
-fi
-
 if [[ "${1:-}" == "--cmd" ]]; then
     shift
-    MSG="spawn:cmd:${*}${DIR_SUFFIX}"
+    COMMAND="${*:?Usage: agency-spawn --cmd \"command\"}"
+    MSG="spawn-role:{\"command\":\"$(json_escape "$COMMAND")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\"}"
 else
-    MSG="spawn:${1:?Usage: agency-spawn <agent-type> or agency-spawn --cmd \"command\"}${DIR_SUFFIX}"
+    AGENT="${1:?Usage: agency-spawn <agent-type> or agency-spawn --cmd \"command\"}"
+    MSG="spawn-role:{\"agent\":\"$(json_escape "$AGENT")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\"}"
 fi
 
-if [[ "$SEND_CMD" == "socat"* ]]; then
-    echo "$MSG" | socat - "UNIX-CONNECT:$AGENCY_SOCKET"
-else
-    echo "$MSG" | nc -U "$AGENCY_SOCKET"
-fi
+send_message "$MSG"

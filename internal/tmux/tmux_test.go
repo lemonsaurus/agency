@@ -86,6 +86,9 @@ func TestNewSession(t *testing.T) {
 	if call[0] != "new-session" {
 		t.Errorf("expected 'new-session', got %q", call[0])
 	}
+	if !strings.Contains(strings.Join(call, " "), "-n control") {
+		t.Errorf("expected control window name, got %v", call)
+	}
 }
 
 func TestNewSessionWithConfig(t *testing.T) {
@@ -210,6 +213,36 @@ func TestWindowExists(t *testing.T) {
 	}
 }
 
+func TestNameFirstWindow(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "@4\t4\tlater\n@1\t1\tfirst", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	if err := c.NameFirstWindow(context.Background(), "control"); err != nil {
+		t.Fatalf("NameFirstWindow failed: %v", err)
+	}
+	if len(mock.Calls) < 2 || strings.Join(mock.Calls[1], " ") != "rename-window -t @1 control" {
+		t.Fatalf("rename call = %v", mock.Calls)
+	}
+}
+
+func TestSplitWindowInFirstWindow(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "@4\t4\tlater\n@1\t1\tfirst", Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	_, windowName, err := c.SplitWindowInFirstWindow(context.Background(), "pi", "/tmp")
+	if err != nil {
+		t.Fatalf("SplitWindowInFirstWindow failed: %v", err)
+	}
+	if windowName != "first" {
+		t.Fatalf("first window = %q, want first", windowName)
+	}
+	if len(mock.Calls) < 2 || mock.Calls[1][2] != "@1" {
+		t.Fatalf("expected split target @1, calls: %v", mock.Calls)
+	}
+}
+
 func TestSetPaneOption(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}
@@ -268,6 +301,22 @@ func TestListPanes(t *testing.T) {
 	}
 	if panes[0].PID != 1234 {
 		t.Errorf("expected PID 1234, got %d", panes[0].PID)
+	}
+}
+
+func TestListPanesIncludesControlState(t *testing.T) {
+	output := "1\tmain\t%2\t0\tpi\t/tmp\t1\t1234\tworker\t%1\t%0\tbmVlZCBmYW5vdXQ\tZWNobyBoaQ"
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: output, Err: nil}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	panes, err := c.ListPanes(context.Background())
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("ListPanes = (%v, %v)", panes, err)
+	}
+	pane := panes[0]
+	if pane.Role != "worker" || pane.ParentID != "%1" || pane.RootID != "%0" || pane.PendingPromotion != "bmVlZCBmYW5vdXQ" || pane.AgencyCommand != "ZWNobyBoaQ" {
+		t.Fatalf("unexpected control state: %+v", pane)
 	}
 }
 
@@ -389,6 +438,8 @@ func TestGenerateConfig(t *testing.T) {
 		"bind " + cfg.Keys.KillPane + " confirm-before -y -p 'Kill pane? (y/n)' kill-pane",
 		"bind " + cfg.Keys.KillSession + " confirm-before -y -p 'Kill session? (y/n)' kill-session",
 		"bind " + cfg.Keys.Zoom + " resize-pane -Z",
+		"bind " + cfg.Keys.ApprovePromotion + " run-shell",
+		"approve-promotion #{pane_id}",
 		cfg.Theme.ActiveBorder,
 		cfg.Theme.InactiveBorder,
 		cfg.Theme.StatusBG,

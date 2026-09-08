@@ -43,26 +43,30 @@ type moveRecord struct {
 }
 
 type mockHandler struct {
-	mu            sync.Mutex
-	spawns        []spawnRecord
-	commands      []commandRecord
-	kills         []string
-	windowKills   []string
-	renames       []renameRecord
-	moves         []moveRecord
-	sends         []sendRecord
-	layouts       []string
-	relayouts     int
-	broadcastKeys []string
-	failNext      bool
-	requester     control.Requester
+	mu                 sync.Mutex
+	spawns             []spawnRecord
+	commands           []commandRecord
+	kills              []string
+	windowKills        []string
+	renames            []renameRecord
+	moves              []moveRecord
+	sends              []sendRecord
+	layouts            []string
+	relayouts          int
+	broadcastKeys      []string
+	replacements       []control.Requester
+	replacementSpecs   []string
+	promotionRequests  []string
+	promotionApprovals []string
+	failNext           bool
+	requester          control.Requester
 }
 
 func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Requester, error) {
 	if m.requester.Role != "" {
 		return m.requester, nil
 	}
-	return control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0"}, nil
+	return control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0", Human: true}, nil
 }
 
 func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir string) error {
@@ -150,6 +154,22 @@ func (m *mockHandler) BroadcastKeys(_ context.Context, keys string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.broadcastKeys = append(m.broadcastKeys, keys)
+	return nil
+}
+
+func (m *mockHandler) ReplacePane(_ context.Context, requester control.Requester, command, dir string) (string, error) {
+	m.replacements = append(m.replacements, requester)
+	m.replacementSpecs = append(m.replacementSpecs, command+"\t"+dir)
+	return "%9", nil
+}
+
+func (m *mockHandler) RequestPromotion(_ context.Context, requester control.Requester, reason string) error {
+	m.promotionRequests = append(m.promotionRequests, requester.PaneID+":"+reason)
+	return nil
+}
+
+func (m *mockHandler) ApprovePromotion(_ context.Context, _ control.Requester, paneID string) error {
+	m.promotionApprovals = append(m.promotionApprovals, paneID)
 	return nil
 }
 
@@ -277,21 +297,33 @@ func TestSpawnRoleTransitions(t *testing.T) {
 		wantError bool
 	}{
 		{
-			name:      "controller defaults to manager",
+			name:      "human defaults to controller",
+			requester: control.Requester{PaneID: "%0", Role: control.RoleController, Human: true},
+			message:   "spawn:pi@/tmp",
+			wantRole:  control.RoleController,
+		},
+		{
+			name:      "programmatic spawn requires role",
 			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
 			message:   "spawn:pi@/tmp",
+			wantError: true,
+		},
+		{
+			name:      "controller requests manager",
+			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager"}`,
 			wantRole:  control.RoleManager,
 		},
 		{
-			name:      "controller requests worker",
+			name:      "controller cannot create worker",
 			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
 			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker"}`,
-			wantRole:  control.RoleWorker,
+			wantError: true,
 		},
 		{
-			name:      "manager defaults to worker",
+			name:      "manager requests worker",
 			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
-			message:   "spawn:pi@/tmp",
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker"}`,
 			wantRole:  control.RoleWorker,
 		},
 		{
@@ -561,6 +593,34 @@ func TestServerHandlerError(t *testing.T) {
 	}
 	if resp == "ok" {
 		t.Error("expected error response when handler fails")
+	}
+}
+
+func TestReplacementAndPromotionDispatch(t *testing.T) {
+	worker := control.Requester{PaneID: "%2", Role: control.RoleWorker, RootID: "%0"}
+	h := &mockHandler{requester: worker}
+	srv := NewServer("", h)
+
+	response, err := srv.dispatch(`replace:{"command":"handoff-pi","dir":"/tmp/work"}`, 123)
+	if err != nil || response != "%9" {
+		t.Fatalf("replace = (%q, %v), want %%9", response, err)
+	}
+	if len(h.replacementSpecs) != 1 || h.replacementSpecs[0] != "handoff-pi\t/tmp/work" {
+		t.Fatalf("replacement specs = %v", h.replacementSpecs)
+	}
+	if _, err := srv.dispatch(`promotion-request:{"reason":"need fanout"}`, 123); err != nil {
+		t.Fatalf("promotion request: %v", err)
+	}
+	if len(h.promotionRequests) != 1 || h.promotionRequests[0] != "%2:need fanout" {
+		t.Fatalf("promotion requests = %v", h.promotionRequests)
+	}
+
+	h.requester = control.Requester{Role: control.RoleController, Human: true}
+	if _, err := srv.dispatch("promotion-approve:%2", 123); err != nil {
+		t.Fatalf("promotion approval: %v", err)
+	}
+	if len(h.promotionApprovals) != 1 || h.promotionApprovals[0] != "%2" {
+		t.Fatalf("promotion approvals = %v", h.promotionApprovals)
 	}
 }
 

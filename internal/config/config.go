@@ -18,23 +18,24 @@ type Config struct {
 }
 
 type KeysConfig struct {
-	Prefix         string `toml:"prefix"`
-	Palette        string `toml:"palette"`
-	Terminal       string `toml:"terminal"`
-	LayoutTiled    string `toml:"layout_tiled"`
-	LayoutColumns  string `toml:"layout_columns"`
-	LayoutRows     string `toml:"layout_rows"`
-	LayoutMainVert string `toml:"layout_main_vert"`
-	LayoutCycle    string `toml:"layout_cycle"`
-	KillPane       string `toml:"kill_pane"`
-	KillSession    string `toml:"kill_session"`
-	Zoom           string `toml:"zoom"`
-	Broadcast      string `toml:"broadcast"`
-	BroadcastInput string `toml:"broadcast_input"`
-	Detach         string `toml:"detach"`
-	Respawn        string `toml:"respawn"`
-	CopyMode       string `toml:"copy_mode"`
-	Paste          string `toml:"paste"`
+	Prefix           string `toml:"prefix"`
+	Palette          string `toml:"palette"`
+	Terminal         string `toml:"terminal"`
+	LayoutTiled      string `toml:"layout_tiled"`
+	LayoutColumns    string `toml:"layout_columns"`
+	LayoutRows       string `toml:"layout_rows"`
+	LayoutMainVert   string `toml:"layout_main_vert"`
+	LayoutCycle      string `toml:"layout_cycle"`
+	KillPane         string `toml:"kill_pane"`
+	KillSession      string `toml:"kill_session"`
+	Zoom             string `toml:"zoom"`
+	Broadcast        string `toml:"broadcast"`
+	BroadcastInput   string `toml:"broadcast_input"`
+	ApprovePromotion string `toml:"approve_promotion"`
+	Detach           string `toml:"detach"`
+	Respawn          string `toml:"respawn"`
+	CopyMode         string `toml:"copy_mode"`
+	Paste            string `toml:"paste"`
 }
 
 type SessionConfig struct {

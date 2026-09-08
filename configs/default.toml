@@ -53,6 +53,7 @@ border_color = "#a6e3a1"         # green
 # kill_session = "q"              # kill session (with confirm)
 # zoom = "z"                      # toggle pane zoom
 # broadcast = "b"                 # broadcast to all panes
+# approve_promotion = "P"         # approve focused worker promotion
 # detach = "d"                    # detach client
 # respawn = "r"                   # respawn dead pane
 # copy_mode = "["                 # enter copy mode

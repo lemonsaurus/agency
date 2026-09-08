@@ -158,6 +158,24 @@ func TestSpawnAgent(t *testing.T) {
 	}
 }
 
+func TestHumanSpawnCreatesControllerInFirstWindow(t *testing.T) {
+	mock := &testMock{windowOutput: "@4\t4\tlater\n@1\t1\tfirst"}
+	mgr := newTestManager(mock)
+	human := control.Requester{Role: control.RoleController, Human: true}
+
+	if err := mgr.SpawnAgent(context.Background(), human, control.RoleController, "claude", "/tmp/project"); err != nil {
+		t.Fatalf("SpawnAgent failed: %v", err)
+	}
+	splitCall := mock.findCall("split-window")
+	if splitCall == nil || splitCall[2] != "@1" {
+		t.Fatalf("expected first window target @1, got %v", splitCall)
+	}
+	pane := mgr.ListPanes()[0]
+	if pane.Role != control.RoleController || pane.ParentID != "" || pane.RootID != pane.PaneID || pane.WindowName != "first" {
+		t.Fatalf("unexpected controller metadata: %+v", pane)
+	}
+}
+
 func TestSpawnAgentWithDir(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
@@ -297,6 +315,115 @@ func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
 	}
 	if layoutCall[2] != "%1" {
 		t.Errorf("expected layout target %%1, got %v", layoutCall)
+	}
+}
+
+func TestReplaceManagerTransfersChildren(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/manager"); err != nil {
+		t.Fatal(err)
+	}
+	manager := control.Requester{PaneID: "%1", Role: control.RoleManager, RootID: "%0"}
+	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "codex", "/tmp/worker"); err != nil {
+		t.Fatal(err)
+	}
+	mock.listOutput = "1\twork\t%1\t0\tclaude\t/tmp/manager\t1\t101\tmanager\t%0\t%0\t\n1\twork\t%2\t1\tcodex\t/tmp/worker\t0\t102\tworker\t%1\t%0\t"
+	mgr.cfg.Session.MaxPanes = 2
+	mgr.cfg.Session.MaxManagers = 1
+
+	replacementID, err := mgr.ReplacePane(context.Background(), manager, "handoff-pi", "/tmp/replacement")
+	if err != nil {
+		t.Fatalf("ReplacePane: %v", err)
+	}
+	calls := mock.findCalls("split-window")
+	replacementCall := calls[len(calls)-1]
+	if replacementCall[len(replacementCall)-3] != "-c" || replacementCall[len(replacementCall)-2] != "/tmp/replacement" || !strings.Contains(replacementCall[len(replacementCall)-1], "handoff-pi") {
+		t.Fatalf("replacement split = %v", replacementCall)
+	}
+	if replacementID != "%3" {
+		t.Fatalf("replacement ID = %s, want %%3", replacementID)
+	}
+	panes := mgr.ListPanes()
+	byID := make(map[string]TrackedPane)
+	for _, pane := range panes {
+		byID[pane.PaneID] = pane
+	}
+	if byID["%2"].ParentID != "%3" {
+		t.Fatalf("child parent = %s, want %%3", byID["%2"].ParentID)
+	}
+	if byID["%3"].Role != control.RoleManager || byID["%3"].RootID != "%0" {
+		t.Fatalf("unexpected replacement: %+v", byID["%3"])
+	}
+}
+
+func TestReplaceControllerUpdatesDescendantRoots(t *testing.T) {
+	mock := &testMock{listOutput: "1\tmain\t%0\t0\tpi\t/tmp/root\t1\t100\tcontroller\t\t%0\t\n1\tmain\t%5\t1\tpi\t/tmp/manager\t0\t105\tmanager\t%0\t%0\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	replacementID, err := mgr.ReplacePane(context.Background(), control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacementID != "%1" {
+		t.Fatalf("replacement ID = %s, want %%1", replacementID)
+	}
+	byID := make(map[string]TrackedPane)
+	for _, pane := range mgr.ListPanes() {
+		byID[pane.PaneID] = pane
+	}
+	if byID["%5"].ParentID != "%1" || byID["%5"].RootID != "%1" {
+		t.Fatalf("descendant was not transferred: %+v", byID["%5"])
+	}
+	if byID["%1"].ParentID != "" || byID["%1"].RootID != "%1" {
+		t.Fatalf("unexpected controller replacement: %+v", byID["%1"])
+	}
+}
+
+func TestWorkerPromotionLifecycle(t *testing.T) {
+	mock := &testMock{listOutput: "1\troot\t%0\t0\tpi\t/tmp/root\t1\t100\tcontroller\t\t%0\t\n2\tmanager\t%1\t0\tpi\t/tmp/manager\t1\t101\tmanager\t%0\t%0\t\n3\tworker\t%2\t0\tpi\t/tmp/worker\t1\t102\tworker\t%1\t%0\t", windowOutput: "manager"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	worker := control.Requester{PaneID: "%2", Role: control.RoleWorker, RootID: "%0"}
+	if err := mgr.RequestPromotion(context.Background(), worker, "need two workers"); err != nil {
+		t.Fatalf("RequestPromotion: %v", err)
+	}
+	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Role: control.RoleController}, "%2"); err == nil {
+		t.Fatal("expected agent approval to be rejected")
+	}
+	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Human: true}, "%2"); err != nil {
+		t.Fatalf("ApprovePromotion: %v", err)
+	}
+	byID := make(map[string]TrackedPane)
+	for _, pane := range mgr.ListPanes() {
+		byID[pane.PaneID] = pane
+	}
+	promoted := byID["%2"]
+	if promoted.Role != control.RoleManager || promoted.ParentID != "%0" || promoted.RootID != "%0" || promoted.PendingPromotion != "" {
+		t.Fatalf("unexpected promoted pane: %+v", promoted)
+	}
+	if promoted.WindowName != "manager" {
+		t.Fatalf("promoted window = %q, want manager", promoted.WindowName)
+	}
+	if mock.findCall("join-pane") == nil {
+		t.Fatal("expected worker to move to its former manager's window")
+	}
+}
+
+func TestAdoptOrphansRestoresPendingPromotion(t *testing.T) {
+	mock := &testMock{listOutput: "1\tmain\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0\t\t\n1\tmain\t%2\t1\tpi\t/tmp\t0\t102\tworker\t%1\t%0\tbmVlZCBmYW5vdXQ\tZWNobyBoaQ"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range mgr.ListPanes() {
+		if pane.PaneID == "%2" && (pane.PendingPromotion != "need fanout" || pane.Command != "echo hi") {
+			t.Fatalf("restored pane = %+v", pane)
+		}
 	}
 }
 

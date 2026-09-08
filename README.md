@@ -115,8 +115,11 @@ Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette
 agency                              Launch session (or reattach if one exists)
 agency spawn <agent> [dir...]       Spawn one pane per directory
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
-agency spawn --role <role> ...       Request a manager or worker pane
-agency whoami                        Print the current pane's role
+agency spawn --role <role> ...       Programmatic manager or worker spawn
+agency whoami [--role]               Print current pane authority
+agency replace [--cmd "..." dir]     Start a role-preserving successor
+agency request-promotion <reason>    Request worker promotion
+agency approve-promotion <pane>      Approve promotion (human tmux authority only)
 agency kill <pane-id>               Kill a specific pane
 agency kill-all                     Kill all managed panes
 agency list                         List all panes
@@ -178,6 +181,7 @@ The tmux prefix is **`Ctrl+Space`**.
 | `Prefix+q` | Kill session (Enter or y to confirm) |
 | `Prefix+f` | Zoom/unzoom focused pane |
 | `Prefix+b` | Broadcast — type in all panes at once |
+| `Prefix+P` | Approve the focused worker's pending promotion |
 | `Prefix+r` | Respawn dead pane |
 | `Prefix+d` | Detach (session keeps running) |
 
@@ -185,13 +189,17 @@ The tmux prefix is **`Ctrl+Space`**.
 
 ## How delegation works
 
-Agency assigns three roles:
+Agency assigns three pane roles:
 
-- `controller`: the initial pane, creates managers or workers
+- `controller`: human-created, creates managers
 - `manager`: creates workers
-- `worker`: cannot create panes or windows
+- `worker`: cannot create panes
 
-One controller exists per session. Agency records each pane's role, parent, and root in tmux pane options and validates socket callers from their process ancestry. Agency enforces every role transition.
+Tmux keybindings and popups carry human authority rather than focused-pane authority. New sessions name the first window `control`; default human spawns create controllers there. Agent spawns require an explicit child role. `agency-spawn` derives that role from the caller's live authority.
+
+Role, parent, root, and pending promotion data live in tmux pane options for restart adoption. `agency replace` starts a successor in the same window and directory, with optional command and directory overrides for context handoff. It transfers children and returns the successor pane ID. The old pane stays alive until the caller checks the successor and retires itself.
+
+Workers can run `agency request-promotion <reason>`. Agency notifies the root controller. A human approves the focused pending worker with `Prefix+P`; approval promotes it to manager, reparents it under the root controller, moves it to its former manager's window, and runs `/handoff`.
 
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.
 
@@ -201,17 +209,21 @@ The `agency-spawn` script (installed to `~/.local/bin/`) is a tiny wrapper agent
 agency-spawn claude                      # spawn a claude pane in the current directory
 agency-spawn claude --dir ~/projects/api # spawn in a specific directory
 agency-spawn --cmd "aider --yes"         # spawn an arbitrary command
+agency-spawn --replace                    # start a role-preserving successor
+agency-spawn --request-promotion "reason" # ask the root controller for promotion
 ```
 
-A manager given instructions like *"when you need to work on the backend, run `agency-spawn pi --dir ~/api`"* requests a worker over the socket. A worker receives an error if it tries the same call.
+Controllers request managers, managers request workers, and workers receive an error. Worker-to-manager delegation policy belongs in the agent instructions, not Agency.
 
 The protocol is plain text over the unix socket:
 
 ```
-spawn:claude@/home/user/projects/api    → spawn agent pane in that directory
-spawn:cmd:htop                          → spawn arbitrary command
-kill:%3                                 → kill pane %3
-layout:tiled                            → switch layout
+spawn-role:{"agent":"pi","role":"worker"} → explicit programmatic spawn
+replace:{"command":"handoff-pi","dir":"/tmp"} → role-preserving successor
+promotion-request:{"reason":"need fanout"} → worker promotion request
+promotion-approve:%3                         → human promotion approval
+kill:%3                                      → kill pane %3
+layout:tiled                                 → switch layout
 ```
 
 ---

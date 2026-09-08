@@ -35,7 +35,13 @@ func main() {
 	case "spawn-dialog":
 		runSpawnDialog(os.Args[2:])
 	case "whoami":
-		runWhoAmI()
+		runWhoAmI(os.Args[2:])
+	case "replace":
+		runReplace(os.Args[2:])
+	case "request-promotion":
+		runRequestPromotion(os.Args[2:])
+	case "approve-promotion":
+		runApprovePromotion(os.Args[2:])
 	case "send":
 		runSend(os.Args[2:])
 	case "capture":
@@ -87,7 +93,10 @@ Usage:
   agency spawn --window <name> ...   Spawn into a named tmux window
   agency spawn --role <role> ...     Request a manager or worker pane
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
-  agency whoami                     Print the current pane's role
+  agency whoami [--role]            Print current pane authority
+  agency replace [--cmd "..." dir] Start a role-preserving successor pane
+  agency request-promotion <reason> Request worker promotion
+  agency approve-promotion <pane>   Approve a pending worker (tmux keybinding only)
   agency send <pane-id> <text>      Send text to a pane and press Enter
   agency capture <pane-id> [lines]  Capture pane output
   agency kill <pane-id>             Kill a specific pane
@@ -228,6 +237,9 @@ func runLaunch() {
 		if err := tc.NewSession(ctx); err != nil {
 			log.Fatalf("Creating tmux session: %v", err)
 		}
+	}
+	if err := tc.NameFirstWindow(ctx, "control"); err != nil {
+		log.Printf("Warning: naming control window: %v", err)
 	}
 	// Label all existing panes (initial shell on fresh start, or orphans on recovery).
 	if err := mgr.AdoptOrphans(ctx); err != nil {
@@ -404,7 +416,7 @@ func runSpawn(args []string) {
 	}
 }
 
-func runWhoAmI() {
+func runWhoAmI(args []string) {
 	cfg := loadConfig()
 	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")
 	if err != nil {
@@ -415,7 +427,80 @@ func runWhoAmI() {
 		fmt.Fprintln(os.Stderr, resp)
 		os.Exit(1)
 	}
+	if len(args) > 0 && args[0] == "--role" {
+		var requester control.Requester
+		if err := json.Unmarshal([]byte(resp), &requester); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(requester.Role)
+		return
+	}
 	fmt.Println(resp)
+}
+
+func runReplace(args []string) {
+	message := "replace"
+	if len(args) > 0 {
+		if args[0] != "--cmd" || len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency replace [--cmd \"command\" dir]")
+			os.Exit(1)
+		}
+		command, dir := extractDirArg(args[1:])
+		payload, _ := json.Marshal(struct {
+			Command string `json:"command,omitempty"`
+			Dir     string `json:"dir,omitempty"`
+		}{Command: strings.Join(command, " "), Dir: dir})
+		message += ":" + string(payload)
+	}
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), message)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(resp, "error:") {
+		fmt.Fprintln(os.Stderr, resp)
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
+func runRequestPromotion(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency request-promotion <reason>")
+		os.Exit(1)
+	}
+	payload, _ := json.Marshal(struct {
+		Reason string `json:"reason"`
+	}{Reason: strings.Join(args, " ")})
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "promotion-request:"+string(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+}
+
+func runApprovePromotion(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: agency approve-promotion <pane-id>")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "promotion-approve:"+args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
 }
 
 func runSpawnDialog(args []string) {

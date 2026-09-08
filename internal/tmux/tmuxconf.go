@@ -234,6 +234,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)
+	fmt.Fprintf(&b, "bind %s run-shell \"%s approve-promotion #{pane_id}\"\n", cfg.Keys.ApprovePromotion, agencyBin)
 	fmt.Fprintf(&b, "bind %s detach-client\n", cfg.Keys.Detach)
 	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
 	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)

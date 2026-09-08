@@ -127,6 +127,10 @@ agency spawn claude           Spawn a Claude pane
 agency spawn codex            Spawn a Codex pane
 agency spawn gemini           Spawn a Gemini pane
 agency spawn --cmd "aider"    Spawn arbitrary command
+agency spawn --role worker pi Make a programmatic child role explicit
+agency replace [--cmd ...]    Start a role-preserving successor
+agency request-promotion ...  Request worker promotion
+agency approve-promotion %3   Human approval used by the tmux binding
 agency kill <pane-id>         Kill a specific pane
 agency kill-all               Kill all agent panes
 agency list                   List all panes with status
@@ -177,6 +181,7 @@ Prefix + Space     → Cycle through layouts
 Prefix + x         → Kill focused pane (with confirmation)
 Prefix + f         → Zoom/unzoom focused pane (fullscreen toggle)
 Prefix + b         → Broadcast mode (type in ALL panes at once)
+Prefix + P         → Approve focused worker promotion request
 Prefix + r         → Respawn dead pane with same agent
 Prefix + d         → Detach (session keeps running)
 ```
@@ -204,30 +209,23 @@ Selecting "Custom command..." prompts for a command string. The palette calls `a
 
 ## How delegation works
 
-The initial pane is the sole `controller`. Controllers create `manager` or `worker` panes. Managers create workers. Workers cannot spawn. Agency resolves each socket caller from its peer PID and tmux pane ancestry, then applies the transition before creating anything.
+Tmux keybindings and popups carry human authority, separate from focused-pane authority. New sessions name the first window `control`; human default spawns create `controller` panes there. Agent calls resolve the socket peer from process ancestry and require explicit transitions: controllers create managers, managers create workers, and workers cannot spawn.
 
-Role, parent, and root IDs live in tmux pane options so restart adoption keeps the control tree. Session caps bound managers, workers per manager, and total panes.
+Role, parent, root, and pending promotion state live in tmux pane options. Session caps bound managers, workers per manager, and total panes. Role-preserving replacement may exceed caps while old and new panes overlap. It starts the successor in the same window and directory, transfers children, updates controller descendant roots, returns the new pane ID, and leaves retirement to the caller.
+
+Workers may request promotion with a reason. Agency sends a structured notice to the root controller. Only tmux human authority can approve the focused pending worker. Approval makes it a manager under the root controller, moves it to its former manager's window, and runs `/handoff` so Pi reloads role-gated tools and prompts. Manager-to-controller promotion does not exist.
 
 When agency launches, it starts a unix socket server at `/tmp/agency-{session}.sock`. It also sets the env var `AGENCY_SOCKET` in every spawned pane so agents know where to reach it.
 
-The `scripts/agency-spawn` script is a tiny bash wrapper:
-
-```bash
-#!/usr/bin/env bash
-# Usage: agency-spawn claude
-# Usage: agency-spawn --cmd "my-custom-thing"
-# Called BY an agent running inside an agency pane.
-echo "spawn:${1}" | socat - UNIX-CONNECT:"$AGENCY_SOCKET"
-```
-
-A manager can run `agency-spawn pi` to request a worker. The socket server rejects the same request from a worker.
+`scripts/agency-spawn` reads the live role through `agency whoami`, falls back to `AGENCY_ROLE`, and sends an explicit manager or worker child role. It rejects workers. It also exposes `--replace` and `--request-promotion`.
 
 The protocol is newline-delimited:
-- `spawn:claude` → spawn a claude pane
-- `spawn:codex` → spawn a codex pane
-- `spawn:cmd:aider --yes` → spawn arbitrary command
-- `kill:3` → kill pane 3
-- `layout:tiled` → switch layout
+- `spawn-role:{"agent":"pi","role":"worker"}` creates an explicit programmatic child
+- `replace:{"command":"handoff-pi","dir":"/tmp"}` starts a role-preserving successor with optional launch overrides
+- `promotion-request:{"reason":"need fanout"}` records and routes a request
+- `promotion-approve:%3` approves a pending worker from human tmux authority
+- `kill:%3` kills pane `%3`
+- `layout:tiled` switches layout
 
 ## Pane border labels
 

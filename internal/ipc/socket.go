@@ -29,6 +29,9 @@ type Handler interface {
 	SetLayout(ctx context.Context, layout string) error
 	Relayout(ctx context.Context) error
 	BroadcastKeys(ctx context.Context, keys string) error
+	ReplacePane(ctx context.Context, requester control.Requester, command, dir string) (string, error)
+	RequestPromotion(ctx context.Context, requester control.Requester, reason string) error
+	ApprovePromotion(ctx context.Context, requester control.Requester, paneID string) error
 }
 
 type spawnPayload struct {
@@ -53,6 +56,15 @@ type sendPayload struct {
 type movePayload struct {
 	Pane   string `json:"pane"`
 	Window string `json:"window"`
+}
+
+type replacementPayload struct {
+	Command string `json:"command,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+}
+
+type promotionPayload struct {
+	Reason string `json:"reason"`
 }
 
 // Server listens on a unix socket for agent spawn/control requests.
@@ -149,12 +161,22 @@ func (s *Server) requester(pid int) (control.Requester, error) {
 }
 
 func requestedRole(requester control.Requester, value string) (control.Role, error) {
-	var role control.Role
-	var err error
-	if value != "" {
-		role, err = control.ParseRole(value)
-		if err != nil {
-			return "", err
+	if value == "" {
+		if requester.Human {
+			return control.RoleController, nil
+		}
+		return "", fmt.Errorf("programmatic spawns require an explicit role")
+	}
+	role, err := control.ParseRole(value)
+	if err != nil {
+		return "", err
+	}
+	if requester.Human {
+		if role == control.RoleController {
+			return role, nil
+		}
+		if requester.PaneID == "" {
+			return "", fmt.Errorf("create a controller before requesting a child role")
 		}
 	}
 	return requester.ChildRole(role)
@@ -171,6 +193,13 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		data, _ := json.Marshal(requester)
 		return string(data), nil
+	}
+	if line == "replace" {
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		return s.handler.ReplacePane(s.ctx, requester, "", "")
 	}
 
 	parts := strings.SplitN(line, ":", 2)
@@ -286,6 +315,35 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		return "", s.handler.SetLayout(s.ctx, arg)
 	case "broadcast-keys":
 		return "", s.handler.BroadcastKeys(s.ctx, arg)
+	case "replace":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		var payload replacementPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid replacement payload: %w", err)
+		}
+		return s.handler.ReplacePane(s.ctx, requester, payload.Command, payload.Dir)
+	case "promotion-request":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		var payload promotionPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid promotion-request payload: %w", err)
+		}
+		return "", s.handler.RequestPromotion(s.ctx, requester, strings.TrimSpace(payload.Reason))
+	case "promotion-approve":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		if arg == "" {
+			return "", fmt.Errorf("pane is required")
+		}
+		return "", s.handler.ApprovePromotion(s.ctx, requester, arg)
 	default:
 		return "", fmt.Errorf("unknown command: %q", cmd)
 	}

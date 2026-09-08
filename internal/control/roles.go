@@ -14,6 +14,7 @@ type Requester struct {
 	PaneID string `json:"paneId"`
 	Role   Role   `json:"role"`
 	RootID string `json:"rootId"`
+	Human  bool   `json:"human"`
 }
 
 func ParseRole(value string) (Role, error) {
@@ -27,20 +28,11 @@ func ParseRole(value string) (Role, error) {
 }
 
 func (r Requester) ChildRole(requested Role) (Role, error) {
-	if requested == "" {
-		switch r.Role {
-		case RoleController:
-			requested = RoleManager
-		case RoleManager:
-			requested = RoleWorker
-		}
-	}
-
-	allowed := r.Role == RoleController && (requested == RoleManager || requested == RoleWorker) ||
+	allowed := r.Role == RoleController && requested == RoleManager ||
 		r.Role == RoleManager && requested == RoleWorker
 	if !allowed {
 		if requested == "" {
-			return "", fmt.Errorf("%s panes cannot create panes", r.Role)
+			return "", fmt.Errorf("%s panes must request an explicit child role", r.Role)
 		}
 		return "", fmt.Errorf("%s panes cannot create %s panes", r.Role, requested)
 	}

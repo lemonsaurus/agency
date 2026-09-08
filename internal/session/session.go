@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -34,15 +36,16 @@ var paneColors = []string{
 
 // TrackedPane holds state for a single managed pane.
 type TrackedPane struct {
-	PaneID     string
-	WindowName string
-	AgentType  string // empty for custom commands
-	AgentName  string // display name like "🔒 claudejail@myproject"
-	Command    string
-	Status     string
-	Role       control.Role
-	ParentID   string
-	RootID     string
+	PaneID           string
+	WindowName       string
+	AgentType        string // empty for custom commands
+	AgentName        string // display name like "🔒 claudejail@myproject"
+	Command          string
+	Status           string
+	Role             control.Role
+	ParentID         string
+	RootID           string
+	PendingPromotion string
 }
 
 // Manager tracks panes, handles spawn/kill, and satisfies ipc.Handler.
@@ -106,15 +109,21 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	if err := m.checkSpawnLimit(requester, role); err != nil {
 		return err
 	}
+	parentID := requester.PaneID
 	rootID := requester.RootID
-	if rootID == "" {
+	if role == control.RoleController {
+		parentID = ""
+		rootID = ""
+	} else if rootID == "" {
 		rootID = requester.PaneID
 	}
-	spawnCommand := roleCommand(command, role, requester.PaneID, rootID)
+	spawnCommand := roleCommand(command, role, parentID, rootID)
 
 	var paneID string
 	var err error
-	if windowName != "" {
+	if requester.Human && role == control.RoleController {
+		paneID, windowName, err = m.tmux.SplitWindowInFirstWindow(ctx, spawnCommand, dir)
+	} else if windowName != "" {
 		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
 		if existsErr != nil {
 			return fmt.Errorf("checking window: %w", existsErr)
@@ -129,6 +138,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	}
 	if err != nil {
 		return fmt.Errorf("spawning pane: %w", err)
+	}
+	if role == control.RoleController {
+		rootID = paneID
 	}
 
 	// Pick the next unique color from the palette.
@@ -166,7 +178,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 		Command:    command,
 		Status:     status.StatusRunning,
 		Role:       role,
-		ParentID:   requester.PaneID,
+		ParentID:   parentID,
 		RootID:     rootID,
 	}
 	m.panes[paneID] = tracked
@@ -182,9 +194,13 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 }
 
 func roleCommand(command string, role control.Role, parentID, rootID string) string {
+	rootValue := fmt.Sprintf("%q", rootID)
+	if role == control.RoleController {
+		rootValue = `"$(tmux display-message -p '#{pane_id}')"`
+	}
 	return fmt.Sprintf(
-		`AGENCY_ROLE=%s AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%q %s`,
-		role, parentID, rootID, command,
+		`AGENCY_ROLE=%s AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%s %s`,
+		role, parentID, rootValue, command,
 	)
 }
 
@@ -221,6 +237,12 @@ func (m *Manager) stylePaneControl(ctx context.Context, pane *TrackedPane) {
 	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_role", string(pane.Role))
 	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_parent", pane.ParentID)
 	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_root", pane.RootID)
+	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_command", base64.RawStdEncoding.EncodeToString([]byte(pane.Command)))
+	pending := ""
+	if pane.PendingPromotion != "" {
+		pending = base64.RawStdEncoding.EncodeToString([]byte(pane.PendingPromotion))
+	}
+	_ = m.tmux.SetPaneOption(ctx, pane.PaneID, "@agency_promotion", pending)
 }
 
 // stylePaneLabel stores the display label and color as pane user options.
@@ -271,12 +293,197 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 		for _, pane := range panes {
 			tracked := m.panes[pane.ID]
 			if tracked != nil && tracked.Role == control.RoleController {
-				return control.Requester{PaneID: pane.ID, Role: control.RoleController, RootID: tracked.RootID}, nil
+				return control.Requester{PaneID: pane.ID, Role: control.RoleController, RootID: tracked.RootID, Human: true}, nil
 			}
 		}
-		return control.Requester{Role: control.RoleController}, nil
+		return control.Requester{Role: control.RoleController, Human: true}, nil
 	}
 	return control.Requester{}, fmt.Errorf("requester process %d does not belong to an agency pane", pid)
+}
+
+// ReplacePane starts a role-preserving successor beside the requester.
+// The caller retires the old pane after confirming the successor started.
+func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, command, dir string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if requester.Human || requester.PaneID == "" {
+		return "", fmt.Errorf("replacement must be requested from an agency pane")
+	}
+	old := m.panes[requester.PaneID]
+	if old == nil || old.Role != requester.Role {
+		return "", fmt.Errorf("pane %s is not tracked with role %s", requester.PaneID, requester.Role)
+	}
+	paneInfo, err := m.paneInfo(ctx, old.PaneID)
+	if err != nil {
+		return "", err
+	}
+
+	rootID := old.RootID
+	replacementCommand := old.Command
+	if command != "" {
+		replacementCommand = command
+	}
+	replacementDir := paneInfo.CWD
+	if dir != "" {
+		replacementDir = dir
+	}
+	spawnCommand := roleCommand(replacementCommand, old.Role, old.ParentID, rootID)
+	paneID, err := m.tmux.SplitWindowAt(ctx, old.PaneID, spawnCommand, replacementDir)
+	if err != nil {
+		return "", fmt.Errorf("spawning replacement: %w", err)
+	}
+	if old.Role == control.RoleController {
+		rootID = paneID
+	}
+
+	color := paneColors[m.colorIndex%len(paneColors)]
+	m.colorIndex++
+	replacement := &TrackedPane{
+		PaneID:           paneID,
+		WindowName:       paneInfo.WindowName,
+		AgentType:        old.AgentType,
+		AgentName:        old.AgentName,
+		Command:          old.Command,
+		Status:           status.StatusRunning,
+		Role:             old.Role,
+		ParentID:         old.ParentID,
+		RootID:           rootID,
+		PendingPromotion: old.PendingPromotion,
+	}
+	if replacement.Role == control.RoleController {
+		replacement.ParentID = ""
+	}
+	m.panes[paneID] = replacement
+	m.stylePaneLabel(ctx, paneID, replacement.AgentName, color)
+	m.stylePaneControl(ctx, replacement)
+
+	for _, pane := range m.panes {
+		changed := false
+		if pane.PaneID != paneID && pane.ParentID == old.PaneID {
+			pane.ParentID = paneID
+			changed = true
+		}
+		if old.Role == control.RoleController && pane.PaneID != old.PaneID && pane.RootID == old.PaneID {
+			pane.RootID = paneID
+			changed = true
+		}
+		if changed {
+			m.stylePaneControl(ctx, pane)
+		}
+	}
+	if m.poller != nil {
+		m.poller.Track(paneID, replacement.AgentType)
+	}
+	_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, paneID)
+	return paneID, nil
+}
+
+func (m *Manager) paneInfo(ctx context.Context, paneID string) (tmux.PaneInfo, error) {
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return tmux.PaneInfo{}, err
+	}
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			return pane, nil
+		}
+	}
+	return tmux.PaneInfo{}, fmt.Errorf("pane %s not found", paneID)
+}
+
+// RequestPromotion records a worker's request and notifies its root controller.
+func (m *Manager) RequestPromotion(ctx context.Context, requester control.Requester, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if requester.Human || requester.Role != control.RoleWorker {
+		return fmt.Errorf("only worker panes can request promotion")
+	}
+	if reason == "" {
+		return fmt.Errorf("promotion reason is required")
+	}
+	worker := m.panes[requester.PaneID]
+	if worker == nil || worker.Role != control.RoleWorker {
+		return fmt.Errorf("worker pane %s is not tracked", requester.PaneID)
+	}
+	root := m.panes[worker.RootID]
+	if root == nil || root.Role != control.RoleController {
+		return fmt.Errorf("root controller %s is not available", worker.RootID)
+	}
+
+	worker.PendingPromotion = reason
+	encoded := base64.RawStdEncoding.EncodeToString([]byte(reason))
+	if err := m.tmux.SetPaneOption(ctx, worker.PaneID, "@agency_promotion", encoded); err != nil {
+		worker.PendingPromotion = ""
+		return err
+	}
+	notice, _ := json.Marshal(struct {
+		Type   string `json:"type"`
+		PaneID string `json:"paneId"`
+		Reason string `json:"reason"`
+	}{Type: "promotion-request", PaneID: worker.PaneID, Reason: reason})
+	if err := m.tmux.SendText(ctx, root.PaneID, "[agency] "+string(notice), true); err != nil {
+		worker.PendingPromotion = ""
+		_ = m.tmux.SetPaneOption(ctx, worker.PaneID, "@agency_promotion", "")
+		return err
+	}
+	return nil
+}
+
+// ApprovePromotion promotes a pending worker. Approval is reserved for tmux's human authority.
+func (m *Manager) ApprovePromotion(ctx context.Context, requester control.Requester, paneID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !requester.Human {
+		return fmt.Errorf("promotion approval requires human tmux authority")
+	}
+	worker := m.panes[paneID]
+	if worker == nil || worker.Role != control.RoleWorker {
+		return fmt.Errorf("pane %s is not a worker", paneID)
+	}
+	if worker.PendingPromotion == "" {
+		return fmt.Errorf("pane %s has no pending promotion", paneID)
+	}
+	root := m.panes[worker.RootID]
+	if root == nil || root.Role != control.RoleController {
+		return fmt.Errorf("root controller %s is not available", worker.RootID)
+	}
+	parent := m.panes[worker.ParentID]
+	if parent == nil || parent.Role != control.RoleManager {
+		return fmt.Errorf("manager parent %s is not available", worker.ParentID)
+	}
+	managerCount := 0
+	for _, pane := range m.panes {
+		if pane.Role == control.RoleManager {
+			managerCount++
+		}
+	}
+	if max := m.cfg.Session.MaxManagers; max > 0 && managerCount >= max {
+		return fmt.Errorf("agency manager limit reached (%d)", max)
+	}
+
+	parentInfo, err := m.paneInfo(ctx, parent.PaneID)
+	if err != nil {
+		return err
+	}
+	workerInfo, err := m.paneInfo(ctx, worker.PaneID)
+	if err != nil {
+		return err
+	}
+	if workerInfo.WindowName != parentInfo.WindowName {
+		if err := m.tmux.MovePane(ctx, worker.PaneID, parentInfo.WindowName); err != nil {
+			return err
+		}
+	}
+	worker.Role = control.RoleManager
+	worker.ParentID = root.PaneID
+	worker.RootID = root.PaneID
+	worker.WindowName = parentInfo.WindowName
+	worker.PendingPromotion = ""
+	m.stylePaneControl(ctx, worker)
+	return m.tmux.SendText(ctx, worker.PaneID, "/handoff", true)
 }
 
 // KillPane kills a specific pane.
@@ -521,7 +728,13 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 		color := paneColors[m.colorIndex%len(paneColors)]
 		m.colorIndex++
 
-		agentType := m.registry.DetectType(pane.Command)
+		agencyCommand := pane.Command
+		if pane.AgencyCommand != "" {
+			if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.AgencyCommand); decodeErr == nil {
+				agencyCommand = string(decoded)
+			}
+		}
+		agentType := m.registry.DetectType(agencyCommand)
 		var displayName string
 		if agentType != "" {
 			agent, _ := m.registry.Get(agentType)
@@ -566,16 +779,23 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			}
 		}
 
+		pendingPromotion := ""
+		if pane.PendingPromotion != "" {
+			if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.PendingPromotion); decodeErr == nil {
+				pendingPromotion = string(decoded)
+			}
+		}
 		tracked := &TrackedPane{
-			PaneID:     pane.ID,
-			WindowName: pane.WindowName,
-			AgentType:  agentType,
-			AgentName:  displayName,
-			Command:    pane.Command,
-			Status:     status.StatusIdle,
-			Role:       role,
-			ParentID:   parentID,
-			RootID:     rootID,
+			PaneID:           pane.ID,
+			WindowName:       pane.WindowName,
+			AgentType:        agentType,
+			AgentName:        displayName,
+			Command:          agencyCommand,
+			Status:           status.StatusIdle,
+			Role:             role,
+			ParentID:         parentID,
+			RootID:           rootID,
+			PendingPromotion: pendingPromotion,
 		}
 		m.panes[pane.ID] = tracked
 		m.stylePaneControl(ctx, tracked)

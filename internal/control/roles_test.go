@@ -10,10 +10,10 @@ func TestChildRole(t *testing.T) {
 		want      Role
 		wantError bool
 	}{
-		{"controller default", RoleController, "", RoleManager, false},
-		{"controller worker", RoleController, RoleWorker, RoleWorker, false},
+		{"controller requires explicit role", RoleController, "", "", true},
+		{"controller cannot create worker", RoleController, RoleWorker, "", true},
 		{"controller cannot clone", RoleController, RoleController, "", true},
-		{"manager default", RoleManager, "", RoleWorker, false},
+		{"manager requires explicit role", RoleManager, "", "", true},
 		{"manager cannot create manager", RoleManager, RoleManager, "", true},
 		{"worker cannot spawn", RoleWorker, "", "", true},
 	}
