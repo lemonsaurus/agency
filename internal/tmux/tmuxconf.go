@@ -124,8 +124,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Explicitly send the CSI u encoded form so crossterm-based apps
 	// (like Claude Code) see it as Ctrl+Enter.
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
-	b.WriteString("bind -n Home send-keys -l '\\033[H'\n")
-	b.WriteString("bind -n End send-keys -l '\\033[F'\n\n")
+	b.WriteString("unbind -n Home\n")
+	b.WriteString("unbind -n End\n\n")
 
 	// Keep the pane menu available when a fullscreen application captures mouse input.
 	fmt.Fprintf(&b, "bind -T root MouseDown3Pane %s\n", PaneContextMenu)
