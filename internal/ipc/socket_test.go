@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,10 @@ type mockHandler struct {
 	promotionApprovals []string
 	failNext           bool
 	requester          control.Requester
+}
+
+func (m *mockHandler) Capabilities() control.Capabilities {
+	return control.Capabilities{Protocol: 1, PromotionShortcut: "Ctrl+Space then Shift+P"}
 }
 
 func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Requester, error) {
@@ -593,6 +598,21 @@ func TestServerHandlerError(t *testing.T) {
 	}
 	if resp == "ok" {
 		t.Error("expected error response when handler fails")
+	}
+}
+
+func TestCapabilitiesDescribeRunningDaemon(t *testing.T) {
+	srv := NewServer("", &mockHandler{})
+	response, err := srv.dispatch("capabilities", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities control.Capabilities
+	if err := json.Unmarshal([]byte(response), &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.Protocol != 1 || capabilities.PromotionShortcut != "Ctrl+Space then Shift+P" {
+		t.Fatalf("capabilities = %+v", capabilities)
 	}
 }
 

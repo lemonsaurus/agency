@@ -10,6 +10,11 @@ const (
 	RoleWorker     Role = "worker"
 )
 
+type Capabilities struct {
+	Protocol          int    `json:"protocol"`
+	PromotionShortcut string `json:"promotionShortcut"`
+}
+
 type Requester struct {
 	PaneID string `json:"paneId"`
 	Role   Role   `json:"role"`

@@ -113,10 +113,12 @@ Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette
 
 ```
 agency                              Launch session (or reattach if one exists)
+agency --migrate-controller <pane>   Migrate a legacy session under the selected controller
 agency spawn <agent> [dir...]       Spawn one pane per directory
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
 agency spawn --role <role> ...       Programmatic manager or worker spawn
 agency whoami [--role]               Print current pane authority
+agency capabilities                 Print running daemon protocol and promotion shortcut
 agency replace [--cmd "..." dir]     Start a role-preserving successor
 agency request-promotion <reason>    Request worker promotion
 agency approve-promotion <pane>      Approve promotion (human tmux authority only)
@@ -181,7 +183,7 @@ The tmux prefix is **`Ctrl+Space`**.
 | `Prefix+q` | Kill session (Enter or y to confirm) |
 | `Prefix+f` | Zoom/unzoom focused pane |
 | `Prefix+b` | Broadcast — type in all panes at once |
-| `Prefix+P` | Approve the focused worker's pending promotion |
+| `Prefix+P` | Confirm the focused worker's pending promotion |
 | `Prefix+r` | Respawn dead pane |
 | `Prefix+d` | Detach (session keeps running) |
 
@@ -199,7 +201,13 @@ Tmux keybindings and popups carry human authority rather than focused-pane autho
 
 Role, parent, root, and pending promotion data live in tmux pane options for restart adoption. `agency replace` starts a successor in the same window and directory, with optional command and directory overrides for context handoff. It transfers children and returns the successor pane ID. The old pane stays alive until the caller checks the successor and retires itself.
 
-Workers can run `agency request-promotion <reason>`. Agency notifies the root controller. A human approves the focused pending worker with `Prefix+P`; approval promotes it to manager, reparents it under the root controller, moves it to its former manager's window, and runs `/handoff`.
+Workers request promotion with `agency request-promotion <reason>`. A yellow pane badge marks the pending request. Focus that pane, press `Ctrl+Space`, then `Shift+P`, and confirm with `y`. Approval changes the worker to a manager under its root controller and moves it to its former manager's window. Pi refreshes its tools on the next prompt. Managers cannot become controllers through promotion.
+
+Every role can use `/handoff` without promotion. Failed handoffs keep the original pane and pending input. `agency capabilities` reports the running daemon protocol and configured approval shortcut; Pi reports outdated runtimes explicitly.
+
+Agency's API rejects approval from agent processes. The keyboard flow uses tmux process ancestry and human confirmation. Agents with unrestricted shell access are not sandboxed from the tmux server.
+
+For an existing two-role session, stop the old Agency backend without killing the tmux session, then launch `agency --migrate-controller <root-pane>`. The selected root manager becomes the controller. Other roles remain unchanged, other root managers become its children, and worker roots point to it. Legacy workers attached directly to the controller can request promotion. New spawns follow controller → manager → worker.
 
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.
 

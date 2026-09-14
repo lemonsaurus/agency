@@ -163,7 +163,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Label format: show @agency_label with colored badge for agency panes,
 	// fall back to live command@folder for plain terminal panes.
 	// Note: #, is tmux's escape for a literal comma inside format strings.
-	b.WriteString("set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{pane_current_command}@#{b:pane_current_path} }\"\n\n")
+	fmt.Fprintf(&b, "set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{pane_current_command}@#{b:pane_current_path} }#{?#{@agency_promotion},#[fg=#f9e2af#,bold] promotion pending: Prefix+%s #[default],}\"\n\n", cfg.Keys.ApprovePromotion)
 
 	// Status bar.
 	b.WriteString("# Status bar\n")
@@ -234,7 +234,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)
-	fmt.Fprintf(&b, "bind %s run-shell \"%s approve-promotion #{pane_id}\"\n", cfg.Keys.ApprovePromotion, agencyBin)
+	fmt.Fprintf(&b, "bind %s confirm-before -p 'Promote worker #{pane_id} to manager? (y/n)' 'run-shell \"%s approve-promotion #{pane_id}\"'\n", cfg.Keys.ApprovePromotion, agencyBin)
 	fmt.Fprintf(&b, "bind %s detach-client\n", cfg.Keys.Detach)
 	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
 	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)

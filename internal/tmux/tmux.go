@@ -310,6 +310,11 @@ func (c *Client) SendText(ctx context.Context, paneID, text string, enter bool) 
 	return err
 }
 
+func (c *Client) DisplayMessage(ctx context.Context, paneID, message string) error {
+	_, err := c.Cmd.Run(ctx, "display-message", "-t", paneID, "-d", "6000", "--", message)
+	return err
+}
+
 func (c *Client) KillPane(ctx context.Context, paneID string) error {
 	_, err := c.Cmd.Run(ctx, "kill-pane", "-t", paneID)
 	return err

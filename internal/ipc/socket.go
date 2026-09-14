@@ -16,6 +16,7 @@ import (
 
 // Handler processes IPC commands from the socket.
 type Handler interface {
+	Capabilities() control.Capabilities
 	ResolveRequester(ctx context.Context, pid int) (control.Requester, error)
 	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir string) error
 	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir string) error
@@ -183,6 +184,10 @@ func requestedRole(requester control.Requester, value string) (control.Role, err
 }
 
 func (s *Server) dispatch(line string, pid int) (string, error) {
+	if line == "capabilities" {
+		data, _ := json.Marshal(s.handler.Capabilities())
+		return string(data), nil
+	}
 	if line == "relayout" {
 		return "", s.handler.Relayout(s.ctx)
 	}

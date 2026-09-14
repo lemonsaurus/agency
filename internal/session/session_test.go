@@ -357,6 +357,30 @@ func TestReplaceManagerTransfersChildren(t *testing.T) {
 	}
 }
 
+func TestReplaceWorkerPreservesAuthorityAtCapacity(t *testing.T) {
+	mock := &testMock{listOutput: "1\troot\t%0\t0\tpi\t/tmp/root\t1\t100\tcontroller\t\t%0\t\n2\twork\t%5\t0\tpi\t/tmp/worker\t1\t105\tworker\t%4\t%0\tbmVlZCBmYW5vdXQ\n"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mgr.cfg.Session.MaxPanes = 1
+	mgr.cfg.Session.MaxWorkersPerManager = 1
+	worker := control.Requester{PaneID: "%5", Role: control.RoleWorker, RootID: "%0"}
+	id, err := mgr.ReplacePane(context.Background(), worker, "handoff-pi", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range mgr.ListPanes() {
+		if pane.PaneID == id && (pane.Role != control.RoleWorker || pane.ParentID != "%4" || pane.RootID != "%0" || pane.PendingPromotion != "need fanout") {
+			t.Fatalf("replacement changed authority: %+v", pane)
+		}
+	}
+	call := mock.findCall("split-window")
+	if call[2] != "%5" || !strings.Contains(strings.Join(call, " "), "/tmp/worker") {
+		t.Fatalf("replacement did not preserve location: %v", call)
+	}
+}
+
 func TestReplaceControllerUpdatesDescendantRoots(t *testing.T) {
 	mock := &testMock{listOutput: "1\tmain\t%0\t0\tpi\t/tmp/root\t1\t100\tcontroller\t\t%0\t\n1\tmain\t%5\t1\tpi\t/tmp/manager\t0\t105\tmanager\t%0\t%0\t"}
 	mgr := newTestManager(mock)
@@ -392,8 +416,10 @@ func TestWorkerPromotionLifecycle(t *testing.T) {
 	if err := mgr.RequestPromotion(context.Background(), worker, "need two workers"); err != nil {
 		t.Fatalf("RequestPromotion: %v", err)
 	}
-	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Role: control.RoleController}, "%2"); err == nil {
-		t.Fatal("expected agent approval to be rejected")
+	for _, role := range []control.Role{control.RoleController, control.RoleManager, control.RoleWorker} {
+		if err := mgr.ApprovePromotion(context.Background(), control.Requester{Role: role}, "%2"); err == nil {
+			t.Fatalf("expected %s agent approval to be rejected", role)
+		}
 	}
 	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Human: true}, "%2"); err != nil {
 		t.Fatalf("ApprovePromotion: %v", err)
@@ -411,6 +437,89 @@ func TestWorkerPromotionLifecycle(t *testing.T) {
 	}
 	if mock.findCall("join-pane") == nil {
 		t.Fatal("expected worker to move to its former manager's window")
+	}
+	for _, call := range mock.findCalls("send-keys") {
+		if strings.Contains(strings.Join(call, " "), "/handoff") {
+			t.Fatal("promotion must not inject commands into the worker's terminal")
+		}
+	}
+	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Human: true}, "%2"); err == nil {
+		t.Fatal("manager-to-controller promotion must be rejected")
+	}
+}
+
+func TestCapabilitiesUseConfiguredShortcut(t *testing.T) {
+	mgr := newTestManager(&testMock{})
+	mgr.cfg.Keys.Prefix = "C-Space"
+	if got := mgr.Capabilities(); got.Protocol != 1 || got.PromotionShortcut != "Ctrl+Space then Shift+P" {
+		t.Fatalf("capabilities = %+v", got)
+	}
+	mgr.cfg.Keys.Prefix = "C-a"
+	mgr.cfg.Keys.ApprovePromotion = "p"
+	if got := mgr.Capabilities().PromotionShortcut; got != "Ctrl+a then p" {
+		t.Fatalf("shortcut = %q", got)
+	}
+}
+
+func TestLegacyRoleMigration(t *testing.T) {
+	mock := &testMock{listOutput: "1\tcontrol\t%4\t0\tpi\t/tmp\t1\t104\tmanager\t\t\t\n2\twork\t%7\t0\tpi\t/tmp\t1\t107\tmanager\t\t\t\n2\twork\t%8\t1\tpi\t/tmp\t0\t108\tworker\t%7\t%7\t\n1\tcontrol\t%9\t1\tpi\t/tmp\t0\t109\tworker\t%4\t%4\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err == nil {
+		t.Fatal("legacy roles require explicit migration")
+	}
+	if len(mock.findCalls("set-option")) != 0 {
+		t.Fatal("refused adoption must not change pane options")
+	}
+	if err := mgr.MigrateLegacyRoles(context.Background(), "%4"); err != nil {
+		t.Fatal(err)
+	}
+	options := make(map[string]map[string]string)
+	for _, call := range mock.findCalls("set-option") {
+		if options[call[3]] == nil {
+			options[call[3]] = make(map[string]string)
+		}
+		options[call[3]][call[4]] = call[5]
+	}
+	for paneID, role := range map[string]string{"%4": "controller", "%7": "manager", "%8": "worker", "%9": "worker"} {
+		if options[paneID]["@agency_role"] != role || options[paneID]["@agency_root"] != "%4" {
+			t.Fatalf("pane %s options = %v", paneID, options[paneID])
+		}
+	}
+	if options["%7"]["@agency_parent"] != "%4" || options["%8"]["@agency_parent"] != "%7" || options["%9"]["@agency_parent"] != "%4" {
+		t.Fatalf("unexpected lineage: %v", options)
+	}
+}
+
+func TestLegacyMigrationRejectsInvalidController(t *testing.T) {
+	for _, controllerID := range []string{"%2", "%99"} {
+		mock := &testMock{listOutput: "1\tcontrol\t%1\t0\tpi\t/tmp\t1\t101\tmanager\t\t\t\n1\tcontrol\t%2\t1\tpi\t/tmp\t0\t102\tworker\t%1\t%1\t"}
+		mgr := newTestManager(mock)
+		if err := mgr.MigrateLegacyRoles(context.Background(), controllerID); err == nil {
+			t.Fatalf("controller %s must be rejected", controllerID)
+		}
+		if len(mock.findCalls("set-option")) != 0 {
+			t.Fatal("invalid migration must not change pane options")
+		}
+	}
+}
+
+func TestLegacyWorkerPromotion(t *testing.T) {
+	mock := &testMock{listOutput: "1\tcontrol\t%4\t0\tpi\t/tmp\t1\t104\tcontroller\t\t%4\t\n1\tcontrol\t%9\t1\tpi\t/tmp\t0\t109\tworker\t%4\t%4\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	worker := control.Requester{PaneID: "%9", Role: control.RoleWorker, RootID: "%4"}
+	if err := mgr.RequestPromotion(context.Background(), worker, "coordinate review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.ApprovePromotion(context.Background(), control.Requester{Human: true}, "%9"); err != nil {
+		t.Fatal(err)
+	}
+	for _, pane := range mgr.ListPanes() {
+		if pane.PaneID == "%9" && (pane.Role != control.RoleManager || pane.ParentID != "%4") {
+			t.Fatalf("unexpected promotion: %+v", pane)
+		}
 	}
 }
 

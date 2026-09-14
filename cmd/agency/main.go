@@ -25,17 +25,25 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		runLaunch()
+		runLaunch("")
 		return
 	}
 
 	switch os.Args[1] {
+	case "--migrate-controller":
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency --migrate-controller <pane-id>")
+			os.Exit(1)
+		}
+		runLaunch(os.Args[2])
 	case "spawn":
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
 		runSpawnDialog(os.Args[2:])
 	case "whoami":
 		runWhoAmI(os.Args[2:])
+	case "capabilities":
+		runCapabilities()
 	case "replace":
 		runReplace(os.Args[2:])
 	case "request-promotion":
@@ -88,12 +96,14 @@ func printUsage() {
 
 Usage:
   agency                            Launch new session (or reattach)
+  agency --migrate-controller <pane> Migrate a legacy session under the selected controller
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn --window <name> ...   Spawn into a named tmux window
   agency spawn --role <role> ...     Request a manager or worker pane
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
   agency whoami [--role]            Print current pane authority
+  agency capabilities              Print running daemon protocol and promotion shortcut
   agency replace [--cmd "..." dir] Start a role-preserving successor pane
   agency request-promotion <reason> Request worker promotion
   agency approve-promotion <pane>   Approve a pending worker (tmux keybinding only)
@@ -169,7 +179,7 @@ func setupLogging(sessionName string) {
 	fmt.Fprintf(os.Stderr, "agency: logging to %s\n", path)
 }
 
-func runLaunch() {
+func runLaunch(controllerPane string) {
 	cfg := loadConfig()
 	sessionName := cfg.Session.Name
 
@@ -241,9 +251,16 @@ func runLaunch() {
 	if err := tc.NameFirstWindow(ctx, "control"); err != nil {
 		log.Printf("Warning: naming control window: %v", err)
 	}
+	if controllerPane != "" {
+		if err := mgr.MigrateLegacyRoles(ctx, controllerPane); err != nil {
+			fmt.Fprintf(os.Stderr, "Migrating legacy roles: %v\n", err)
+			return
+		}
+	}
 	// Label all existing panes (initial shell on fresh start, or orphans on recovery).
 	if err := mgr.AdoptOrphans(ctx); err != nil {
-		log.Printf("Warning: adopting orphans: %v", err)
+		fmt.Fprintf(os.Stderr, "Adopting panes: %v\n", err)
+		return
 	}
 
 	// Start IPC socket server.
@@ -439,6 +456,21 @@ func runWhoAmI(args []string) {
 	fmt.Println(resp)
 }
 
+func runCapabilities() {
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "capabilities")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Agency daemon unavailable: %v\n", err)
+		os.Exit(1)
+	}
+	var capabilities control.Capabilities
+	if err := json.Unmarshal([]byte(resp), &capabilities); err != nil || capabilities.Protocol != 1 {
+		fmt.Fprintln(os.Stderr, "Agency daemon is outdated. Relaunch Agency without killing the tmux session.")
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
 func runReplace(args []string) {
 	message := "replace"
 	if len(args) > 0 {
@@ -493,12 +525,16 @@ func runApprovePromotion(args []string) {
 	}
 	cfg := loadConfig()
 	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "promotion-approve:"+args[0])
+	message := fmt.Sprintf("Pane %s promoted to manager. Pi refreshes tools on the next prompt.", args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		message = fmt.Sprintf("Promotion failed: %v", err)
+	} else if resp != "ok" {
+		message = "Promotion failed: " + resp
 	}
-	if resp != "ok" {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	_ = tc.DisplayMessage(context.Background(), args[0], message)
+	if err != nil || resp != "ok" {
+		fmt.Fprintln(os.Stderr, message)
 		os.Exit(1)
 	}
 }

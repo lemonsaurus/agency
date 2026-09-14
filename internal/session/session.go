@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/lemonsaurus/agency/internal/agents"
@@ -268,6 +269,15 @@ func folderLabel(dir string) string {
 	return base
 }
 
+func (m *Manager) Capabilities() control.Capabilities {
+	prefix := strings.ReplaceAll(m.cfg.Keys.Prefix, "C-", "Ctrl+")
+	key := m.cfg.Keys.ApprovePromotion
+	if len(key) == 1 && key >= "A" && key <= "Z" {
+		key = "Shift+" + key
+	}
+	return control.Capabilities{Protocol: 1, PromotionShortcut: prefix + " then " + key}
+}
+
 func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Requester, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -419,10 +429,11 @@ func (m *Manager) RequestPromotion(ctx context.Context, requester control.Reques
 		return err
 	}
 	notice, _ := json.Marshal(struct {
-		Type   string `json:"type"`
-		PaneID string `json:"paneId"`
-		Reason string `json:"reason"`
-	}{Type: "promotion-request", PaneID: worker.PaneID, Reason: reason})
+		Type     string `json:"type"`
+		PaneID   string `json:"paneId"`
+		Reason   string `json:"reason"`
+		Shortcut string `json:"approvalShortcut"`
+	}{Type: "promotion-request", PaneID: worker.PaneID, Reason: reason, Shortcut: m.Capabilities().PromotionShortcut})
 	if err := m.tmux.SendText(ctx, root.PaneID, "[agency] "+string(notice), true); err != nil {
 		worker.PendingPromotion = ""
 		_ = m.tmux.SetPaneOption(ctx, worker.PaneID, "@agency_promotion", "")
@@ -451,8 +462,8 @@ func (m *Manager) ApprovePromotion(ctx context.Context, requester control.Reques
 		return fmt.Errorf("root controller %s is not available", worker.RootID)
 	}
 	parent := m.panes[worker.ParentID]
-	if parent == nil || parent.Role != control.RoleManager {
-		return fmt.Errorf("manager parent %s is not available", worker.ParentID)
+	if parent == nil || (parent.Role != control.RoleManager && parent.PaneID != root.PaneID) {
+		return fmt.Errorf("promotion parent %s is not available", worker.ParentID)
 	}
 	managerCount := 0
 	for _, pane := range m.panes {
@@ -483,7 +494,7 @@ func (m *Manager) ApprovePromotion(ctx context.Context, requester control.Reques
 	worker.WindowName = parentInfo.WindowName
 	worker.PendingPromotion = ""
 	m.stylePaneControl(ctx, worker)
-	return m.tmux.SendText(ctx, worker.PaneID, "/handoff", true)
+	return nil
 }
 
 // KillPane kills a specific pane.
@@ -693,6 +704,48 @@ func (m *Manager) applyCustomTiledForWindow(ctx context.Context, target string) 
 	return m.tmux.SelectLayoutForWindow(ctx, target, layoutStr)
 }
 
+// MigrateLegacyRoles assigns the selected controller and preserves other pane roles.
+func (m *Manager) MigrateLegacyRoles(ctx context.Context, controllerID string) error {
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]tmux.PaneInfo, len(panes))
+	for _, pane := range panes {
+		if _, err := control.ParseRole(pane.Role); err != nil {
+			return fmt.Errorf("pane %s: %w", pane.ID, err)
+		}
+		if pane.Role == string(control.RoleController) && pane.ID != controllerID {
+			return fmt.Errorf("session already has controller %s", pane.ID)
+		}
+		byID[pane.ID] = pane
+	}
+	controller, ok := byID[controllerID]
+	if !ok || controller.Role == string(control.RoleWorker) || controller.ParentID != "" {
+		return fmt.Errorf("select a legacy root manager as controller")
+	}
+	for i := range panes {
+		pane := &panes[i]
+		pane.RootID = controllerID
+		if pane.ID == controllerID {
+			pane.Role = string(control.RoleController)
+			pane.ParentID = ""
+		} else if pane.Role == string(control.RoleManager) && pane.ParentID == "" {
+			pane.ParentID = controllerID
+		} else if parent, ok := byID[pane.ParentID]; !ok || parent.Role == string(control.RoleWorker) || parent.ID == pane.ID {
+			return fmt.Errorf("pane %s has invalid parent %s", pane.ID, pane.ParentID)
+		}
+	}
+	for _, pane := range panes {
+		for _, option := range [][2]string{{"@agency_parent", pane.ParentID}, {"@agency_root", pane.RootID}, {"@agency_role", pane.Role}} {
+			if err := m.tmux.SetPaneOption(ctx, pane.ID, option[0], option[1]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // AdoptOrphans scans existing tmux panes and rebuilds internal state.
 func (m *Manager) AdoptOrphans(ctx context.Context) error {
 	m.mu.Lock()
@@ -717,6 +770,11 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 		}
 	}
 	if controllerID == "" && len(panes) > 0 {
+		for _, pane := range panes {
+			if pane.Role == string(control.RoleManager) && pane.ParentID == "" {
+				return fmt.Errorf("legacy session has no controller; relaunch with agency --migrate-controller <root-pane>")
+			}
+		}
 		controllerID = panes[0].ID
 	}
 

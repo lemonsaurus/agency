@@ -213,7 +213,11 @@ Tmux keybindings and popups carry human authority, separate from focused-pane au
 
 Role, parent, root, and pending promotion state live in tmux pane options. Session caps bound managers, workers per manager, and total panes. Role-preserving replacement may exceed caps while old and new panes overlap. It starts the successor in the same window and directory, transfers children, updates controller descendant roots, returns the new pane ID, and leaves retirement to the caller.
 
-Workers may request promotion with a reason. Agency sends a structured notice to the root controller. Only tmux human authority can approve the focused pending worker. Approval makes it a manager under the root controller, moves it to its former manager's window, and runs `/handoff` so Pi reloads role-gated tools and prompts. Manager-to-controller promotion does not exist.
+Workers request promotion with a reason. Agency sends a structured notice with the configured approval shortcut to the root controller and marks the pending pane in yellow. `Prefix+P` opens human confirmation. Approval makes the worker a manager under the root controller and moves it to its former manager's window. Pi reads live authority before each prompt and refreshes role-gated tools without injecting terminal commands. Manager-to-controller promotion does not exist.
+
+`agency capabilities` reports the running daemon's protocol and configured promotion shortcut. Pi reports missing or outdated runtimes without suggesting promotion for a handoff.
+
+Approval rejects pane-process callers. Tmux-server ancestry and confirmation provide workflow authorization, not isolation from agents with unrestricted shell access.
 
 When agency launches, it starts a unix socket server at `/tmp/agency-{session}.sock`. It also sets the env var `AGENCY_SOCKET` in every spawned pane so agents know where to reach it.
 
@@ -301,6 +305,7 @@ Bottom status bar showing:
 - Dead panes with exited processes labeled "unknown".
 - tmux is the source of truth — agency is stateless and crash-recoverable.
 - No state persisted to disk, everything reconstructed from tmux.
+- Legacy sessions with recorded roles but no controller require `agency --migrate-controller <root-pane>` at launch. The selected root manager becomes controller; all other roles stay unchanged. Other root managers attach to it, and every pane's root points to it. Legacy workers may remain directly attached to the controller and can request promotion.
 
 ### Graceful shutdown sequence
 
