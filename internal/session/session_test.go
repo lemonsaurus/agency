@@ -490,9 +490,36 @@ func TestLegacyRoleMigration(t *testing.T) {
 	}
 }
 
+func TestLegacySelfParentMigration(t *testing.T) {
+	mock := &testMock{listOutput: "1\tcontrol\t%4\t0\tpi\t/tmp\t1\t104\tmanager\t%4\t%4\t\n2\twork\t%7\t0\tpi\t/tmp\t1\t107\tmanager\t%4\t%4\t\n2\twork\t%8\t1\tpi\t/tmp\t0\t108\tworker\t%7\t%7\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err == nil {
+		t.Fatal("self-parented legacy root requires explicit migration")
+	}
+	if len(mock.findCalls("set-option")) != 0 {
+		t.Fatal("refused adoption must not change pane options")
+	}
+	if err := mgr.MigrateLegacyRoles(context.Background(), "%4"); err != nil {
+		t.Fatal(err)
+	}
+	options := make(map[string]string)
+	for _, call := range mock.findCalls("set-option") {
+		options[call[3]+call[4]] = call[5]
+	}
+	for key, want := range map[string]string{
+		"%4@agency_role": "controller", "%4@agency_parent": "", "%4@agency_root": "%4",
+		"%7@agency_role": "manager", "%7@agency_parent": "%4", "%7@agency_root": "%4",
+		"%8@agency_role": "worker", "%8@agency_parent": "%7", "%8@agency_root": "%4",
+	} {
+		if got, ok := options[key]; !ok || got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestLegacyMigrationRejectsInvalidController(t *testing.T) {
-	for _, controllerID := range []string{"%2", "%99"} {
-		mock := &testMock{listOutput: "1\tcontrol\t%1\t0\tpi\t/tmp\t1\t101\tmanager\t\t\t\n1\tcontrol\t%2\t1\tpi\t/tmp\t0\t102\tworker\t%1\t%1\t"}
+	for _, controllerID := range []string{"%2", "%3", "%4", "%99"} {
+		mock := &testMock{listOutput: "1\tcontrol\t%1\t0\tpi\t/tmp\t1\t101\tmanager\t\t\t\n1\tcontrol\t%2\t1\tpi\t/tmp\t0\t102\tworker\t%1\t%1\t\n2\twork\t%3\t0\tpi\t/tmp\t1\t103\tmanager\t%1\t%1\t\n2\twork\t%4\t1\tpi\t/tmp\t0\t104\tworker\t%4\t%4\t"}
 		mgr := newTestManager(mock)
 		if err := mgr.MigrateLegacyRoles(context.Background(), controllerID); err == nil {
 			t.Fatalf("controller %s must be rejected", controllerID)

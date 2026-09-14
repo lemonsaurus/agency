@@ -721,7 +721,7 @@ func (m *Manager) MigrateLegacyRoles(ctx context.Context, controllerID string) e
 		byID[pane.ID] = pane
 	}
 	controller, ok := byID[controllerID]
-	if !ok || controller.Role == string(control.RoleWorker) || controller.ParentID != "" {
+	if !ok || controller.Role == string(control.RoleWorker) || (controller.ParentID != "" && controller.ParentID != controllerID) {
 		return fmt.Errorf("select a legacy root manager as controller")
 	}
 	for i := range panes {
@@ -771,7 +771,7 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 	}
 	if controllerID == "" && len(panes) > 0 {
 		for _, pane := range panes {
-			if pane.Role == string(control.RoleManager) && pane.ParentID == "" {
+			if pane.Role == string(control.RoleManager) && (pane.ParentID == "" || pane.ParentID == pane.ID) {
 				return fmt.Errorf("legacy session has no controller; relaunch with agency --migrate-controller <root-pane>")
 			}
 		}
