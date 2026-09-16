@@ -188,8 +188,9 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("# Agent spawn keybindings\n")
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
 
-	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color).
-	fmt.Fprintf(&b, "bind %s run-shell \"%s spawn --cmd \\\"$SHELL\\\" #{pane_current_path}\"\n", cfg.Keys.Terminal, agencyBin)
+	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color)
+	// in the window the key was pressed in.
+	fmt.Fprintf(&b, "bind %s run-shell \"%s spawn --window \\\"#{window_name}\\\" --cmd \\\"$SHELL\\\" #{pane_current_path}\"\n", cfg.Keys.Terminal, agencyBin)
 
 	// Keys 2-5: agent spawn dialogs pre-filled with focused pane's directory.
 	i := 2

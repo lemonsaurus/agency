@@ -122,9 +122,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 
 	var paneID string
 	var err error
-	if requester.Human && role == control.RoleController {
-		paneID, windowName, err = m.tmux.SplitWindowInFirstWindow(ctx, spawnCommand, dir)
-	} else if windowName != "" {
+	if windowName != "" {
 		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
 		if existsErr != nil {
 			return fmt.Errorf("checking window: %w", existsErr)
@@ -134,6 +132,8 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 		} else {
 			paneID, err = m.tmux.NewWindow(ctx, windowName, spawnCommand, dir)
 		}
+	} else if requester.Human && role == control.RoleController {
+		paneID, windowName, err = m.tmux.SplitWindowInFirstWindow(ctx, spawnCommand, dir)
 	} else {
 		paneID, err = m.tmux.SplitWindow(ctx, spawnCommand, dir)
 	}

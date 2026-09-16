@@ -176,6 +176,23 @@ func TestHumanSpawnCreatesControllerInFirstWindow(t *testing.T) {
 	}
 }
 
+func TestHumanSpawnHonorsRequestedWindow(t *testing.T) {
+	mock := &testMock{windowOutput: "journalia", windowInfoOutput: "200\t50\t2"}
+	mgr := newTestManager(mock)
+	human := control.Requester{Role: control.RoleController, Human: true}
+
+	if err := mgr.SpawnCommandWindow(context.Background(), human, control.RoleController, "journalia", "/usr/bin/zsh", "/tmp/project"); err != nil {
+		t.Fatalf("SpawnCommandWindow failed: %v", err)
+	}
+	splitCall := mock.findCall("split-window")
+	if splitCall == nil || splitCall[2] != "test:journalia" {
+		t.Fatalf("expected target test:journalia, got %v", splitCall)
+	}
+	if pane := mgr.ListPanes()[0]; pane.Role != control.RoleController || pane.WindowName != "journalia" {
+		t.Fatalf("unexpected controller metadata: %+v", pane)
+	}
+}
+
 func TestSpawnAgentWithDir(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
