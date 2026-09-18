@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/agents"
+	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
@@ -36,6 +37,16 @@ func main() {
 			os.Exit(1)
 		}
 		runLaunch(os.Args[2])
+	case "serve":
+		runServe()
+	case "cloud":
+		runCloud(os.Args[2:])
+	case "cloud-view":
+		runCloudView(os.Args[2:])
+	case "sync-cloud":
+		runSyncCloud()
+	case "cloud-act":
+		runCloudAct(os.Args[2:])
 	case "spawn":
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
@@ -97,6 +108,11 @@ func printUsage() {
 Usage:
   agency                            Launch new session (or reattach)
   agency --migrate-controller <pane> Migrate a legacy session under the selected controller
+  agency serve                      Run the daemon headless on its own tmux server (no attach)
+  agency cloud <command> ...        Run a command against the headless server (used over SSH)
+  agency cloud attach <window-id>   Attach this terminal to one headless window
+  agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
+  agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn --window <name> ...   Spawn into a named tmux window
@@ -179,8 +195,186 @@ func setupLogging(sessionName string) {
 	fmt.Fprintf(os.Stderr, "agency: logging to %s\n", path)
 }
 
+// daemon is a running Agency backend: tmux session, manager, IPC, poller.
+type daemon struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	tc     *tmux.Client
+	close  func()
+}
+
 func runLaunch(controllerPane string) {
+	d := startDaemon(loadConfig(), false, controllerPane)
+	defer d.close()
+
+	// Attach to tmux (this blocks until detach or session end).
+	log.Printf("Attaching to tmux session %q...", d.tc.SessionName)
+	if err := d.tc.Attach(d.ctx); err != nil {
+		// Attach failing is normal on detach.
+		if d.ctx.Err() == nil {
+			log.Printf("Detached from tmux session.")
+		}
+	}
+
+	d.cancel()
+	log.Println("Shutting down.")
+}
+
+// runServe keeps the daemon alive without a terminal, on a tmux server named
+// after the session so it never collides with a local interactive Agency.
+func runServe() {
 	cfg := loadConfig()
+	d := startDaemon(cfg, true, "")
+	defer d.close()
+
+	log.Printf("Serving session %q headless.", cfg.Session.Name)
+	<-d.ctx.Done()
+	log.Println("Shutting down.")
+}
+
+// runCloud points the ordinary CLI at the headless server. The IPC socket is
+// shared by session name already; only direct tmux calls need the server name.
+func runCloud(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud <command> ...")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	os.Setenv("AGENCY_TMUX_SOCKET", "agency-"+cfg.Session.Name)
+	if args[0] == "attach" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud attach <window-id>")
+			os.Exit(1)
+		}
+		tc := tmux.NewClient(cfg.Session.Name, "")
+		if err := tc.AttachWindow(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error attaching: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	os.Args = append([]string{os.Args[0]}, args...)
+	main()
+}
+
+func runSyncCloud() {
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(resp, "error:") {
+		fmt.Fprintln(os.Stderr, resp)
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
+// runCloudAct is what keybindings and menus call when the focused pane is a
+// viewer: act on the remote agent behind it, then re-sync the mirror.
+//
+//	cloud-act spawn <window> <agent>|--cmd <command>   new remote agent in that pane's directory
+//	cloud-act kill <window>                            kill the remote agent
+//	cloud-act approve <window>                         approve its pending promotion
+func runCloudAct(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|kill|approve <window-id> ...")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	remote := &cloud.Client{Host: cfg.Cloud.Host}
+	ctx := context.Background()
+	windows, err := remote.Windows(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	var target *cloud.Window
+	for i := range windows {
+		if windows[i].ID == args[1] {
+			target = &windows[i]
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(os.Stderr, "Error: remote window %s not found\n", args[1])
+		os.Exit(1)
+	}
+	var remoteArgs []string
+	switch args[0] {
+	case "spawn":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn <window-id> <agent>|--cmd <command>")
+			os.Exit(1)
+		}
+		remoteArgs = append([]string{"spawn"}, args[2:]...)
+		remoteArgs = append(remoteArgs, target.Pane.CWD)
+	case "kill":
+		remoteArgs = []string{"kill", target.Pane.ID}
+	case "approve":
+		remoteArgs = []string{"approve-promotion", target.Pane.ID}
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown cloud action %s\n", args[0])
+		os.Exit(1)
+	}
+	if _, err := remote.Run(ctx, 20*time.Second, remoteArgs...); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	runSyncCloud()
+}
+
+// runCloudView is the viewer pane's process: it stays attached to one remote
+// window, reconnects after a dropped link, and exits once the window is gone.
+// It never restarts the agent. With no window id it is the offline
+// placeholder and retries the sync on Enter.
+func runCloudView(args []string) {
+	cfg := loadConfig()
+	remote := &cloud.Client{Host: cfg.Cloud.Host}
+	ctx := context.Background()
+	if len(args) == 0 || args[0] == "offline" {
+		for {
+			fmt.Printf("☁  %s unreachable. Press Enter to retry.\n", cfg.Cloud.Host)
+			fmt.Scanln()
+			if resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud"); err == nil && !strings.HasPrefix(resp, "error:") {
+				return
+			}
+		}
+	}
+	windowID := args[0]
+	delay := time.Second
+	for {
+		_ = remote.Attach(ctx, windowID)
+		windows, err := remote.Windows(ctx)
+		if err != nil {
+			fmt.Printf("\n☁  link dropped (%v). Reconnecting in %s...\n", err, delay)
+			time.Sleep(delay)
+			if delay < 30*time.Second {
+				delay *= 2
+			}
+			continue
+		}
+		delay = time.Second
+		if !hasWindow(windows, windowID) {
+			fmt.Printf("\n☁  remote pane %s is gone.\n", windowID)
+			return
+		}
+	}
+}
+
+func hasWindow(windows []cloud.Window, id string) bool {
+	for _, window := range windows {
+		if window.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// startDaemon brings up the backend. cloud selects the headless profile: a
+// tmux server named agency-<session>, the chrome-free cloud.conf, and one
+// window per pane.
+func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon {
 	sessionName := cfg.Session.Name
 
 	// Set up file logging before anything else.
@@ -192,24 +386,28 @@ func runLaunch(controllerPane string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer func() {
-		lockFile.Close()
-		os.Remove(lockPath(sessionName))
-	}()
 
 	// Generate tmux config.
-	bin := agencyBinPath()
-	confPath, err := tmux.GenerateConfig(cfg, bin)
+	var confPath string
+	if cloud {
+		confPath, err = tmux.GenerateCloudConfig()
+	} else {
+		confPath, err = tmux.GenerateConfig(cfg, agencyBinPath())
+	}
 	if err != nil {
 		log.Fatalf("Generating tmux config: %v", err)
 	}
 
 	// Create tmux client.
 	tc := tmux.NewClient(sessionName, confPath)
+	tmuxSocket := ""
+	if cloud {
+		tmuxSocket = "agency-" + sessionName
+		tc.Cmd = &tmux.ExecCommander{SocketName: tmuxSocket}
+	}
 
 	// Set up signal handling with double Ctrl+C.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -236,6 +434,8 @@ func runLaunch(controllerPane string) {
 
 	// Create session manager.
 	mgr := session.NewManager(tc, registry, cfg, poller)
+	mgr.WindowPerPane = cloud
+	mgr.OutsideIsHuman = cloud
 
 	// Check if tmux session already exists (crash recovery).
 	if tc.SessionExists(ctx) {
@@ -253,14 +453,12 @@ func runLaunch(controllerPane string) {
 	}
 	if controllerPane != "" {
 		if err := mgr.MigrateLegacyRoles(ctx, controllerPane); err != nil {
-			fmt.Fprintf(os.Stderr, "Migrating legacy roles: %v\n", err)
-			return
+			log.Fatalf("Migrating legacy roles: %v", err)
 		}
 	}
 	// Label all existing panes (initial shell on fresh start, or orphans on recovery).
 	if err := mgr.AdoptOrphans(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Adopting panes: %v\n", err)
-		return
+		log.Fatalf("Adopting panes: %v", err)
 	}
 
 	// Start IPC socket server.
@@ -269,11 +467,15 @@ func runLaunch(controllerPane string) {
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Starting socket server: %v", err)
 	}
-	defer srv.Close()
 
 	// Set AGENCY_SOCKET in the tmux session environment.
 	if err := tc.SetEnv(ctx, "AGENCY_SOCKET", sockPath); err != nil {
 		log.Printf("Warning: setting AGENCY_SOCKET: %v", err)
+	}
+	if tmuxSocket != "" {
+		if err := tc.SetEnv(ctx, "AGENCY_TMUX_SOCKET", tmuxSocket); err != nil {
+			log.Printf("Warning: setting AGENCY_TMUX_SOCKET: %v", err)
+		}
 	}
 
 	// Start status poller.
@@ -303,17 +505,23 @@ func runLaunch(controllerPane string) {
 		}
 	}()
 
-	// Attach to tmux (this blocks until detach or session end).
-	log.Printf("Attaching to tmux session %q...", sessionName)
-	if err := tc.Attach(ctx); err != nil {
-		// Attach failing is normal on detach.
-		if ctx.Err() == nil {
-			log.Printf("Detached from tmux session.")
-		}
+	// Mirror the cloud host without blocking startup.
+	if !cloud && cfg.Cloud.Host != "" {
+		go func() {
+			if result, err := mgr.SyncCloud(ctx); err != nil {
+				log.Printf("sync-cloud: %v", err)
+			} else {
+				log.Printf("sync-cloud: %s", result)
+			}
+		}()
 	}
 
-	cancel()
-	log.Println("Shutting down.")
+	return &daemon{ctx: ctx, cancel: cancel, tc: tc, close: func() {
+		cancel()
+		srv.Close()
+		lockFile.Close()
+		os.Remove(lockPath(sessionName))
+	}}
 }
 
 // attentionTracker mirrors waiting-pane state onto @agency_attention window
@@ -545,6 +753,12 @@ func runSpawnDialog(args []string) {
 		os.Exit(1)
 	}
 	agentName := args[0]
+	// Popups opened from a viewer pane carry the remote window; the directory
+	// is the remote pane's, so there is nothing to pick locally.
+	if window := os.Getenv("AGENCY_CLOUD_WINDOW"); window != "" {
+		runCloudAct([]string{"spawn", window, agentName})
+		return
+	}
 	defaultDir := ""
 	if len(args) >= 2 {
 		defaultDir = args[1]

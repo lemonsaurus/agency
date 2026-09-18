@@ -33,6 +33,7 @@ type Handler interface {
 	ReplacePane(ctx context.Context, requester control.Requester, command, dir string) (string, error)
 	RequestPromotion(ctx context.Context, requester control.Requester, reason string) error
 	ApprovePromotion(ctx context.Context, requester control.Requester, paneID string) error
+	SyncCloud(ctx context.Context) (string, error)
 }
 
 type spawnPayload struct {
@@ -190,6 +191,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 	}
 	if line == "relayout" {
 		return "", s.handler.Relayout(s.ctx)
+	}
+	if line == "sync-cloud" {
+		return s.handler.SyncCloud(s.ctx)
 	}
 	if line == "whoami" {
 		requester, err := s.requester(pid)

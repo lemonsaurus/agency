@@ -62,6 +62,15 @@ type Manager struct {
 	colorIndex     int                     // cycles through paneColors
 	currentLayout  string                  // last applied layout name (for relayout)
 	processOwnedBy func(pid, ancestor int) bool
+
+	// WindowPerPane gives every spawn its own window, named after the pane
+	// label. The headless cloud server runs this way so viewers can attach
+	// to exactly one agent.
+	WindowPerPane bool
+	// OutsideIsHuman grants human authority to requests from processes that
+	// belong to no pane. On the cloud box every agent lives in a pane and only
+	// Lemon's SSH key reaches the host, so outside means Lemon.
+	OutsideIsHuman bool
 }
 
 // NewManager creates a session manager.
@@ -119,10 +128,14 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 		rootID = requester.PaneID
 	}
 	spawnCommand := roleCommand(command, role, parentID, rootID)
+	displayName := m.displayName(agentType, command, dir)
 
 	var paneID string
 	var err error
-	if windowName != "" {
+	if m.WindowPerPane {
+		windowName = displayName
+		paneID, err = m.tmux.NewWindow(ctx, windowName, spawnCommand, dir)
+	} else if windowName != "" {
 		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
 		if existsErr != nil {
 			return fmt.Errorf("checking window: %w", existsErr)
@@ -148,27 +161,6 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	color := paneColors[m.colorIndex%len(paneColors)]
 	m.colorIndex++
 
-	// Build display label: "icon agenttype@foldername" or fallback with counter.
-	var displayName string
-	if agentType != "" {
-		agent, _ := m.registry.Get(agentType)
-		folder := folderLabel(dir)
-		if folder != "" {
-			displayName = fmt.Sprintf("%s %s@%s", agent.Icon, agentType, folder)
-		} else {
-			m.counters[agentType]++
-			displayName = fmt.Sprintf("%s %s #%d", agent.Icon, agentType, m.counters[agentType])
-		}
-	} else {
-		folder := folderLabel(dir)
-		if folder != "" {
-			displayName = fmt.Sprintf(">_ %s@%s", filepath.Base(command), folder)
-		} else {
-			m.counters["terminal"]++
-			displayName = fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
-		}
-	}
-
 	m.stylePaneLabel(ctx, paneID, displayName, color)
 
 	tracked := &TrackedPane{
@@ -192,6 +184,25 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, paneID)
 
 	return nil
+}
+
+// displayName builds the label "icon agenttype@foldername", or falls back to
+// a per-type counter when there is no directory.
+func (m *Manager) displayName(agentType, command, dir string) string {
+	folder := folderLabel(dir)
+	if agentType != "" {
+		agent, _ := m.registry.Get(agentType)
+		if folder != "" {
+			return fmt.Sprintf("%s %s@%s", agent.Icon, agentType, folder)
+		}
+		m.counters[agentType]++
+		return fmt.Sprintf("%s %s #%d", agent.Icon, agentType, m.counters[agentType])
+	}
+	if folder != "" {
+		return fmt.Sprintf(">_ %s@%s", filepath.Base(command), folder)
+	}
+	m.counters["terminal"]++
+	return fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
 }
 
 func roleCommand(command string, role control.Role, parentID, rootID string) string {
@@ -299,7 +310,8 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 	// Keybindings, hooks, and popups run as children of the tmux server
 	// rather than of any pane. They act for the human: controller authority,
 	// whether or not a controller pane is still alive.
-	if serverPID, err := m.tmux.ServerPID(ctx); err == nil && m.processOwnedBy(pid, serverPID) {
+	serverPID, err := m.tmux.ServerPID(ctx)
+	if m.OutsideIsHuman || err == nil && m.processOwnedBy(pid, serverPID) {
 		for _, pane := range panes {
 			tracked := m.panes[pane.ID]
 			if tracked != nil && tracked.Role == control.RoleController {
@@ -780,6 +792,10 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 
 	for _, pane := range panes {
 		if _, exists := m.panes[pane.ID]; exists {
+			continue
+		}
+		if pane.CloudWindow != "" {
+			m.adoptViewer(pane)
 			continue
 		}
 

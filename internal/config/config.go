@@ -12,6 +12,7 @@ type Config struct {
 	Session SessionConfig          `toml:"session"`
 	Theme   ThemeConfig            `toml:"theme"`
 	Keys    KeysConfig             `toml:"keys"`
+	Cloud   CloudConfig            `toml:"cloud"`
 	Agents  map[string]AgentConfig `toml:"agents"`
 	// AgentOrder preserves insertion order from TOML parsing.
 	AgentOrder []string `toml:"-"`
@@ -46,6 +47,12 @@ type SessionConfig struct {
 	MaxPanes             int    `toml:"max_panes"`
 	MaxManagers          int    `toml:"max_managers"`
 	MaxWorkersPerManager int    `toml:"max_workers_per_manager"`
+}
+
+// CloudConfig names the SSH host running `agency serve`. Empty disables the
+// cloud-harness window.
+type CloudConfig struct {
+	Host string `toml:"host"`
 }
 
 type ThemeConfig struct {

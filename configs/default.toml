@@ -5,6 +5,10 @@ max_panes = 32
 max_managers = 12
 max_workers_per_manager = 8
 
+# SSH host running `agency serve`. Its panes appear in the cloud-harness window.
+# [cloud]
+# host = "lemon.harness.journalia.com"
+
 [theme]
 active_border = "#89b4fa"        # Catppuccin blue
 inactive_border = "#45475a"      # Catppuccin surface1

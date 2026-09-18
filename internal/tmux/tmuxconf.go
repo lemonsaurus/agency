@@ -35,7 +35,8 @@ const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@ag
 	` '#{?#{>:#{window_panes},1},,-}⇣  Swap Down' 'd' {swap-pane -D}` +
 	` '#{?pane_marked_set,,-}⇄  Swap Marked' 's' {swap-pane}` +
 	` '' '' ''` +
-	` '#[fg=#f38ba8,bold]×  Kill#[default]' 'X' {kill-pane}` +
+	` '#[fg=#f38ba8,bold]×  Kill#[default]' 'X' {if -F '#{@agency_cloud}' {confirm-before -p 'Kill remote agent #{@agency_label}? (y/n)' {run-shell "agency cloud-act kill #{@agency_cloud}"}} {kill-pane}}` +
+	` '#{?@agency_cloud,⨯  Close View,}' 'V' {kill-pane}` +
 	` '#[fg=#f9e2af]↻  Respawn#[default]' 'R' {respawn-pane -k}` +
 	` '#{?pane_marked,◇  Unmark,◆  Mark}' 'm' {select-pane -m}` +
 	` '#{?#{>:#{window_panes},1},,-}□  #{?window_zoomed_flag,Unzoom,Zoom}' 'z' {resize-pane -Z}`
@@ -64,6 +65,15 @@ func clipboardCommand() string {
 
 // GenerateConfig writes an agency-specific tmux.conf and returns its path.
 func GenerateConfig(cfg *config.Config, agencyBin string) (string, error) {
+	return writeConf("tmux.conf", buildTmuxConf(cfg, agencyBin))
+}
+
+// GenerateCloudConfig writes the headless server's tmux.conf and returns its path.
+func GenerateCloudConfig() (string, error) {
+	return writeConf("cloud.conf", buildCloudConf())
+}
+
+func writeConf(name, content string) (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("finding config dir: %w", err)
@@ -72,12 +82,41 @@ func GenerateConfig(cfg *config.Config, agencyBin string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating config dir: %w", err)
 	}
-	path := filepath.Join(dir, "tmux.conf")
-	content := buildTmuxConf(cfg, agencyBin)
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("writing tmux.conf: %w", err)
+		return "", fmt.Errorf("writing %s: %w", name, err)
 	}
 	return path, nil
+}
+
+// buildCloudConf configures the headless server that viewer panes attach to
+// over SSH. The local Agency owns keybindings, borders, and layout, so this
+// server has no prefix and no chrome; each window holds exactly one agent.
+func buildCloudConf() string {
+	var b strings.Builder
+	b.WriteString("# Agency cloud.conf — auto-generated, do not edit\n\n")
+	b.WriteString("set -g prefix None\n")
+	b.WriteString("unbind -a -T prefix\n")
+	b.WriteString("set -s exit-empty off\n")
+	b.WriteString("set -g status off\n")
+	b.WriteString("set -g pane-border-status off\n")
+	// The last client to type owns the size; other viewers see it cropped.
+	b.WriteString("set -g window-size latest\n")
+	// Mouse on so wheel scroll lands in this server's copy-mode, which holds
+	// the real scrollback; the viewer's local history only starts at attach.
+	b.WriteString("set -g mouse on\n")
+	b.WriteString("set -s set-clipboard on\n")
+	b.WriteString("set -g history-limit 50000\n")
+	b.WriteString("set -g mode-keys emacs\n")
+	b.WriteString("set -g default-terminal \"tmux-256color\"\n")
+	b.WriteString("set -ga terminal-overrides \",*256col*:Tc\"\n")
+	b.WriteString("set -g extended-keys always\n")
+	b.WriteString("set -gs extended-keys-format csi-u\n")
+	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n")
+	b.WriteString("set -as terminal-features 'tmux*:clipboard'\n")
+	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
+	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
+	return b.String()
 }
 
 func buildTmuxConf(cfg *config.Config, agencyBin string) string {
@@ -184,19 +223,20 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g window-status-format \"#{?#{@agency_attention},#[fg=#f9e2af#,bold],}#I:#W#F\"\n")
 	fmt.Fprintf(&b, "set -g message-style bg=%s,fg=%s\n\n", cfg.Theme.StatusBG, cfg.Theme.StatusFG)
 
-	// Spawn keybindings.
+	// Spawn keybindings. Popups carry AGENCY_CLOUD_WINDOW so that, from a
+	// viewer pane, the palette and spawn dialogs create the agent on the box.
 	b.WriteString("# Agent spawn keybindings\n")
-	fmt.Fprintf(&b, "bind %s display-popup -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
+	fmt.Fprintf(&b, "bind %s display-popup -e AGENCY_CLOUD_WINDOW=#{@agency_cloud} -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
 
 	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color)
 	// in the window the key was pressed in.
-	fmt.Fprintf(&b, "bind %s run-shell \"%s spawn --window \\\"#{window_name}\\\" --cmd \\\"$SHELL\\\" #{pane_current_path}\"\n", cfg.Keys.Terminal, agencyBin)
+	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { run-shell \"%s cloud-act spawn #{@agency_cloud} --cmd '$SHELL'\" } { run-shell \"%s spawn --window \\\"#{window_name}\\\" --cmd \\\"$SHELL\\\" #{pane_current_path}\" }\n", cfg.Keys.Terminal, agencyBin, agencyBin)
 
 	// Keys 2-5: agent spawn dialogs pre-filled with focused pane's directory.
 	i := 2
 	for _, name := range cfg.AgentOrder {
 		if _, ok := cfg.Agents[name]; ok {
-			fmt.Fprintf(&b, "bind %d display-popup -E -w 50 -h 7 \"%s spawn-dialog %s #{pane_current_path}\"\n", i, agencyBin, name)
+			fmt.Fprintf(&b, "bind %d display-popup -e AGENCY_CLOUD_WINDOW=#{@agency_cloud} -E -w 50 -h 7 \"%s spawn-dialog %s #{pane_current_path}\"\n", i, agencyBin, name)
 			i++
 			if i > 5 {
 				break
@@ -230,12 +270,12 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Management.
 	b.WriteString("# Management\n")
-	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill pane? (y/n)' kill-pane\n", cfg.Keys.KillPane)
+	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { confirm-before -p 'Kill remote agent #{@agency_label}? (y/n)' 'run-shell \"%s cloud-act kill #{@agency_cloud}\"' } { confirm-before -y -p 'Kill pane? (y/n)' kill-pane }\n", cfg.Keys.KillPane, agencyBin)
 	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill session? (y/n)' kill-session\n", cfg.Keys.KillSession)
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)
-	fmt.Fprintf(&b, "bind %s confirm-before -p 'Promote worker #{pane_id} to manager? (y/n)' 'run-shell \"%s approve-promotion #{pane_id}\"'\n", cfg.Keys.ApprovePromotion, agencyBin)
+	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { confirm-before -p 'Promote remote worker #{@agency_label} to manager? (y/n)' 'run-shell \"%s cloud-act approve #{@agency_cloud}\"' } { confirm-before -p 'Promote worker #{pane_id} to manager? (y/n)' 'run-shell \"%s approve-promotion #{pane_id}\"' }\n", cfg.Keys.ApprovePromotion, agencyBin, agencyBin)
 	fmt.Fprintf(&b, "bind %s detach-client\n", cfg.Keys.Detach)
 	fmt.Fprintf(&b, "bind %s respawn-pane -k\n", cfg.Keys.Respawn)
 	fmt.Fprintf(&b, "bind %s copy-mode\n", cfg.Keys.CopyMode)

@@ -18,7 +18,8 @@ type Commander interface {
 
 // ExecCommander shells out to the real tmux binary.
 type ExecCommander struct {
-	TmuxBin string // defaults to "tmux"
+	TmuxBin    string // defaults to "tmux"
+	SocketName string // tmux -L server name; empty for the default server
 }
 
 func (e *ExecCommander) bin() string {
@@ -28,8 +29,15 @@ func (e *ExecCommander) bin() string {
 	return "tmux"
 }
 
+func (e *ExecCommander) args(args []string) []string {
+	if e.SocketName == "" {
+		return args
+	}
+	return append([]string{"-L", e.SocketName}, args...)
+}
+
 func (e *ExecCommander) Run(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, e.bin(), args...)
+	cmd := exec.CommandContext(ctx, e.bin(), e.args(args)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -41,7 +49,7 @@ func (e *ExecCommander) Run(ctx context.Context, args ...string) (string, error)
 }
 
 func (e *ExecCommander) Exec(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, e.bin(), args...)
+	cmd := exec.CommandContext(ctx, e.bin(), e.args(args)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -50,19 +58,21 @@ func (e *ExecCommander) Exec(ctx context.Context, args ...string) error {
 
 // PaneInfo represents a tmux pane.
 type PaneInfo struct {
-	ID               string `json:"id"`          // e.g. "%0"
-	Index            int    `json:"index"`       // pane index within window
-	WindowIndex      int    `json:"windowIndex"` // tmux window index
-	WindowName       string `json:"windowName"`  // tmux window name
-	Command          string `json:"command"`     // running command
-	CWD              string `json:"cwd"`         // current working directory
-	Active           bool   `json:"active"`      // whether this pane is focused
-	PID              int    `json:"pid"`         // pane process PID
+	ID               string `json:"id"`                 // e.g. "%0"
+	Index            int    `json:"index"`              // pane index within window
+	WindowIndex      int    `json:"windowIndex"`        // tmux window index
+	WindowID         string `json:"windowId,omitempty"` // e.g. "@3", stable for the server's life
+	WindowName       string `json:"windowName"`         // tmux window name
+	Command          string `json:"command"`            // running command
+	CWD              string `json:"cwd"`                // current working directory
+	Active           bool   `json:"active"`             // whether this pane is focused
+	PID              int    `json:"pid"`                // pane process PID
 	Role             string `json:"role,omitempty"`
 	ParentID         string `json:"parentId,omitempty"`
 	RootID           string `json:"rootId,omitempty"`
 	PendingPromotion string `json:"pendingPromotion,omitempty"`
 	AgencyCommand    string `json:"agencyCommand,omitempty"`
+	CloudWindow      string `json:"cloudWindow,omitempty"` // remote window id this local pane views
 }
 
 type windowRef struct {
@@ -80,7 +90,7 @@ type Client struct {
 
 func NewClient(sessionName, configPath string) *Client {
 	return &Client{
-		Cmd:         &ExecCommander{},
+		Cmd:         &ExecCommander{SocketName: os.Getenv("AGENCY_TMUX_SOCKET")},
 		SessionName: sessionName,
 		ConfigPath:  configPath,
 	}
@@ -119,6 +129,25 @@ func (c *Client) KillSession(ctx context.Context) error {
 
 func (c *Client) Attach(ctx context.Context) error {
 	return c.Cmd.Exec(ctx, c.tmuxArgs("attach-session", "-t", c.SessionName)...)
+}
+
+// AttachWindow attaches this client to a single window through a private
+// session grouped with the main one, so each viewer keeps its own current
+// window. The view session disappears when the client detaches; the window
+// and its agent stay with the main session.
+func (c *Client) AttachWindow(ctx context.Context, windowID string) error {
+	view := fmt.Sprintf("view-%d", os.Getpid())
+	if _, err := c.Cmd.Run(ctx, "new-session", "-d", "-t", c.SessionName, "-s", view); err != nil {
+		return err
+	}
+	if _, err := c.Cmd.Run(ctx, "set-option", "-t", view, "destroy-unattached", "on"); err != nil {
+		return err
+	}
+	if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err != nil {
+		_, _ = c.Cmd.Run(ctx, "kill-session", "-t", view)
+		return err
+	}
+	return c.Cmd.Exec(ctx, "attach-session", "-t", view)
 }
 
 // SplitWindow creates a new pane by splitting, running the given command.
@@ -364,7 +393,7 @@ func (c *Client) windowTarget(windowName string) string {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}"
 	out, err := c.Cmd.Run(ctx,
 		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
@@ -417,6 +446,12 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		}
 		if len(parts) >= 13 {
 			pane.AgencyCommand = parts[12]
+		}
+		if len(parts) >= 14 {
+			pane.WindowID = parts[13]
+		}
+		if len(parts) >= 15 {
+			pane.CloudWindow = parts[14]
 		}
 		panes = append(panes, pane)
 	}

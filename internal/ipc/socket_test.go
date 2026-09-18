@@ -155,6 +155,10 @@ func (m *mockHandler) Relayout(_ context.Context) error {
 	return nil
 }
 
+func (m *mockHandler) SyncCloud(_ context.Context) (string, error) {
+	return "", nil
+}
+
 func (m *mockHandler) BroadcastKeys(_ context.Context, keys string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

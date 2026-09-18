@@ -127,6 +127,9 @@ agency kill-all                     Kill all managed panes
 agency list                         List all panes
 agency layout <name>                Switch layout (tiled, columns, rows, main-vertical)
 agency attach                       Reattach to a running session
+agency serve                        Headless daemon on its own tmux server (the cloud box)
+agency cloud <command> ...          Run a CLI command against the headless server (over SSH)
+agency sync-cloud                   Mirror the cloud host's panes into the cloud-harness window
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
 agency help                         Show help
@@ -208,6 +211,12 @@ Every role can use `/handoff` without promotion. Failed handoffs keep the origin
 Agency's API rejects approval from agent processes. The keyboard flow uses tmux process ancestry and human confirmation. Agents with unrestricted shell access are not sandboxed from the tmux server.
 
 For an existing two-role session, stop the old Agency backend without killing the tmux session, then launch `agency --migrate-controller <root-pane>`. The selected root manager becomes the controller. Other roles remain unchanged, other root managers become its children, and worker roots point to it. Legacy workers attached directly to the controller can request promotion. New spawns follow controller → manager → worker.
+
+## Cloud panes
+
+With `[cloud] host` set, launch and `agency sync-cloud` mirror every pane on the host's `agency serve` into a local `cloud-harness` window. Each local pane is a viewer: an SSH attachment to one remote window that reconnects after a dropped link and exits when the remote pane is gone. The remote server keeps one agent per window, has no prefix or status bar, and sizes each window to the client that typed last. Wheel scroll uses the remote scrollback.
+
+From a viewer, the spawn keys and palette create the agent on the host in that pane's directory, `Prefix+x` kills the remote agent, `Prefix+r` reconnects the view, and `Prefix+P` approves the remote worker. The pane menu has a separate Close View. On the host, requests from outside every pane carry human authority: only your SSH key reaches it, and agents live in panes.
 
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.
 
