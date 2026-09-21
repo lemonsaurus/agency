@@ -143,11 +143,16 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 4096), MaxAskBytes)
 	if !scanner.Scan() {
 		return
 	}
 	line := strings.TrimSpace(scanner.Text())
 	if line == "" {
+		return
+	}
+	if strings.HasPrefix(line, "ask:") {
+		s.handleAsk(conn, conn, strings.TrimPrefix(line, "ask:"))
 		return
 	}
 	response, err := s.dispatch(line, peerPIDForConn(conn))
@@ -193,7 +198,9 @@ func requestedRole(requester control.Requester, value string) (control.Role, err
 
 func (s *Server) dispatch(line string, pid int) (string, error) {
 	if line == "capabilities" {
-		data, _ := json.Marshal(s.handler.Capabilities())
+		capabilities := s.handler.Capabilities()
+		capabilities.PromptBridge = true
+		data, _ := json.Marshal(capabilities)
 		return string(data), nil
 	}
 	if line == "relayout" {
@@ -406,11 +413,17 @@ func (s *Server) Close() error {
 
 // SendMessage is a client helper that sends a one-line message to a socket.
 func SendMessage(socketPath, message string) (string, error) {
-	conn, err := net.Dial("unix", socketPath)
+	return SendMessageContext(context.Background(), socketPath, message)
+}
+
+func SendMessageContext(ctx context.Context, socketPath, message string) (string, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return "", fmt.Errorf("connecting to %s: %w", socketPath, err)
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 
 	fmt.Fprintf(conn, "%s\n", message)
 
@@ -418,5 +431,5 @@ func SendMessage(socketPath, message string) (string, error) {
 	if scanner.Scan() {
 		return scanner.Text(), nil
 	}
-	return "", nil
+	return "", ctx.Err()
 }

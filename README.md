@@ -131,6 +131,9 @@ agency layout <name>                Switch layout (tiled, columns, rows, main-ve
 agency attach                       Reattach to a running session
 agency serve                        Headless daemon on its own tmux server (the cloud box)
 agency cloud <command> ...          Run a CLI command against the headless server (over SSH)
+agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's final reply
+agency cloud projects --json         List directories under ~/git/*/*
+agency cloud voice-token             Mint an ephemeral gpt-realtime token
 agency sync-cloud                   Mirror the cloud host's panes into the cloud-harness window
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
@@ -267,6 +270,35 @@ layout:tiled                                 → switch layout
 ```
 
 ---
+
+## Mobile commands
+
+```bash
+agency cloud projects --json
+agency cloud spawn --role manager --label 'Mobile task' pi ~/git/owner/repo
+agency cloud ask %310 'say hi'
+agency cloud ask --timeout 2m %310 'Explain the current task'
+agency cloud voice-token
+```
+
+`projects --json` returns `[{"name":"owner/repo","path":"/home/lemon/git/owner/repo"}]`, sorted by owner and directory. It skips hidden directories and symlinks. External human cloud spawns default to managers under an existing controller. Spawns are silent on success; refresh `list --json` to find the new pane. Requests from agent panes keep their existing child-role restrictions.
+
+`ask` prints only the final assistant text, preserving whitespace, then exits zero. Errors go to stderr and exit nonzero. Busy panes reject immediately. A second prompt interrupts the request's correlation rather than returning that prompt's answer. Ctrl+C, SIGTERM, SIGHUP, client-process exit, and the request deadline cancel the owned turn. The default deadline is 10 minutes; the maximum is 30 minutes. SSH clients use `ask --cancel-on-stdin-close`, keep command stdin open during the request, and close it on explicit cancellation. This flag does not apply to ordinary terminal calls. Closing a non-PTY SSH channel alone may leave its command running until the deadline.
+
+The daemon authenticates the caller through process ancestry and adds pane/role attribution for agent callers. Each Pi owns a local Unix socket under `~/.agents/run/agency/`, with a private directory (0700) and socket (0600). `agency bridge-path` resolves the current pane through the daemon, independent of inherited pane-ID environment variables. The protocol uses a request ID and LF-delimited JSON on one connection per request. Pi injects a user message with that ID, captures the last assistant message from `agent_end`, and replies at `agent_settled`. Reload and session replacement close listeners and fail pending requests. The sockets share the OS account's trust boundary.
+
+Install the updated Agency binary, restart the daemon without killing tmux, and `/reload` Pi in each existing target pane. New Pi panes load the bridge at startup. `agency capabilities` reports `promptBridge: true` when the daemon supports it. The CLI checks this before sending a prompt.
+
+`voice-token` returns `{"value":"...","expires_at":1234567890}` from OpenAI's `/v1/realtime/client_secrets`, with session type `realtime` and model `gpt-realtime`. It reads `OPENAI_API_KEY` from the environment first, then its literal assignment in `~/.pi/agent/private.env`. The file accepts optional `export` and single or double quotes, without shell execution or variable expansion. Only the ephemeral token reaches stdout; errors omit provider response bodies. Missing credentials produce an error naming `OPENAI_API_KEY`.
+
+Bridge tests:
+
+```bash
+go test ./...
+go vet ./...
+# In dotagents:
+node --test tests/agency-extension.test.mjs tests/agency/ask.test.mjs
+```
 
 ## Config
 

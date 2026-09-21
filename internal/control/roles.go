@@ -18,6 +18,7 @@ const (
 type Capabilities struct {
 	Protocol          int    `json:"protocol"`
 	PaneLabels        bool   `json:"paneLabels"`
+	PromptBridge      bool   `json:"promptBridge"`
 	PromotionShortcut string `json:"promotionShortcut"`
 }
 

@@ -47,6 +47,10 @@ func main() {
 		runSyncCloud()
 	case "cloud-act":
 		runCloudAct(os.Args[2:])
+	case "ask":
+		runAsk(os.Args[2:])
+	case "bridge-path":
+		runBridgePath()
 	case "spawn":
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
@@ -113,6 +117,9 @@ Usage:
   agency serve                      Run the daemon headless on its own tmux server (no attach)
   agency cloud <command> ...        Run a command against the headless server (used over SSH)
   agency cloud attach <window-id>   Attach this terminal to one headless window
+  agency cloud ask [--timeout 10m] <pane> <text>  Send a prompt and print its final reply
+  agency cloud projects --json      List project directories under ~/git/*/*
+  agency cloud voice-token          Mint an ephemeral gpt-realtime token
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
@@ -245,6 +252,22 @@ func runCloud(args []string) {
 	}
 	cfg := loadConfig()
 	os.Setenv("AGENCY_TMUX_SOCKET", "agency-"+cfg.Session.Name)
+	switch args[0] {
+	case "projects":
+		runProjects(args[1:])
+		return
+	case "voice-token":
+		runVoiceToken(args[1:])
+		return
+	case "spawn":
+		out, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")
+		var caller control.Requester
+		if err != nil || json.Unmarshal([]byte(out), &caller) != nil {
+			fmt.Fprintln(os.Stderr, "Error: cannot identify cloud spawn requester")
+			os.Exit(1)
+		}
+		args = cloudSpawnArgs(args, caller)
+	}
 	if args[0] == "attach" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "Usage: agency cloud attach <window-id>")
