@@ -225,7 +225,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Spawn keybindings. Popups carry AGENCY_CLOUD_WINDOW so that, from a
 	// viewer pane, the palette and spawn dialogs create the agent on the box.
 	b.WriteString("# Agent spawn keybindings\n")
-	fmt.Fprintf(&b, "bind %s display-popup -e AGENCY_CLOUD_WINDOW=#{@agency_cloud} -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
+	fmt.Fprintf(&b, "bind %s display-popup -e 'AGENCY_CLOUD_WINDOW=#{@agency_cloud}' -E -w 40 -h 15 \"%s palette\"\n", cfg.Keys.Palette, agencyBin)
 
 	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color)
 	// in the window the key was pressed in.
@@ -235,7 +235,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	i := 2
 	for _, name := range cfg.AgentOrder {
 		if _, ok := cfg.Agents[name]; ok {
-			fmt.Fprintf(&b, "bind %d display-popup -e AGENCY_CLOUD_WINDOW=#{@agency_cloud} -E -w 50 -h 7 \"%s spawn-dialog %s #{pane_current_path}\"\n", i, agencyBin, name)
+			fmt.Fprintf(&b, "bind %d display-popup -e 'AGENCY_CLOUD_WINDOW=#{@agency_cloud}' -E -w 50 -h 7 \"%s spawn-dialog %s #{pane_current_path}\"\n", i, agencyBin, name)
 			i++
 			if i > 5 {
 				break

@@ -428,7 +428,7 @@ func TestGenerateConfig(t *testing.T) {
 		"cloud-act kill #{@agency_cloud}",
 		"cloud-act approve #{@agency_cloud}",
 		"Close View",
-		"-e AGENCY_CLOUD_WINDOW=#{@agency_cloud}",
+		"-e 'AGENCY_CLOUD_WINDOW=#{@agency_cloud}'",
 		"bind 2 display-popup",
 		"spawn-dialog",
 		"#{b:pane_current_path}",
