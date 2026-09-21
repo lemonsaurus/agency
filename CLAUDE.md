@@ -211,20 +211,22 @@ Selecting "Custom command..." prompts for a command string. The palette calls `a
 
 Tmux keybindings and popups carry human authority, separate from focused-pane authority. New sessions name the first window `control`; human default spawns create `controller` panes there. Agent calls resolve the socket peer from process ancestry and require explicit transitions: controllers create managers, managers create workers, and workers cannot spawn.
 
-Role, parent, root, and pending promotion state live in tmux pane options. Session caps bound managers, workers per manager, and total panes. Role-preserving replacement may exceed caps while old and new panes overlap. It starts the successor in the same window and directory, transfers children, updates controller descendant roots, returns the new pane ID, and leaves retirement to the caller.
+Role, parent, root, pending promotion, and task labels live in tmux pane options. Programmatic spawns require a nonblank label of at most 100 Unicode code points, without control characters or line/paragraph separators. `@agency_task_label` stores the task; `@agency_label` stores the folder border. Replacements preserve task labels. Session caps bound managers, workers per manager, and total panes. Role-preserving replacement may exceed caps while old and new panes overlap. It starts the successor in the same window and directory, transfers children, updates controller descendant roots, returns the new pane ID, and leaves retirement to the caller.
 
 Workers request promotion with a reason. Agency sends a structured notice with the configured approval shortcut to the root controller and marks the pending pane in yellow. `Prefix+P` opens human confirmation. Approval makes the worker a manager under the root controller and moves it to its former manager's window. Pi reads live authority before each prompt and refreshes role-gated tools without injecting terminal commands. Manager-to-controller promotion does not exist.
 
-`agency capabilities` reports the running daemon's protocol and configured promotion shortcut. Pi reports missing or outdated runtimes without suggesting promotion for a handoff.
+`agency capabilities` reports the running daemon's protocol, configured promotion shortcut, and `paneLabels: true`. Pi reports missing or outdated runtimes without suggesting promotion for a handoff.
 
 Approval rejects pane-process callers. Tmux-server ancestry and confirmation provide workflow authorization, not isolation from agents with unrestricted shell access.
 
 When agency launches, it starts a unix socket server at `/tmp/agency-{session}.sock`. It also sets the env var `AGENCY_SOCKET` in every spawned pane so agents know where to reach it.
 
-`scripts/agency-spawn` reads the live role through `agency whoami`, falls back to `AGENCY_ROLE`, and sends an explicit manager or worker child role. It rejects workers. It also exposes `--replace` and `--request-promotion`.
+`scripts/agency-spawn` reads the live role through `agency whoami`, falls back to `AGENCY_ROLE`, and sends an explicit manager or worker child role. It rejects workers and requires `--label` for spawns. It also exposes `--replace` and `--request-promotion`.
 
 The protocol is newline-delimited:
-- `spawn-role:{"agent":"pi","role":"worker"}` creates an explicit programmatic child
+- `spawn-role:{"agent":"pi","role":"worker","label":"Review API"}` creates a labeled programmatic child
+- `label:{}` reads the authenticated caller's task label as a JSON string
+- `label:{"pane":"%3","label":"Review API"}` writes a task label; workers can only edit themselves
 - `replace:{"command":"handoff-pi","dir":"/tmp"}` starts a role-preserving successor with optional launch overrides
 - `promotion-request:{"reason":"need fanout"}` records and routes a request
 - `promotion-approve:%3` approves a pending worker from human tmux authority

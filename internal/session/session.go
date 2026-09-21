@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/lemonsaurus/agency/internal/agents"
+	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/layout"
@@ -47,6 +48,7 @@ type TrackedPane struct {
 	ParentID         string
 	RootID           string
 	PendingPromotion string
+	TaskLabel        string
 }
 
 // Manager tracks panes, handles spawn/kill, and satisfies ipc.Handler.
@@ -56,6 +58,7 @@ type Manager struct {
 	registry *agents.Registry
 	cfg      *config.Config
 	poller   *status.Poller
+	cloud    cloudClient
 
 	panes          map[string]*TrackedPane // keyed by pane ID
 	counters       map[string]int          // instance counters per agent type (fallback when no dir)
@@ -80,6 +83,7 @@ func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.
 		registry:       registry,
 		cfg:            cfg,
 		poller:         poller,
+		cloud:          &cloud.Client{Host: cfg.Cloud.Host},
 		panes:          make(map[string]*TrackedPane),
 		counters:       make(map[string]int),
 		processOwnedBy: processDescendsFrom,
@@ -87,35 +91,38 @@ func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.
 }
 
 // SpawnAgent spawns a new pane running the named agent.
-func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir string) error {
+func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir)
+	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir, label)
 }
 
-func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir string) error {
+func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir)
+	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir, label)
 }
 
 // SpawnCommand spawns a pane running an arbitrary command.
-func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir string) error {
-	return m.spawnPane(ctx, requester, role, "", "", command, dir)
+func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error {
+	return m.spawnPane(ctx, requester, role, "", "", command, dir, label)
 }
 
-func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir string) error {
-	return m.spawnPane(ctx, requester, role, windowName, "", command, dir)
+func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error {
+	return m.spawnPane(ctx, requester, role, windowName, "", command, dir, label)
 }
 
-func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir string) error {
+func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := control.ValidateTaskLabel(label, !requester.Human); err != nil {
+		return err
+	}
 	if err := m.checkSpawnLimit(requester, role); err != nil {
 		return err
 	}
@@ -153,6 +160,10 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	if err != nil {
 		return fmt.Errorf("spawning pane: %w", err)
 	}
+	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", label); err != nil {
+		_ = m.tmux.KillPane(ctx, paneID)
+		return fmt.Errorf("storing task label: %w", err)
+	}
 	if role == control.RoleController {
 		rootID = paneID
 	}
@@ -161,13 +172,14 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	color := paneColors[m.colorIndex%len(paneColors)]
 	m.colorIndex++
 
-	m.stylePaneLabel(ctx, paneID, displayName, color)
+	m.stylePaneLabel(ctx, paneID, folderLabel(dir), color)
 
 	tracked := &TrackedPane{
 		PaneID:     paneID,
 		WindowName: windowName,
 		AgentType:  agentType,
 		AgentName:  displayName,
+		TaskLabel:  label,
 		Command:    command,
 		Status:     status.StatusRunning,
 		Role:       role,
@@ -286,7 +298,44 @@ func (m *Manager) Capabilities() control.Capabilities {
 	if len(key) == 1 && key >= "A" && key <= "Z" {
 		key = "Shift+" + key
 	}
-	return control.Capabilities{Protocol: 1, PromotionShortcut: prefix + " then " + key}
+	return control.Capabilities{Protocol: 1, PaneLabels: true, PromotionShortcut: prefix + " then " + key}
+}
+
+func (m *Manager) TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if paneID == "" {
+		paneID = requester.PaneID
+	}
+	if paneID == "" {
+		return "", fmt.Errorf("no current agency pane; specify --pane")
+	}
+	pane := m.panes[paneID]
+	if pane == nil {
+		return "", fmt.Errorf("pane %s is not tracked", paneID)
+	}
+	if label == nil {
+		return pane.TaskLabel, nil
+	}
+	if !requester.CanLabelPane(paneID) {
+		return "", fmt.Errorf("worker panes may only label their own pane")
+	}
+	if err := control.ValidateTaskLabel(*label, false); err != nil {
+		return "", err
+	}
+	info, err := m.paneInfo(ctx, paneID)
+	if err != nil {
+		return "", err
+	}
+	if info.CloudWindow != "" {
+		return m.labelViewer(ctx, paneID, info.CloudWindow, *label)
+	}
+	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", *label); err != nil {
+		return "", err
+	}
+	pane.TaskLabel = *label
+	return pane.TaskLabel, nil
 }
 
 func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Requester, error) {
@@ -355,6 +404,10 @@ func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, 
 	if err != nil {
 		return "", fmt.Errorf("spawning replacement: %w", err)
 	}
+	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", old.TaskLabel); err != nil {
+		_ = m.tmux.KillPane(ctx, paneID)
+		return "", fmt.Errorf("storing replacement task label: %w", err)
+	}
 	if old.Role == control.RoleController {
 		rootID = paneID
 	}
@@ -366,6 +419,7 @@ func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, 
 		WindowName:       paneInfo.WindowName,
 		AgentType:        old.AgentType,
 		AgentName:        old.AgentName,
+		TaskLabel:        old.TaskLabel,
 		Command:          old.Command,
 		Status:           status.StatusRunning,
 		Role:             old.Role,
@@ -377,7 +431,7 @@ func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, 
 		replacement.ParentID = ""
 	}
 	m.panes[paneID] = replacement
-	m.stylePaneLabel(ctx, paneID, replacement.AgentName, color)
+	m.stylePaneLabel(ctx, paneID, folderLabel(replacementDir), color)
 	m.stylePaneControl(ctx, replacement)
 
 	for _, pane := range m.panes {
@@ -829,7 +883,7 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			}
 		}
 
-		m.stylePaneLabel(ctx, pane.ID, displayName, color)
+		m.stylePaneLabel(ctx, pane.ID, folderLabel(pane.CWD), color)
 
 		role, err := control.ParseRole(pane.Role)
 		if err != nil {
@@ -864,6 +918,7 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			WindowName:       pane.WindowName,
 			AgentType:        agentType,
 			AgentName:        displayName,
+			TaskLabel:        pane.TaskLabel,
 			Command:          agencyCommand,
 			Status:           status.StatusIdle,
 			Role:             role,

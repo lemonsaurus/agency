@@ -434,7 +434,6 @@ func TestGenerateConfig(t *testing.T) {
 		"#{b:pane_current_path}",
 		"#{@agent_color}",
 		"#{@agency_label}",
-		"#{pane_current_command}",
 		"pane-active-border-style",
 		"terminal-features 'xterm*:hyperlinks'",
 		"terminal-features 'tmux*:hyperlinks'",

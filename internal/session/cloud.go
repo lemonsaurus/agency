@@ -4,11 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
+
+type cloudClient interface {
+	Windows(context.Context) ([]cloud.Window, error)
+	Run(context.Context, time.Duration, ...string) (string, error)
+}
 
 // offlineViewer marks the placeholder pane shown when the host is unreachable.
 const offlineViewer = "offline"
@@ -21,12 +27,10 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 	if m.cfg.Cloud.Host == "" {
 		return "", fmt.Errorf("no [cloud] host configured")
 	}
-	remote := &cloud.Client{Host: m.cfg.Cloud.Host}
-	windows, remoteErr := remote.Windows(ctx)
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	windows, remoteErr := m.cloud.Windows(ctx)
 	panes, err := m.tmux.ListPanes(ctx)
 	if err != nil {
 		return "", err
@@ -54,8 +58,12 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 			paneID = m.spawnViewer(ctx, window, m.registry.DetectType(window.Pane.Command))
 			added++
 		}
-		// Mirror the pending badge so the border shows the Prefix+P hint.
-		_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_promotion", window.Pane.PendingPromotion)
+		if paneID == "" {
+			return "", fmt.Errorf("creating cloud viewer for %s", window.ID)
+		}
+		if err := m.mirrorViewer(ctx, paneID, window.Pane); err != nil {
+			return "", err
+		}
 	}
 	for id, paneID := range viewers {
 		if present[id] {
@@ -76,6 +84,46 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 	return fmt.Sprintf("%d cloud panes, %d added, %d removed", len(windows), added, removed), nil
 }
 
+func (m *Manager) labelViewer(ctx context.Context, paneID, windowID, label string) (string, error) {
+	if m.cfg.Cloud.Host == "" || windowID == offlineViewer {
+		return "", fmt.Errorf("cloud pane is unavailable")
+	}
+	windows, err := m.cloud.Windows(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, window := range windows {
+		if window.ID != windowID {
+			continue
+		}
+		if _, err := m.cloud.Run(ctx, 15*time.Second, "label", "--pane", window.Pane.ID, "--", label); err != nil {
+			return "", err
+		}
+		window.Pane.TaskLabel = label
+		if err := m.mirrorViewer(ctx, paneID, window.Pane); err != nil {
+			return "", err
+		}
+		return label, nil
+	}
+	return "", fmt.Errorf("cloud window %s is no longer available", windowID)
+}
+
+func (m *Manager) mirrorViewer(ctx context.Context, paneID string, remote tmux.PaneInfo) error {
+	for _, option := range [][2]string{
+		{"@agency_label", folderLabel(remote.CWD)},
+		{"@agency_task_label", remote.TaskLabel},
+		{"@agency_promotion", remote.PendingPromotion},
+	} {
+		if err := m.tmux.SetPaneOption(ctx, paneID, option[0], option[1]); err != nil {
+			return err
+		}
+	}
+	if pane := m.panes[paneID]; pane != nil {
+		pane.TaskLabel = remote.TaskLabel
+	}
+	return nil
+}
+
 // adoptViewer re-tracks a viewer pane after a daemon restart. Its label and
 // color are already in pane options.
 func (m *Manager) adoptViewer(pane tmux.PaneInfo) {
@@ -85,6 +133,7 @@ func (m *Manager) adoptViewer(pane tmux.PaneInfo) {
 		WindowName: pane.WindowName,
 		AgentType:  agentType,
 		AgentName:  pane.CloudWindow,
+		TaskLabel:  pane.TaskLabel,
 		Command:    pane.Command,
 		Status:     status.StatusIdle,
 	}
@@ -116,7 +165,11 @@ func (m *Manager) spawnViewer(ctx context.Context, window cloud.Window, agentTyp
 	}
 	color := paneColors[m.colorIndex%len(paneColors)]
 	m.colorIndex++
-	m.stylePaneLabel(ctx, paneID, window.Name, color)
+	border := folderLabel(window.Pane.CWD)
+	if window.ID == offlineViewer {
+		border = window.Name
+	}
+	m.stylePaneLabel(ctx, paneID, border, color)
 	_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_cloud", window.ID)
 	m.panes[paneID] = &TrackedPane{
 		PaneID:     paneID,

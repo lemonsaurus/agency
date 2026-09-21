@@ -199,9 +199,9 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g pane-border-status top\n")
 	b.WriteString("set -g pane-border-lines single\n")
 	// Label format: show @agency_label with colored badge for agency panes,
-	// fall back to live command@folder for plain terminal panes.
+	// fall back to the live folder for plain terminal panes.
 	// Note: #, is tmux's escape for a literal comma inside format strings.
-	fmt.Fprintf(&b, "set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{pane_current_command}@#{b:pane_current_path} }#{?#{@agency_promotion},#[fg=#f9e2af#,bold] promotion pending: Prefix+%s #[default],}\"\n\n", cfg.Keys.ApprovePromotion)
+	fmt.Fprintf(&b, "set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{b:pane_current_path} }#{?#{@agency_promotion},#[fg=#f9e2af#,bold] promotion pending: Prefix+%s #[default],}\"\n\n", cfg.Keys.ApprovePromotion)
 
 	// Status bar.
 	b.WriteString("# Status bar\n")

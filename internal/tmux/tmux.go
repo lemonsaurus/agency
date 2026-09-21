@@ -73,6 +73,7 @@ type PaneInfo struct {
 	PendingPromotion string `json:"pendingPromotion,omitempty"`
 	AgencyCommand    string `json:"agencyCommand,omitempty"`
 	CloudWindow      string `json:"cloudWindow,omitempty"` // remote window id this local pane views
+	TaskLabel        string `json:"taskLabel,omitempty"`
 }
 
 type windowRef struct {
@@ -392,7 +393,7 @@ func (c *Client) windowTarget(windowName string) string {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}\t#{@agency_task_label}"
 	out, err := c.Cmd.Run(ctx,
 		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
@@ -451,6 +452,9 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		}
 		if len(parts) >= 15 {
 			pane.CloudWindow = parts[14]
+		}
+		if len(parts) >= 16 {
+			pane.TaskLabel = parts[15]
 		}
 		panes = append(panes, pane)
 	}

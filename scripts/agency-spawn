@@ -2,8 +2,8 @@
 # agency-spawn requests a child, replacement, or promotion from an agency pane.
 #
 # Usage:
-#   agency-spawn claude [--dir /path]
-#   agency-spawn --cmd "aider --yes" [--dir /path]
+#   agency-spawn claude --label "Task name" [--dir /path]
+#   agency-spawn --cmd "aider --yes" --label "Task name" [--dir /path]
 #   agency-spawn --replace
 #   agency-spawn --request-promotion "reason"
 
@@ -70,9 +70,14 @@ case "$ROLE" in
 esac
 
 DIR=""
+LABEL=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --label)
+            LABEL="${2:?Usage: agency-spawn ... --label 'Task name'}"
+            shift 2
+            ;;
         --dir)
             DIR="${2:?Usage: agency-spawn ... --dir /path}"
             shift 2
@@ -92,10 +97,10 @@ fi
 if [[ "${1:-}" == "--cmd" ]]; then
     shift
     COMMAND="${*:?Usage: agency-spawn --cmd \"command\"}"
-    MSG="spawn-role:{\"command\":\"$(json_escape "$COMMAND")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\"}"
+    MSG="spawn-role:{\"command\":\"$(json_escape "$COMMAND")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\",\"label\":\"$(json_escape "$LABEL")\"}"
 else
     AGENT="${1:?Usage: agency-spawn <agent-type> or agency-spawn --cmd \"command\"}"
-    MSG="spawn-role:{\"agent\":\"$(json_escape "$AGENT")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\"}"
+    MSG="spawn-role:{\"agent\":\"$(json_escape "$AGENT")\",\"dir\":\"$(json_escape "$DIR")\",\"role\":\"$CHILD_ROLE\",\"label\":\"$(json_escape "$LABEL")\"}"
 fi
 
 send_message "$MSG"

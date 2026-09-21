@@ -51,6 +51,8 @@ func main() {
 		runSpawn(os.Args[2:])
 	case "spawn-dialog":
 		runSpawnDialog(os.Args[2:])
+	case "label":
+		runLabel(os.Args[2:])
 	case "whoami":
 		runWhoAmI(os.Args[2:])
 	case "capabilities":
@@ -117,6 +119,8 @@ Usage:
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn --window <name> ...   Spawn into a named tmux window
   agency spawn --role <role> ...     Request a manager or worker pane
+  agency spawn --label "task" ...    Set task label (required for agent spawns)
+  agency label [--pane %N] [-- "task"] Read or write a pane task label
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
   agency whoami [--role]            Print current pane authority
   agency capabilities              Print running daemon protocol and promotion shortcut
@@ -569,12 +573,13 @@ func runSpawn(args []string) {
 	sockPath := socketPath(cfg.Session.Name)
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] <agent|--cmd> [dir]")
+		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] [--label task] <agent|--cmd> [dir]")
 		os.Exit(1)
 	}
 
 	windowName := ""
 	role := ""
+	label := ""
 	for len(args) > 0 && strings.HasPrefix(args[0], "--") && args[0] != "--cmd" {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Error: spawn option needs a value")
@@ -583,6 +588,8 @@ func runSpawn(args []string) {
 		switch args[0] {
 		case "--window":
 			windowName = args[1]
+		case "--label":
+			label = args[1]
 		case "--role":
 			parsed, err := control.ParseRole(args[1])
 			if err != nil || parsed == control.RoleController {
@@ -608,7 +615,7 @@ func runSpawn(args []string) {
 			os.Exit(1)
 		}
 		command, dir := extractDirArg(args[1:])
-		msgs = []string{spawnCommandMessage(windowName, role, strings.Join(command, " "), dir)}
+		msgs = []string{spawnCommandMessage(windowName, role, strings.Join(command, " "), dir, label)}
 	} else {
 		name := args[0]
 		dirs := args[1:]
@@ -620,7 +627,7 @@ func runSpawn(args []string) {
 			if !ok {
 				continue
 			}
-			msgs = append(msgs, spawnAgentMessage(windowName, role, name, abs))
+			msgs = append(msgs, spawnAgentMessage(windowName, role, name, abs, label))
 		}
 		if len(msgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Error: no valid directories to spawn in")
@@ -638,6 +645,54 @@ func runSpawn(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
 			os.Exit(1)
 		}
+	}
+}
+
+func labelMessage(args []string) (string, bool, error) {
+	payload := struct {
+		Pane  string  `json:"pane,omitempty"`
+		Label *string `json:"label,omitempty"`
+	}{}
+	if len(args) >= 2 && args[0] == "--pane" && strings.HasPrefix(args[1], "%") {
+		payload.Pane = args[1]
+		args = args[2:]
+	}
+	if len(args) > 0 {
+		if len(args) != 2 || args[0] != "--" {
+			return "", false, fmt.Errorf("usage: agency label [--pane %%N] [-- 'New label']")
+		}
+		if err := control.ValidateTaskLabel(args[1], false); err != nil {
+			return "", false, err
+		}
+		payload.Label = &args[1]
+	}
+	data, _ := json.Marshal(payload)
+	return "label:" + string(data), payload.Label != nil, nil
+}
+
+func runLabel(args []string) {
+	message, write, err := labelMessage(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), message)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(resp, "error:") {
+		fmt.Fprintln(os.Stderr, resp)
+		os.Exit(1)
+	}
+	var label string
+	if err := json.Unmarshal([]byte(resp), &label); err != nil {
+		fmt.Fprintln(os.Stderr, "Agency daemon does not support pane labels. Relaunch Agency.")
+		os.Exit(1)
+	}
+	if !write && label != "" {
+		fmt.Println(label)
 	}
 }
 
@@ -779,6 +834,7 @@ type spawnPayload struct {
 	Command string `json:"command,omitempty"`
 	Dir     string `json:"dir,omitempty"`
 	Role    string `json:"role,omitempty"`
+	Label   string `json:"label,omitempty"`
 }
 
 type sendPayload struct {
@@ -797,22 +853,22 @@ type renameWindowPayload struct {
 	Name   string `json:"name"`
 }
 
-func spawnAgentMessage(windowName, role, name, dir string) string {
-	if windowName == "" && role == "" {
+func spawnAgentMessage(windowName, role, name, dir, label string) string {
+	if windowName == "" && role == "" && label == "" {
 		return "spawn:" + name + dirSuffix(dir)
 	}
-	payload, _ := json.Marshal(spawnPayload{Window: windowName, Agent: name, Dir: dir, Role: role})
+	payload, _ := json.Marshal(spawnPayload{Window: windowName, Agent: name, Dir: dir, Role: role, Label: label})
 	if windowName == "" {
 		return "spawn-role:" + string(payload)
 	}
 	return "spawn-window:" + string(payload)
 }
 
-func spawnCommandMessage(windowName, role, command, dir string) string {
-	if windowName == "" && role == "" {
+func spawnCommandMessage(windowName, role, command, dir, label string) string {
+	if windowName == "" && role == "" && label == "" {
 		return "spawn:cmd:" + command + dirSuffix(dir)
 	}
-	payload, _ := json.Marshal(spawnPayload{Window: windowName, Command: command, Dir: dir, Role: role})
+	payload, _ := json.Marshal(spawnPayload{Window: windowName, Command: command, Dir: dir, Role: role, Label: label})
 	if windowName == "" {
 		return "spawn-role:" + string(payload)
 	}

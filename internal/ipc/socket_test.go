@@ -17,6 +17,7 @@ type spawnRecord struct {
 	name   string
 	dir    string
 	role   control.Role
+	label  string
 }
 
 type commandRecord struct {
@@ -24,6 +25,7 @@ type commandRecord struct {
 	command string
 	dir     string
 	role    control.Role
+	label   string
 }
 
 type renameRecord struct {
@@ -61,10 +63,13 @@ type mockHandler struct {
 	promotionApprovals []string
 	failNext           bool
 	requester          control.Requester
+	labelRequester     control.Requester
+	labelPane          string
+	labelValue         string
 }
 
 func (m *mockHandler) Capabilities() control.Capabilities {
-	return control.Capabilities{Protocol: 1, PromotionShortcut: "Ctrl+Space then Shift+P"}
+	return control.Capabilities{Protocol: 1, PaneLabels: true, PromotionShortcut: "Ctrl+Space then Shift+P"}
 }
 
 func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Requester, error) {
@@ -74,36 +79,47 @@ func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Reques
 	return control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0", Human: true}, nil
 }
 
-func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir string) error {
+func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failNext {
 		m.failNext = false
 		return fmt.Errorf("spawn failed")
 	}
-	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role})
+	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role, label: label})
 	return nil
 }
 
-func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir string) error {
+func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role})
+	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role, label: label})
 	return nil
 }
 
-func (m *mockHandler) SpawnCommand(_ context.Context, _ control.Requester, role control.Role, command, dir string) error {
+func (m *mockHandler) SpawnCommand(_ context.Context, _ control.Requester, role control.Role, command, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.commands = append(m.commands, commandRecord{command: command, dir: dir, role: role})
+	m.commands = append(m.commands, commandRecord{command: command, dir: dir, role: role, label: label})
 	return nil
 }
 
-func (m *mockHandler) SpawnCommandWindow(_ context.Context, _ control.Requester, role control.Role, windowName, command, dir string) error {
+func (m *mockHandler) SpawnCommandWindow(_ context.Context, _ control.Requester, role control.Role, windowName, command, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir, role: role})
+	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir, role: role, label: label})
 	return nil
+}
+
+func (m *mockHandler) TaskLabel(_ context.Context, requester control.Requester, paneID string, label *string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.labelRequester = requester
+	m.labelPane = paneID
+	if label != nil {
+		m.labelValue = *label
+	}
+	return m.labelValue, nil
 }
 
 func (m *mockHandler) KillPane(_ context.Context, paneID string) error {
@@ -320,25 +336,25 @@ func TestSpawnRoleTransitions(t *testing.T) {
 		{
 			name:      "controller requests manager",
 			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
-			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager"}`,
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager","label":"Test task"}`,
 			wantRole:  control.RoleManager,
 		},
 		{
 			name:      "controller cannot create worker",
 			requester: control.Requester{PaneID: "%0", Role: control.RoleController},
-			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker"}`,
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker","label":"Test task"}`,
 			wantError: true,
 		},
 		{
 			name:      "manager requests worker",
 			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
-			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker"}`,
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker","label":"Test task"}`,
 			wantRole:  control.RoleWorker,
 		},
 		{
 			name:      "manager cannot create manager",
 			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
-			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager"}`,
+			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager","label":"Test task"}`,
 			wantError: true,
 		},
 		{
@@ -615,7 +631,7 @@ func TestCapabilitiesDescribeRunningDaemon(t *testing.T) {
 	if err := json.Unmarshal([]byte(response), &capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Protocol != 1 || capabilities.PromotionShortcut != "Ctrl+Space then Shift+P" {
+	if capabilities.Protocol != 1 || !capabilities.PaneLabels || capabilities.PromotionShortcut != "Ctrl+Space then Shift+P" {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
 }

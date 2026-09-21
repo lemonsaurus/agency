@@ -18,10 +18,11 @@ import (
 type Handler interface {
 	Capabilities() control.Capabilities
 	ResolveRequester(ctx context.Context, pid int) (control.Requester, error)
-	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir string) error
-	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir string) error
-	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir string) error
-	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir string) error
+	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label string) error
+	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label string) error
+	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error
+	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error
+	TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error)
 	KillPane(ctx context.Context, paneID string) error
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
@@ -42,6 +43,12 @@ type spawnPayload struct {
 	Command string `json:"command,omitempty"`
 	Dir     string `json:"dir,omitempty"`
 	Role    string `json:"role,omitempty"`
+	Label   string `json:"label,omitempty"`
+}
+
+type labelPayload struct {
+	Pane  string  `json:"pane,omitempty"`
+	Label *string `json:"label,omitempty"`
 }
 
 type renameWindowPayload struct {
@@ -231,10 +238,10 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		if strings.HasPrefix(arg, "cmd:") {
 			command, dir := splitDirSuffix(strings.TrimPrefix(arg, "cmd:"))
-			return "", s.handler.SpawnCommand(s.ctx, requester, role, command, dir)
+			return "", s.handler.SpawnCommand(s.ctx, requester, role, command, dir, "")
 		}
 		name, dir := splitDirSuffix(arg)
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir)
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "")
 	case "spawn-role", "spawn-window":
 		requester, err := s.requester(pid)
 		if err != nil {
@@ -251,19 +258,37 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if err := control.ValidateTaskLabel(payload.Label, !requester.Human); err != nil {
+			return "", err
+		}
 		if payload.Command != "" {
 			if payload.Window != "" {
-				return "", s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir)
+				return "", s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir, payload.Label)
 			}
-			return "", s.handler.SpawnCommand(s.ctx, requester, role, payload.Command, payload.Dir)
+			return "", s.handler.SpawnCommand(s.ctx, requester, role, payload.Command, payload.Dir, payload.Label)
 		}
 		if payload.Agent == "" {
 			return "", fmt.Errorf("agent or command is required")
 		}
 		if payload.Window != "" {
-			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir)
+			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label)
 		}
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir)
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label)
+	case "label":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		var payload labelPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid label payload: %w", err)
+		}
+		label, err := s.handler.TaskLabel(s.ctx, requester, payload.Pane, payload.Label)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(label)
+		return string(data), nil
 	case "kill":
 		requester, err := s.requester(pid)
 		if err != nil {

@@ -66,7 +66,7 @@ make install          # builds and copies to ~/.local/bin/
 
 Agency turns your terminal into a Bloomberg-style multi-terminal workstation. Every pane stays on screen in a tiled grid — no tabs, no alt-tabbing, no context switching. Designed for giant ultrawide monitor nerds who are trying to juggle and keep track of 10+ terminal sessions.
 
-Each pane gets a unique color and a bold `agent@folder` label in its border, so you always know what's running where. Borders dynamically switch color to match the label. Each label has an icon. Hotkeys to start pi, claudejail, codex and gemini sessions.
+Each pane gets a unique color and its folder name in the top border. A separate task label appears in Pi's input badge. Hotkeys start pi, claudejail, codex and gemini sessions.
 
 <sub>PS: This is not really appropriate for a small monitor - for that use case, maybe check out [agent deck](https://github.com/asheshgoplani/agent-deck).</sub>
 
@@ -75,7 +75,7 @@ Each pane gets a unique color and a bold `agent@folder` label in its border, so 
 ## Features
 
 - **Everything on screen at once** — tiled grid layout, auto-rebalances on every spawn
-- **Per-pane color labels** — every pane gets a unique color and a `claudejail@myapp` style border label
+- **Per-pane labels**: colored folder borders and editable task labels that survive restarts and handoffs
 - **Directory-aware spawning** — `agency spawn claude ~/projects/api ~/projects/frontend` opens one pane per directory
 - **Glob support** — `agency spawn claude ~/projects/client-*` expands via your shell
 - **Bounded delegation**: controllers create managers, managers create workers, workers cannot spawn
@@ -116,7 +116,9 @@ agency                              Launch session (or reattach if one exists)
 agency --migrate-controller <pane>   Migrate a legacy session under the selected controller
 agency spawn <agent> [dir...]       Spawn one pane per directory
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
-agency spawn --role <role> ...       Programmatic manager or worker spawn
+agency spawn --role <role> --label "task" ...  Programmatic manager or worker spawn
+agency label [--pane %N]             Read a pane's task label
+agency label [--pane %N] -- "task"    Set a pane's task label (empty clears)
 agency whoami [--role]               Print current pane authority
 agency capabilities                 Print running daemon protocol and promotion shortcut
 agency replace [--cmd "..." dir]     Start a role-preserving successor
@@ -200,21 +202,40 @@ Agency assigns three pane roles:
 - `manager`: creates workers
 - `worker`: cannot create panes
 
-Tmux keybindings and popups carry human authority rather than focused-pane authority. New sessions name the first window `control`; default human spawns create controllers there. Agent spawns require an explicit child role. `agency-spawn` derives that role from the caller's live authority.
+Tmux keybindings and popups carry human authority rather than focused-pane authority. New sessions name the first window `control`; default human spawns create controllers there. Agent spawns require an explicit child role and a descriptive task label. `agency-spawn` derives the role from the caller's live authority and accepts `--label`.
 
-Role, parent, root, and pending promotion data live in tmux pane options for restart adoption. `agency replace` starts a successor in the same window and directory, with optional command and directory overrides for context handoff. It transfers children and returns the successor pane ID. The old pane stays alive until the caller checks the successor and retires itself.
+Role, parent, root, pending promotion, and task labels live in tmux pane options for restart adoption. `agency replace` starts a successor in the same window and directory, with optional command and directory overrides for context handoff. It preserves the task label, transfers children, and returns the successor pane ID. The old pane stays alive until the caller checks the successor and retires itself.
 
 Workers request promotion with `agency request-promotion <reason>`. A yellow pane badge marks the pending request. Focus that pane, press `Ctrl+Space`, then `Shift+P`, and confirm with `y`. Approval changes the worker to a manager under its root controller and moves it to its former manager's window. Pi refreshes its tools on the next prompt. Managers cannot become controllers through promotion.
 
-Every role can use `/handoff` without promotion. Failed handoffs keep the original pane and pending input. `agency capabilities` reports the running daemon protocol and configured approval shortcut; Pi reports outdated runtimes explicitly.
+Every role can use `/handoff` without promotion. Failed handoffs keep the original pane and pending input. `agency capabilities` reports the running daemon protocol, configured approval shortcut, and `paneLabels: true`; Pi reports outdated runtimes explicitly.
 
 Agency's API rejects approval from agent processes. The keyboard flow uses tmux process ancestry and human confirmation. Agents with unrestricted shell access are not sandboxed from the tmux server.
 
 For an existing two-role session, stop the old Agency backend without killing the tmux session, then launch `agency --migrate-controller <root-pane>`. The selected root manager becomes the controller. Other roles remain unchanged, other root managers become its children, and worker roots point to it. Legacy workers attached directly to the controller can request promotion. New spawns follow controller → manager → worker.
 
+## Task labels
+
+```bash
+agency spawn --role manager --label 'Cloud Harness Setup' pi ~/git/agency
+agency label                                  # current pane, plain stdout
+agency label --pane %7                        # another pane
+agency label -- 'Cloud Harness Setup'         # edit current pane
+agency label --pane %7 -- 'Cloud Harness Setup'
+agency label -- ''                            # clear current label
+```
+
+Labels are single-line text, at most 100 Unicode code points, without control characters or Unicode line/paragraph separators. Every programmatic spawn requires a nonblank label; human keybindings and popups can create unnamed panes. Workers can edit their own label. Managers and controllers can edit any pane. All roles can read labels.
+
+`agency label` identifies the caller through authenticated process ancestry. Reads print the label, or nothing when unset. Writes are silent. `agency list --json` includes an optional `taskLabel`. Pi's `/label` command edits the input badge; folder borders remain separate.
+
+Task labels use `@agency_task_label`; folder borders use `@agency_label`. Both survive daemon restarts. Replacement panes inherit their task label and show the replacement directory in their border.
+
 ## Cloud panes
 
 With `[cloud] host` set, launch and `agency sync-cloud` mirror every pane on the host's `agency serve` into a local `cloud-harness` window. Each local pane is a viewer: an SSH attachment to one remote window that reconnects after a dropped link and exits when the remote pane is gone. The remote server keeps one agent per window, has no prefix or status bar, and sizes each window to the client that typed last. Wheel scroll uses the remote scrollback.
+
+Cloud viewers mirror the remote task label and remote folder name. Label writes targeting a local viewer route to its remote pane after the local role check. Sync refreshes edits made on the host.
 
 From a viewer, the spawn keys and palette create the agent on the host in that pane's directory, `Prefix+x` kills the remote agent, `Prefix+r` reconnects the view, and `Prefix+P` approves the remote worker. The pane menu has a separate Close View. On the host, requests from outside every pane carry human authority: only your SSH key reaches it, and agents live in panes.
 
@@ -223,9 +244,9 @@ When agency launches it starts a unix socket server at `/tmp/agency-{session}.so
 The `agency-spawn` script (installed to `~/.local/bin/`) is a tiny wrapper agents can call:
 
 ```bash
-agency-spawn claude                      # spawn a claude pane in the current directory
-agency-spawn claude --dir ~/projects/api # spawn in a specific directory
-agency-spawn --cmd "aider --yes"         # spawn an arbitrary command
+agency-spawn claude --label 'Review API'   # spawn in the current directory
+agency-spawn claude --label 'Fix API' --dir ~/projects/api
+agency-spawn --cmd "aider --yes" --label 'Fix API' # arbitrary command
 agency-spawn --replace                    # start a role-preserving successor
 agency-spawn --request-promotion "reason" # ask the root controller for promotion
 ```
@@ -235,7 +256,9 @@ Controllers request managers, managers request workers, and workers receive an e
 The protocol is plain text over the unix socket:
 
 ```
-spawn-role:{"agent":"pi","role":"worker"} → explicit programmatic spawn
+spawn-role:{"agent":"pi","role":"worker","label":"Review API"} → programmatic spawn
+label:{}                                     → read caller's label as a JSON string
+label:{"pane":"%3","label":"Review API"}      → set label (empty string clears)
 replace:{"command":"handoff-pi","dir":"/tmp"} → role-preserving successor
 promotion-request:{"reason":"need fanout"} → worker promotion request
 promotion-approve:%3                         → human promotion approval

@@ -1,6 +1,11 @@
 package control
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 type Role string
 
@@ -12,6 +17,7 @@ const (
 
 type Capabilities struct {
 	Protocol          int    `json:"protocol"`
+	PaneLabels        bool   `json:"paneLabels"`
 	PromotionShortcut string `json:"promotionShortcut"`
 }
 
@@ -50,6 +56,26 @@ func (r Requester) CanKillPane(paneID string) bool {
 
 func (r Requester) CanMovePane(paneID string) bool {
 	return r.Role != RoleWorker || r.PaneID == paneID
+}
+
+func (r Requester) CanLabelPane(paneID string) bool {
+	return r.Human || r.Role == RoleController || r.Role == RoleManager ||
+		r.Role == RoleWorker && r.PaneID == paneID
+}
+
+func ValidateTaskLabel(label string, required bool) error {
+	if required && strings.TrimSpace(label) == "" {
+		return fmt.Errorf("programmatic spawns require a nonblank task label")
+	}
+	if !utf8.ValidString(label) || utf8.RuneCountInString(label) > 100 {
+		return fmt.Errorf("task label must be valid Unicode and at most 100 characters")
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
+			return fmt.Errorf("task label must be a single line without control characters")
+		}
+	}
+	return nil
 }
 
 func (r Requester) CanKillWindow() bool {
