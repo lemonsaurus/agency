@@ -144,7 +144,9 @@ func (c *Client) AttachWindow(ctx context.Context, windowID string) error {
 	if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err != nil {
 		return err
 	}
-	return c.Cmd.Exec(ctx, "attach-session", "-t", view)
+	// destroy-unattached is set from inside the attached client, so a link
+	// that dies before the deferred kill still takes the view session with it.
+	return c.Cmd.Exec(ctx, "attach-session", "-t", view, ";", "set-option", "-t", view, "destroy-unattached", "on")
 }
 
 // SplitWindow creates a new pane by splitting, running the given command.

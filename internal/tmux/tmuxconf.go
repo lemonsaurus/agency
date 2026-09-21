@@ -96,7 +96,6 @@ func buildCloudConf() string {
 	var b strings.Builder
 	b.WriteString("# Agency cloud.conf — auto-generated, do not edit\n\n")
 	b.WriteString("set -g prefix None\n")
-	b.WriteString("unbind -a -T prefix\n")
 	b.WriteString("set -s exit-empty off\n")
 	b.WriteString("set -g status off\n")
 	b.WriteString("set -g pane-border-status off\n")
@@ -110,8 +109,8 @@ func buildCloudConf() string {
 	b.WriteString("set -g mode-keys emacs\n")
 	b.WriteString("set -g default-terminal \"tmux-256color\"\n")
 	b.WriteString("set -ga terminal-overrides \",*256col*:Tc\"\n")
+	// No extended-keys-format: the box runs tmux 3.4, which lacks it.
 	b.WriteString("set -g extended-keys always\n")
-	b.WriteString("set -gs extended-keys-format csi-u\n")
 	b.WriteString("set -as terminal-features 'tmux*:extkeys'\n")
 	b.WriteString("set -as terminal-features 'tmux*:clipboard'\n")
 	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
