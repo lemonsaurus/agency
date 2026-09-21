@@ -133,18 +133,15 @@ func (c *Client) Attach(ctx context.Context) error {
 
 // AttachWindow attaches this client to a single window through a private
 // session grouped with the main one, so each viewer keeps its own current
-// window. The view session disappears when the client detaches; the window
+// window. The view session is removed once the client detaches; the window
 // and its agent stay with the main session.
 func (c *Client) AttachWindow(ctx context.Context, windowID string) error {
 	view := fmt.Sprintf("view-%d", os.Getpid())
 	if _, err := c.Cmd.Run(ctx, "new-session", "-d", "-t", c.SessionName, "-s", view); err != nil {
 		return err
 	}
-	if _, err := c.Cmd.Run(ctx, "set-option", "-t", view, "destroy-unattached", "on"); err != nil {
-		return err
-	}
+	defer c.Cmd.Run(ctx, "kill-session", "-t", view)
 	if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err != nil {
-		_, _ = c.Cmd.Run(ctx, "kill-session", "-t", view)
 		return err
 	}
 	return c.Cmd.Exec(ctx, "attach-session", "-t", view)
