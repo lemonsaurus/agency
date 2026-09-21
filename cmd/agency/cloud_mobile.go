@@ -60,6 +60,37 @@ func runProjects(args []string) {
 	}
 }
 
+var personaFiles = []string{"IDENTITY.md", "SOUL.md", "SLOP.md"}
+
+func persona(dir string) (string, error) {
+	var parts []string
+	for _, name := range personaFiles {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return "", fmt.Errorf("cannot read %s from ~/.agents", name)
+		}
+		parts = append(parts, strings.TrimSpace(string(data)))
+	}
+	return strings.Join(parts, "\n\n") + "\n", nil
+}
+
+func runPersona(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud persona")
+		os.Exit(1)
+	}
+	home, err := os.UserHomeDir()
+	var text string
+	if err == nil {
+		text, err = persona(filepath.Join(home, ".agents"))
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	fmt.Print(text)
+}
+
 type voiceToken struct {
 	Value     string `json:"value"`
 	ExpiresAt int64  `json:"expires_at"`

@@ -134,6 +134,7 @@ agency cloud <command> ...          Run a CLI command against the headless serve
 agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's final reply
 agency cloud projects --json         List directories under ~/git/*/*
 agency cloud voice-token             Mint an ephemeral gpt-realtime token
+agency cloud persona                 Print Carla's identity, soul and slop rules
 agency sync-cloud                   Mirror the cloud host's panes into the cloud-harness window
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
@@ -279,7 +280,12 @@ agency cloud spawn --role manager --label 'Mobile task' pi ~/git/owner/repo
 agency cloud ask %310 'say hi'
 agency cloud ask --timeout 2m %310 'Explain the current task'
 agency cloud voice-token
+agency cloud persona
+agency cloud capture %310 200
+agency cloud kill %310
 ```
+
+`list --json` adds `bridge: true` for panes whose Pi bridge socket exists; other panes need `/reload` before `ask` works. `persona` prints `~/.agents/IDENTITY.md`, `SOUL.md` and `SLOP.md` joined in that order, so the phone speaks with the same character as the harness.
 
 `projects --json` returns `[{"name":"owner/repo","path":"/home/lemon/git/owner/repo"}]`, sorted by owner and directory. It skips hidden directories and symlinks. External human cloud spawns default to managers under an existing controller. Spawns are silent on success; refresh `list --json` to find the new pane. Requests from agent panes keep their existing child-role restrictions.
 

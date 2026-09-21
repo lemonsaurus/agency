@@ -145,3 +145,17 @@ func TestCloudSpawnAuthority(t *testing.T) {
 		}
 	}
 }
+
+func TestPersona(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := persona(dir); err == nil || !strings.Contains(err.Error(), "IDENTITY.md") {
+		t.Fatalf("missing files should name the file, got %v", err)
+	}
+	for name, body := range map[string]string{"IDENTITY.md": "# Carla\n", "SOUL.md": "\n# Soul\n\n", "SLOP.md": "# Slop"} {
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600)
+	}
+	got, err := persona(dir)
+	if err != nil || got != "# Carla\n\n# Soul\n\n# Slop\n" {
+		t.Fatalf("persona=%q, %v", got, err)
+	}
+}

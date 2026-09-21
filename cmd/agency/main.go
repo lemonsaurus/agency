@@ -120,6 +120,7 @@ Usage:
   agency cloud ask [--timeout 10m] <pane> <text>  Send a prompt and print its final reply
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud voice-token          Mint an ephemeral gpt-realtime token
+  agency cloud persona              Print Carla's identity, soul and slop rules
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
@@ -258,6 +259,9 @@ func runCloud(args []string) {
 		return
 	case "voice-token":
 		runVoiceToken(args[1:])
+		return
+	case "persona":
+		runPersona(args[1:])
 		return
 	case "spawn":
 		out, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")
@@ -1107,7 +1111,15 @@ func runList(args []string) {
 	}
 
 	if listAsJSON(args) {
-		if err := json.NewEncoder(os.Stdout).Encode(panes); err != nil {
+		type bridgedPane struct {
+			tmux.PaneInfo
+			Bridge bool `json:"bridge"`
+		}
+		listed := make([]bridgedPane, 0, len(panes))
+		for _, pane := range panes {
+			listed = append(listed, bridgedPane{pane, bridgeListening(socketPath(cfg.Session.Name), pane.ID)})
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(listed); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -1138,6 +1150,15 @@ func runList(args []string) {
 		}
 		fmt.Printf("  %s  %s%s%s  %s%s\n", pane.ID, window, icon, pane.Command, pane.CWD, active)
 	}
+}
+
+func bridgeListening(daemonSocket, paneID string) bool {
+	path, err := ipc.BridgePath(daemonSocket, paneID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
 func listAsJSON(args []string) bool {
