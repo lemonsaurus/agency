@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -168,8 +170,43 @@ func (h *handoffCloud) copySession(ctx context.Context, remoteHome, remoteDir st
 		return "", err
 	}
 	target := filepath.Join(sessionDir, filepath.Base(h.session))
+	local, err := rewriteSessionCwd(h.session, remoteDir)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(local)
 	fmt.Printf("copying session to %s\n", target)
-	return target, h.remote.Copy(ctx, 2*time.Minute, h.session, target)
+	return target, h.remote.Copy(ctx, 2*time.Minute, local, target)
+}
+
+// rewriteSessionCwd writes a copy of the session whose header points at the
+// remote directory, so Pi resumes without asking about a missing cwd.
+func rewriteSessionCwd(session, cwd string) (string, error) {
+	data, err := os.ReadFile(session)
+	if err != nil {
+		return "", err
+	}
+	header, rest, _ := bytes.Cut(data, []byte("\n"))
+	var fields map[string]any
+	if err := json.Unmarshal(header, &fields); err != nil || fields["type"] != "session" {
+		return "", fmt.Errorf("%s is not a Pi session file", session)
+	}
+	fields["cwd"] = cwd
+	header, err = json.Marshal(fields)
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp("", "handoff-*.jsonl")
+	if err != nil {
+		return "", err
+	}
+	defer tmp.Close()
+	for _, chunk := range [][]byte{header, []byte("\n"), rest} {
+		if _, err := tmp.Write(chunk); err != nil {
+			return "", err
+		}
+	}
+	return tmp.Name(), nil
 }
 
 func (h *handoffCloud) git(args ...string) (string, error) {

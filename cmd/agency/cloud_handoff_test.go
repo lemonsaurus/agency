@@ -24,6 +24,24 @@ func TestSwapHome(t *testing.T) {
 	}
 }
 
+func TestRewriteSessionCwd(t *testing.T) {
+	src := t.TempDir() + "/s.jsonl"
+	os.WriteFile(src, []byte(`{"type":"session","version":3,"cwd":"/var/home/lemon/x"}`+"\n"+`{"type":"message"}`+"\n"), 0o600)
+	out, err := rewriteSessionCwd(src, "/home/box/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(out)
+	data, _ := os.ReadFile(out)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"cwd":"/home/box/x"`) || lines[1] != `{"type":"message"}` {
+		t.Errorf("unexpected rewrite: %q", data)
+	}
+	if _, err := rewriteSessionCwd(src+".missing", "/x"); err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
 func TestRemoteCheckout(t *testing.T) {
 	script := remoteCheckout("", "/home/box/git/agency", "feature")
 	if strings.Contains(script, "worktree add") {
