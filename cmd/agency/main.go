@@ -117,7 +117,7 @@ Usage:
   agency serve                      Run the daemon headless on its own tmux server (no attach)
   agency cloud <command> ...        Run a command against the headless server (used over SSH)
   agency cloud attach <window-id>   Attach this terminal to one headless window
-  agency cloud ask [--timeout 10m] <pane> <text>  Send a prompt and print its final reply
+  agency cloud ask [--timeout 10m] [--detach] <pane> <text>  Send a prompt and print its final reply, or "accepted" with --detach
   agency cloud transcript <pane> [--limit 200]  Print the pane's conversation as JSON
   agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*

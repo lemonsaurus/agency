@@ -26,11 +26,12 @@ func runAsk(args []string) {
 	flags := flag.NewFlagSet("ask", flag.ContinueOnError)
 	timeout := flags.Duration("timeout", 10*time.Minute, "Maximum wait, up to 30m")
 	cancelOnEOF := flags.Bool("cancel-on-stdin-close", false, "Cancel when the SSH client closes command stdin")
+	detach := flags.Bool("detach", false, "Return once the pane starts the turn; the turn keeps running")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(1)
 	}
 	if flags.NArg() != 2 || *timeout <= 0 || *timeout > ipc.MaxAskTimeout {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud ask [--timeout 10m] [--cancel-on-stdin-close] <pane-id> <text> (maximum 30m)")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud ask [--timeout 10m] [--cancel-on-stdin-close] [--detach] <pane-id> <text> (maximum 30m)")
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -55,7 +56,7 @@ func runAsk(args []string) {
 		os.Exit(1)
 	}
 	reply, err := ipc.Ask(ctx, socket, ipc.AskRequest{
-		ID: hex.EncodeToString(id), Pane: flags.Arg(0), Text: flags.Arg(1), TimeoutMS: timeout.Milliseconds(),
+		ID: hex.EncodeToString(id), Pane: flags.Arg(0), Text: flags.Arg(1), TimeoutMS: timeout.Milliseconds(), Detach: *detach,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -64,6 +65,10 @@ func runAsk(args []string) {
 	if reply.Error != nil {
 		fmt.Fprintf(os.Stderr, "Error [%s]: %s\n", reply.Error.Code, reply.Error.Message)
 		os.Exit(1)
+	}
+	if reply.Accepted {
+		fmt.Println("accepted")
+		return
 	}
 	fmt.Print(*reply.Text)
 }

@@ -27,6 +27,7 @@ type AskRequest struct {
 	Pane      string `json:"pane"`
 	Text      string `json:"text"`
 	TimeoutMS int64  `json:"timeoutMs"`
+	Detach    bool   `json:"detach,omitempty"`
 }
 
 type AskError struct {
@@ -36,8 +37,9 @@ type AskError struct {
 
 type AskReply struct {
 	ID    string    `json:"id"`
-	Text  *string   `json:"text,omitempty"`
-	Error *AskError `json:"error,omitempty"`
+	Text     *string   `json:"text,omitempty"`
+	Accepted bool      `json:"accepted,omitempty"`
+	Error    *AskError `json:"error,omitempty"`
 }
 
 func BridgePath(daemonSocket, paneID string) (string, error) {
@@ -50,6 +52,21 @@ func BridgePath(daemonSocket, paneID string) (string, error) {
 	}
 	hash := sha256.Sum256([]byte(daemonSocket))
 	return filepath.Join(home, ".agents", "run", "agency", fmt.Sprintf("%x", hash[:8]), paneID[1:]+".sock"), nil
+}
+
+// Exactly one of text, accepted, or error.
+func (r AskReply) valid() bool {
+	count := 0
+	if r.Text != nil {
+		count++
+	}
+	if r.Accepted {
+		count++
+	}
+	if r.Error != nil {
+		count++
+	}
+	return count == 1
 }
 
 // Ask uses one LF-delimited request and reply per connection. Closing cancels it.
@@ -80,7 +97,7 @@ func Ask(ctx context.Context, socket string, request AskRequest) (AskReply, erro
 		return AskReply{}, fmt.Errorf("bridge disconnected before replying")
 	}
 	var reply AskReply
-	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || (reply.Text == nil) == (reply.Error == nil) {
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || !reply.valid() {
 		return AskReply{}, fmt.Errorf("invalid bridge reply")
 	}
 	return reply, nil

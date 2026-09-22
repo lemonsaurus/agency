@@ -186,6 +186,27 @@ func TestAskAttributionAndExactReply(t *testing.T) {
 	}
 }
 
+func TestAskDetachedReply(t *testing.T) {
+	input := make(chan AskRequest, 1)
+	socket, request := askFixture(t, control.Requester{Human: true}, func(conn net.Conn, r AskRequest) {
+		input <- r
+		json.NewEncoder(conn).Encode(AskReply{ID: r.ID, Accepted: true})
+	})
+	request.Detach = true
+	reply, err := Ask(context.Background(), socket, request)
+	if err != nil || !reply.Accepted || reply.Text != nil {
+		t.Fatalf("reply=%+v err=%v", reply, err)
+	}
+	if got := <-input; !got.Detach {
+		t.Fatalf("request=%+v", got)
+	}
+	for _, bad := range []AskReply{{}, {Accepted: true, Error: &AskError{Code: "x"}}} {
+		if bad.valid() {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+}
+
 func TestAskDisconnectAndTimeout(t *testing.T) {
 	for _, timedOut := range []bool{false, true} {
 		t.Run(map[bool]string{false: "disconnect", true: "timeout"}[timedOut], func(t *testing.T) {
