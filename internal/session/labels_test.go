@@ -105,6 +105,36 @@ func TestTaskLabelEditing(t *testing.T) {
 	}
 }
 
+func TestInitTaskLabel(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{listOutput: "0\tmain\t%1\t0\tpi\t/tmp\t1\t200\tworker\t%0\t%0\t\t\t@0\t\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(ctx); err != nil {
+		t.Fatal(err)
+	}
+	worker := control.Requester{PaneID: "%1", Role: control.RoleWorker, RootID: "%0"}
+	if got, err := mgr.InitTaskLabel(ctx, worker, "Cloud Setup"); err != nil || got != "Cloud Setup" {
+		t.Fatalf("initialize = %q, %v", got, err)
+	}
+	manual := "Manual label"
+	if _, err := mgr.TaskLabel(ctx, testController, "%1", &manual); err != nil {
+		t.Fatal(err)
+	}
+	writes := len(mock.findCalls("set-option"))
+	if got, err := mgr.InitTaskLabel(ctx, worker, "Generated label"); err != nil || got != manual {
+		t.Fatalf("existing label = %q, %v", got, err)
+	}
+	if len(mock.findCalls("set-option")) != writes {
+		t.Fatal("initializer overwrote an existing label")
+	}
+	if _, err := mgr.InitTaskLabel(ctx, control.Requester{Human: true}, "No pane"); err == nil {
+		t.Fatal("initialized without a current pane")
+	}
+	if _, err := mgr.InitTaskLabel(ctx, worker, "bad\nlabel"); err == nil {
+		t.Fatal("accepted multiline label")
+	}
+}
+
 func TestSpawnRejectsMissingAndInvalidTaskLabels(t *testing.T) {
 	for _, label := range []string{"", "  ", "bad\nlabel", strings.Repeat("界", 101)} {
 		mock := &testMock{}

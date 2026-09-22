@@ -53,6 +53,23 @@ func TestLabelMessage(t *testing.T) {
 	}
 }
 
+func TestLabelIfEmptyMessage(t *testing.T) {
+	message, silent, err := labelMessage([]string{"--if-empty", "--", "Cloud Setup"})
+	if err != nil || silent || message != `label-if-empty:{"label":"Cloud Setup"}` {
+		t.Fatalf("labelMessage = %q, %v, %v", message, silent, err)
+	}
+	for _, args := range [][]string{
+		{"--if-empty"},
+		{"--if-empty", "--"},
+		{"--if-empty", "--pane", "%7", "--", "Cloud Setup"},
+		{"--if-empty", "--", "bad\nlabel"},
+	} {
+		if _, _, err := labelMessage(args); err == nil {
+			t.Fatalf("accepted invalid initializer: %v", args)
+		}
+	}
+}
+
 func TestSpawnMessagesIncludeLabel(t *testing.T) {
 	label := "Cloud \"Harness\" Setup"
 	for _, window := range []string{"", "cloud"} {

@@ -302,6 +302,14 @@ func (m *Manager) Capabilities() control.Capabilities {
 }
 
 func (m *Manager) TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error) {
+	return m.taskLabel(ctx, requester, paneID, label, false)
+}
+
+func (m *Manager) InitTaskLabel(ctx context.Context, requester control.Requester, label string) (string, error) {
+	return m.taskLabel(ctx, requester, "", &label, true)
+}
+
+func (m *Manager) taskLabel(ctx context.Context, requester control.Requester, paneID string, label *string, ifEmpty bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -329,7 +337,13 @@ func (m *Manager) TaskLabel(ctx context.Context, requester control.Requester, pa
 		return "", err
 	}
 	if info.CloudWindow != "" {
+		if ifEmpty {
+			return "", fmt.Errorf("initialize task labels from the remote pane")
+		}
 		return m.labelViewer(ctx, paneID, info.CloudWindow, *label)
+	}
+	if ifEmpty && pane.TaskLabel != "" {
+		return pane.TaskLabel, nil
 	}
 	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", *label); err != nil {
 		return "", err

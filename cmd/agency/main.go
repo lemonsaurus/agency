@@ -688,6 +688,13 @@ func labelMessage(args []string) (string, bool, error) {
 		Pane  string  `json:"pane,omitempty"`
 		Label *string `json:"label,omitempty"`
 	}{}
+	ifEmpty := len(args) > 0 && args[0] == "--if-empty"
+	if ifEmpty {
+		args = args[1:]
+		if len(args) != 2 || args[0] != "--" {
+			return "", false, fmt.Errorf("usage: agency label --if-empty -- 'Task name'")
+		}
+	}
 	if len(args) >= 2 && args[0] == "--pane" && strings.HasPrefix(args[1], "%") {
 		payload.Pane = args[1]
 		args = args[2:]
@@ -702,6 +709,9 @@ func labelMessage(args []string) (string, bool, error) {
 		payload.Label = &args[1]
 	}
 	data, _ := json.Marshal(payload)
+	if ifEmpty {
+		return "label-if-empty:" + string(data), false, nil
+	}
 	return "label:" + string(data), payload.Label != nil, nil
 }
 

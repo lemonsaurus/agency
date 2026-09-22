@@ -228,11 +228,12 @@ agency label --pane %7                        # another pane
 agency label -- 'Cloud Harness Setup'         # edit current pane
 agency label --pane %7 -- 'Cloud Harness Setup'
 agency label -- ''                            # clear current label
+agency label --if-empty -- 'Cloud Setup'       # name current pane only if empty; print resulting label
 ```
 
 Labels are single-line text, at most 100 Unicode code points, without control characters or Unicode line/paragraph separators. Every programmatic spawn requires a nonblank label; human keybindings and popups can create unnamed panes. Workers can edit their own label. Managers and controllers can edit any pane. All roles can read labels.
 
-`agency label` identifies the caller through authenticated process ancestry. Reads print the label, or nothing when unset. Writes are silent. `agency list --json` includes an optional `taskLabel`. Pi's `/label` command edits the input badge; folder borders remain separate.
+`agency label` identifies the caller through authenticated process ancestry. Reads print the label, or nothing when unset. Writes are silent except `--if-empty`, which atomically initializes the current pane's label and prints the resulting label. `agency list --json` includes an optional `taskLabel`. Pi generates a 1 to 3 word label from the first message in an unnamed pane. Pi's `/label` command edits the input badge; folder borders remain separate.
 
 Task labels use `@agency_task_label`; folder borders use `@agency_label`. Both survive daemon restarts. Replacement panes inherit their task label and show the replacement directory in their border.
 

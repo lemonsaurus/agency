@@ -122,6 +122,16 @@ func (m *mockHandler) TaskLabel(_ context.Context, requester control.Requester, 
 	return m.labelValue, nil
 }
 
+func (m *mockHandler) InitTaskLabel(_ context.Context, requester control.Requester, label string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.labelRequester = requester
+	if m.labelValue == "" {
+		m.labelValue = label
+	}
+	return m.labelValue, nil
+}
+
 func (m *mockHandler) KillPane(_ context.Context, paneID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

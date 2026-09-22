@@ -23,6 +23,7 @@ type Handler interface {
 	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error
 	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error
 	TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error)
+	InitTaskLabel(ctx context.Context, requester control.Requester, label string) (string, error)
 	KillPane(ctx context.Context, paneID string) error
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
@@ -281,7 +282,7 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label)
 		}
 		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label)
-	case "label":
+	case "label", "label-if-empty":
 		requester, err := s.requester(pid)
 		if err != nil {
 			return "", err
@@ -290,7 +291,15 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
 			return "", fmt.Errorf("invalid label payload: %w", err)
 		}
-		label, err := s.handler.TaskLabel(s.ctx, requester, payload.Pane, payload.Label)
+		var label string
+		if cmd == "label-if-empty" {
+			if payload.Pane != "" || payload.Label == nil {
+				return "", fmt.Errorf("label-if-empty requires a label for the current pane")
+			}
+			label, err = s.handler.InitTaskLabel(s.ctx, requester, *payload.Label)
+		} else {
+			label, err = s.handler.TaskLabel(s.ctx, requester, payload.Pane, payload.Label)
+		}
 		if err != nil {
 			return "", err
 		}

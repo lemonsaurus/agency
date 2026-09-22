@@ -72,6 +72,29 @@ func TestLabelProtocolPreservesEmptyAndErrorLikeLabels(t *testing.T) {
 	}
 }
 
+func TestLabelIfEmptyProtocol(t *testing.T) {
+	h := &mockHandler{requester: control.Requester{PaneID: "%7", Role: control.RoleWorker}}
+	srv := NewServer("", h)
+	for _, label := range []string{"Cloud Setup", "Replacement"} {
+		encoded, _ := json.Marshal(label)
+		got, err := srv.dispatch(`label-if-empty:{"label":`+string(encoded)+`}`, 123)
+		if err != nil || got != `"Cloud Setup"` {
+			t.Fatalf("initialize = %q, %v", got, err)
+		}
+	}
+	if h.labelRequester.PaneID != "%7" {
+		t.Fatalf("requester = %+v", h.labelRequester)
+	}
+	for _, message := range []string{`label-if-empty:{}`, `label-if-empty:{"pane":"%9","label":"Other"}`} {
+		if _, err := srv.dispatch(message, 123); err == nil {
+			t.Fatalf("accepted invalid initializer: %s", message)
+		}
+	}
+	if _, err := srv.dispatch(`label-if-empty:{"label":"Task"}`, 0); err == nil {
+		t.Fatal("accepted an unauthenticated requester")
+	}
+}
+
 func TestLabelUsesAuthenticatedRequester(t *testing.T) {
 	h := &mockHandler{requester: control.Requester{PaneID: "%7", Role: control.RoleWorker}}
 	srv := NewServer("", h)
