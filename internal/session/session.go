@@ -656,6 +656,10 @@ func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 	return nil
 }
 
+func (m *Manager) MoveWindow(ctx context.Context, target string, index int) error {
+	return m.tmux.MoveWindow(ctx, target, index)
+}
+
 // KillAll kills all tracked agent panes.
 func (m *Manager) KillAll(ctx context.Context) error {
 	m.mu.Lock()

@@ -77,6 +77,8 @@ func main() {
 		runMove(os.Args[2:])
 	case "rename-window":
 		runRenameWindow(os.Args[2:])
+	case "move-window":
+		runMoveWindow(os.Args[2:])
 	case "kill-all":
 		runKillAll()
 	case "list":
@@ -145,6 +147,7 @@ Usage:
   agency kill --window <name>       Kill a specific window
   agency move <pane-id> <window>   Move a pane into a window (created if missing)
   agency rename-window <target> <name> Rename a window by name, index, or id
+  agency move-window <target> <index> Place a window at an index, shifting the rest
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
   agency layout <layout>            Switch layout (tiled, columns, rows, main-vertical)
@@ -902,6 +905,11 @@ type renameWindowPayload struct {
 	Name   string `json:"name"`
 }
 
+type moveWindowPayload struct {
+	Target string `json:"target"`
+	Index  int    `json:"index"`
+}
+
 func spawnAgentMessage(windowName, role, name, dir, label string) string {
 	if windowName == "" && role == "" && label == "" {
 		return "spawn:" + name + dirSuffix(dir)
@@ -1089,6 +1097,30 @@ func runRenameWindow(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("renamed window %s to %s\n", args[0], strings.Join(args[1:], " "))
+}
+
+func runMoveWindow(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency move-window <target> <index>")
+		os.Exit(1)
+	}
+	index, err := strconv.Atoi(args[1])
+	if err != nil || index < 0 {
+		fmt.Fprintln(os.Stderr, "Usage: agency move-window <target> <index>")
+		os.Exit(1)
+	}
+	payload, _ := json.Marshal(moveWindowPayload{Target: args[0], Index: index})
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "move-window:"+string(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+	fmt.Printf("moved window %s to index %d\n", args[0], index)
 }
 
 func runKillAll() {

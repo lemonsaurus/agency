@@ -45,6 +45,11 @@ type moveRecord struct {
 	window string
 }
 
+type moveWindowRecord struct {
+	target string
+	index  int
+}
+
 type mockHandler struct {
 	mu                 sync.Mutex
 	spawns             []spawnRecord
@@ -53,6 +58,7 @@ type mockHandler struct {
 	windowKills        []string
 	renames            []renameRecord
 	moves              []moveRecord
+	windowMoves        []moveWindowRecord
 	sends              []sendRecord
 	layouts            []string
 	relayouts          int
@@ -157,6 +163,13 @@ func (m *mockHandler) SendText(_ context.Context, requester control.Requester, p
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sends = append(m.sends, sendRecord{requester: requester, pane: paneID, text: text, enter: enter})
+	return nil
+}
+
+func (m *mockHandler) MoveWindow(_ context.Context, target string, index int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.windowMoves = append(m.windowMoves, moveWindowRecord{target: target, index: index})
 	return nil
 }
 
@@ -484,6 +497,26 @@ func TestServerRenameWindow(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.renames) != 1 || h.renames[0].target != "pi" || h.renames[0].name != "hammerbound" {
 		t.Errorf("expected rename pi to hammerbound, got %v", h.renames)
+	}
+}
+
+func TestServerMoveWindow(t *testing.T) {
+	h := &mockHandler{}
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	srv := NewServer(sockPath, h)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Close()
+
+	_, err := SendMessage(sockPath, `move-window:{"target":"Journalia","index":2}`)
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.windowMoves) != 1 || h.windowMoves[0].target != "Journalia" || h.windowMoves[0].index != 2 {
+		t.Errorf("expected move of Journalia to 2, got %v", h.windowMoves)
 	}
 }
 

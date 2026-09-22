@@ -386,6 +386,38 @@ func TestRenameWindow(t *testing.T) {
 	}
 }
 
+func TestMoveWindow(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		index  int
+		want   []string
+	}{
+		{name: "before occupant", target: "Journalia", index: 2, want: []string{"move-window", "-b", "-s", "@5", "-t", "@2"}},
+		{name: "after occupant", target: "2", index: 3, want: []string{"move-window", "-a", "-s", "@2", "-t", "@3"}},
+		{name: "free index", target: "@2", index: 9, want: []string{"move-window", "-s", "@2", "-t", "test:9"}},
+		{name: "already there", target: "@5", index: 5},
+	}
+	for _, tt := range tests {
+		mock := NewMockCommander()
+		mock.Default = mockReturn{Output: "@1\t1\tcontrol\n@2\t2\tsidequests\n@3\t3\tenterprise\n@5\t5\tJournalia", Err: nil}
+		c := &Client{Cmd: mock, SessionName: "test"}
+
+		if err := c.MoveWindow(context.Background(), tt.target, tt.index); err != nil {
+			t.Fatalf("%s: MoveWindow failed: %v", tt.name, err)
+		}
+		var call []string
+		for _, candidate := range mock.Calls {
+			if candidate[0] == "move-window" {
+				call = candidate
+			}
+		}
+		if fmt.Sprint(call) != fmt.Sprint(tt.want) {
+			t.Errorf("%s: unexpected call: %v, want %v", tt.name, call, tt.want)
+		}
+	}
+}
+
 func TestSelectLayoutForWindow(t *testing.T) {
 	mock := NewMockCommander()
 	mock.Default = mockReturn{Output: "", Err: nil}

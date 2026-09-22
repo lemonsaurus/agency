@@ -388,6 +388,42 @@ func (c *Client) RenameWindow(ctx context.Context, target, name string) error {
 	return err
 }
 
+// MoveWindow places a window at the given index. An occupied index shifts
+// that window and everything after it; renumber-windows closes the gap.
+func (c *Client) MoveWindow(ctx context.Context, target string, index int) error {
+	resolved, err := c.resolveWindowTarget(ctx, target)
+	if err != nil {
+		return err
+	}
+	windows, err := c.listWindowRefs(ctx)
+	if err != nil {
+		return err
+	}
+	current := -1
+	var occupant *windowRef
+	for i := range windows {
+		if windows[i].ID == resolved {
+			current = windows[i].Index
+		}
+		if windows[i].Index == index {
+			occupant = &windows[i]
+		}
+	}
+	if current == index {
+		return nil
+	}
+	if occupant == nil {
+		_, err = c.Cmd.Run(ctx, "move-window", "-s", resolved, "-t", c.SessionName+":"+strconv.Itoa(index))
+		return err
+	}
+	side := "-b"
+	if current >= 0 && current < index {
+		side = "-a"
+	}
+	_, err = c.Cmd.Run(ctx, "move-window", side, "-s", resolved, "-t", occupant.ID)
+	return err
+}
+
 func (c *Client) windowTarget(windowName string) string {
 	return c.SessionName + ":" + windowName
 }

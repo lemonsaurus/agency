@@ -27,6 +27,7 @@ type Handler interface {
 	KillPane(ctx context.Context, paneID string) error
 	KillWindow(ctx context.Context, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
+	MoveWindow(ctx context.Context, target string, index int) error
 	MovePane(ctx context.Context, paneID, windowName string) error
 	SendText(ctx context.Context, requester control.Requester, paneID, text string, enter bool) error
 	SetLayout(ctx context.Context, layout string) error
@@ -55,6 +56,11 @@ type labelPayload struct {
 type renameWindowPayload struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
+}
+
+type moveWindowPayload struct {
+	Target string `json:"target"`
+	Index  int    `json:"index"`
 }
 
 type sendPayload struct {
@@ -332,6 +338,15 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", fmt.Errorf("target and name are required")
 		}
 		return "", s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
+	case "move-window":
+		var payload moveWindowPayload
+		if err := json.Unmarshal([]byte(arg), &payload); err != nil {
+			return "", fmt.Errorf("invalid move-window payload: %w", err)
+		}
+		if payload.Target == "" || payload.Index < 0 {
+			return "", fmt.Errorf("target and index are required")
+		}
+		return "", s.handler.MoveWindow(s.ctx, payload.Target, payload.Index)
 	case "send":
 		requester, err := s.requester(pid)
 		if err != nil {
