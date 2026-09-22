@@ -279,14 +279,6 @@ func runCloud(args []string) {
 	case "voice-sample":
 		runVoiceSample(args[1:])
 		return
-	case "spawn":
-		out, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")
-		var caller control.Requester
-		if err != nil || json.Unmarshal([]byte(out), &caller) != nil {
-			fmt.Fprintln(os.Stderr, "Error: cannot identify cloud spawn requester")
-			os.Exit(1)
-		}
-		args = cloudSpawnArgs(args, caller)
 	}
 	if args[0] == "attach" {
 		if len(args) != 2 {

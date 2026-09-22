@@ -17,13 +17,6 @@ import (
 	"github.com/lemonsaurus/agency/internal/ipc"
 )
 
-func cloudSpawnArgs(args []string, caller control.Requester) []string {
-	if caller.Human {
-		return append([]string{"spawn", "--role", "manager"}, args[1:]...)
-	}
-	return args
-}
-
 func cancelOnInputClose(input io.Reader, cancel context.CancelFunc) {
 	io.Copy(io.Discard, input)
 	cancel()

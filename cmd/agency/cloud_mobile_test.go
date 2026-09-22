@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lemonsaurus/agency/internal/control"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -265,19 +264,6 @@ func TestCancelOnInputClose(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("stdin EOF did not cancel")
-	}
-}
-
-func TestCloudSpawnAuthority(t *testing.T) {
-	args := []string{"spawn", "--label", "Mobile task", "pi", "/work"}
-	got := cloudSpawnArgs(args, control.Requester{Human: true})
-	if !reflect.DeepEqual(got, []string{"spawn", "--role", "manager", "--label", "Mobile task", "pi", "/work"}) {
-		t.Fatal(got)
-	}
-	for _, role := range []control.Role{control.RoleWorker, control.RoleManager, control.RoleController} {
-		if got := cloudSpawnArgs(args, control.Requester{Role: role}); !reflect.DeepEqual(got, args) {
-			t.Fatalf("changed %s authority", role)
-		}
 	}
 }
 
