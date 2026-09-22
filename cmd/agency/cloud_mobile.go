@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -158,6 +161,83 @@ func voiceAPIKey(env, path string) (string, error) {
 		return "", fmt.Errorf("cannot read OPENAI_API_KEY from private.env")
 	}
 	return key, nil
+}
+
+var realtimeVoices = []string{"marin", "cedar", "sage", "coral", "shimmer", "ballad", "verse", "alloy", "ash", "echo"}
+
+var accentPattern = regexp.MustCompile(`^[A-Za-z ]{0,30}$`)
+
+const sampleLine = "Hey Lemon. Build's green, tests pass, and I already fixed the thing you were about to ask about. Ya nerd."
+
+func voiceInstructions(accent string) string {
+	text := "Carla: sharp, warm, self-possessed, a little amused. Natural pace, no customer-service brightness."
+	if accent != "" {
+		text = "Speak " + accent + " English with a clear, authentic accent. " + text
+	}
+	return text
+}
+
+func voiceSample(ctx context.Context, client *http.Client, key, voice, accent string) ([]byte, error) {
+	if !slices.Contains(realtimeVoices, voice) {
+		return nil, fmt.Errorf("unknown voice")
+	}
+	if !accentPattern.MatchString(accent) {
+		return nil, fmt.Errorf("invalid accent")
+	}
+	body, _ := json.Marshal(map[string]string{
+		"model": "gpt-4o-mini-tts", "voice": voice, "input": sampleLine,
+		"instructions": voiceInstructions(strings.TrimSpace(accent)), "response_format": "mp3",
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/audio/speech", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("could not create speech request")
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("speech request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("speech request returned HTTP %d", response.StatusCode)
+	}
+	audio, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
+	if err != nil || len(audio) == 0 {
+		return nil, fmt.Errorf("invalid speech response")
+	}
+	return audio, nil
+}
+
+func runVoiceSample(args []string) {
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud voice-sample <voice> [accent]")
+		os.Exit(1)
+	}
+	accent := ""
+	if len(args) == 2 {
+		accent = args[1]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	home, err := os.UserHomeDir()
+	var key string
+	if err == nil {
+		key, err = voiceAPIKey(os.Getenv("OPENAI_API_KEY"), filepath.Join(home, ".pi", "agent", "private.env"))
+	}
+	if err == nil && strings.TrimSpace(key) == "" {
+		err = fmt.Errorf("OPENAI_API_KEY is not set in the environment")
+	}
+	var audio []byte
+	if err == nil {
+		audio, err = voiceSample(ctx, client, key, args[0], accent)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(base64.StdEncoding.EncodeToString(audio))
 }
 
 func runVoiceToken(args []string) {

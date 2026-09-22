@@ -121,6 +121,7 @@ Usage:
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud voice-token          Mint an ephemeral gpt-realtime token
   agency cloud persona              Print Carla's identity, soul and slop rules
+  agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
@@ -262,6 +263,9 @@ func runCloud(args []string) {
 		return
 	case "persona":
 		runPersona(args[1:])
+		return
+	case "voice-sample":
+		runVoiceSample(args[1:])
 		return
 	case "spawn":
 		out, err := ipc.SendMessage(socketPath(cfg.Session.Name), "whoami")

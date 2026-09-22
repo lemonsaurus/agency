@@ -159,3 +159,21 @@ func TestPersona(t *testing.T) {
 		t.Fatalf("persona=%q, %v", got, err)
 	}
 }
+
+func TestVoiceSample(t *testing.T) {
+	var got map[string]string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		json.NewDecoder(r.Body).Decode(&got)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("MP3"))}, nil
+	})}
+	audio, err := voiceSample(context.Background(), client, "sk-test", "marin", "Irish")
+	if err != nil || string(audio) != "MP3" || got["voice"] != "marin" || !strings.HasPrefix(got["instructions"], "Speak Irish English") {
+		t.Fatalf("sample=%q err=%v request=%v", audio, err, got)
+	}
+	if _, err := voiceSample(context.Background(), client, "sk-test", "hal", ""); err == nil {
+		t.Fatal("unknown voice accepted")
+	}
+	if _, err := voiceSample(context.Background(), client, "sk-test", "marin", "Irish; rm -rf"); err == nil {
+		t.Fatal("bad accent accepted")
+	}
+}
