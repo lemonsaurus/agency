@@ -122,6 +122,7 @@ Usage:
   agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud voice-token          Mint an ephemeral gpt-realtime token
+  agency cloud live-session <json>  Create a GPT-Live WebRTC session; prints the SDP answer JSON
   agency cloud persona              Print Carla's identity, soul and slop rules
   agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
@@ -268,6 +269,9 @@ func runCloud(args []string) {
 		return
 	case "voice-token":
 		runVoiceToken(args[1:])
+		return
+	case "live-session":
+		runLiveSession(args[1:])
 		return
 	case "persona":
 		runPersona(args[1:])

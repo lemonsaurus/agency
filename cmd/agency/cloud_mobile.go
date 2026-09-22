@@ -226,6 +226,87 @@ func mintVoiceToken(ctx context.Context, client *http.Client, key string) (voice
 	return token, nil
 }
 
+// createLiveSession forwards a GPT-Live session request from the phone so the API key never leaves the box.
+func createLiveSession(ctx context.Context, client *http.Client, key, body string) (string, error) {
+	if strings.TrimSpace(key) == "" {
+		return "", fmt.Errorf("OPENAI_API_KEY is not set in the environment")
+	}
+	var request struct {
+		Session   json.RawMessage `json:"session"`
+		Transport struct {
+			Type string `json:"type"`
+			SDP  string `json:"sdp"`
+		} `json:"transport"`
+	}
+	if len(body) > 256*1024 || json.Unmarshal([]byte(body), &request) != nil || len(request.Session) == 0 || request.Transport.Type != "webrtc" || request.Transport.SDP == "" {
+		return "", fmt.Errorf("invalid live session request")
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/live/sessions", strings.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("could not create live session request")
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+key)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(httpRequest)
+	if err != nil {
+		return "", fmt.Errorf("live session request failed")
+	}
+	defer response.Body.Close()
+	reply, err := io.ReadAll(io.LimitReader(response.Body, 256*1024))
+	if err != nil {
+		return "", fmt.Errorf("live session reply unreadable")
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		var failure struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.Unmarshal(reply, &failure)
+		message := strings.ReplaceAll(failure.Error.Message, key, "[key]")
+		if len(message) > 300 {
+			message = message[:300]
+		}
+		return "", fmt.Errorf("live session request returned HTTP %d: %s", response.StatusCode, message)
+	}
+	var answer struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+		Transport struct {
+			SDP string `json:"sdp"`
+		} `json:"transport"`
+	}
+	if json.Unmarshal(reply, &answer) != nil || answer.Session.ID == "" || answer.Transport.SDP == "" {
+		return "", fmt.Errorf("invalid live session reply")
+	}
+	return string(reply), nil
+}
+
+func runLiveSession(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud live-session <json>")
+		os.Exit(1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	home, err := os.UserHomeDir()
+	var key string
+	if err == nil {
+		key, err = voiceAPIKey(os.Getenv("OPENAI_API_KEY"), filepath.Join(home, ".pi", "agent", "private.env"))
+	}
+	var reply string
+	if err == nil {
+		reply, err = createLiveSession(ctx, client, key, args[0])
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(reply)
+}
+
 func voiceAPIKey(env, path string) (string, error) {
 	if strings.TrimSpace(env) != "" {
 		return env, nil

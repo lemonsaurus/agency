@@ -132,6 +132,45 @@ func TestFileRead(t *testing.T) {
 	}
 }
 
+func TestCreateLiveSession(t *testing.T) {
+	offer := `{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"v=0"}}`
+	for _, tt := range []struct {
+		name    string
+		body    string
+		status  int
+		reply   string
+		wantErr string
+	}{
+		{"success", offer, 201, `{"session":{"id":"live_1"},"transport":{"type":"webrtc","sdp":"v=0 answer"}}`, ""},
+		{"provider error", offer, 400, `{"error":{"message":"bad voice private-key"}}`, "HTTP 400: bad voice [key]"},
+		{"redirect", offer, 302, `{}`, "HTTP 302"},
+		{"malformed reply", offer, 201, `nope`, "invalid live session reply"},
+		{"missing sdp", `{"session":{},"transport":{"type":"webrtc"}}`, 201, ``, "invalid live session request"},
+		{"not webrtc", `{"session":{},"transport":{"type":"websocket","sdp":"x"}}`, 201, ``, "invalid live session request"},
+		{"garbage", `nope`, 201, ``, "invalid live session request"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != "POST" || r.URL.String() != "https://api.openai.com/v1/live/sessions" || r.Header.Get("Authorization") != "Bearer private-key" {
+					t.Fatal("wrong request")
+				}
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != tt.body {
+					t.Fatalf("body=%s", body)
+				}
+				return &http.Response{StatusCode: tt.status, Body: io.NopCloser(strings.NewReader(tt.reply))}, nil
+			})}
+			reply, err := createLiveSession(context.Background(), client, "private-key", tt.body)
+			if tt.wantErr == "" && (err != nil || reply != tt.reply) {
+				t.Fatalf("reply=%q err=%v", reply, err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr) || strings.Contains(err.Error(), "private-key")) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 func TestVoiceToken(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
