@@ -106,15 +106,15 @@ func (h *handoffCloud) run(ctx context.Context) error {
 }
 
 // publishBranch commits dirty work and pushes the branch. Work on main or a
-// detached HEAD moves to a fresh handoff branch first.
+// detached HEAD moves to a fresh handoff branch first. The name satisfies
+// Journalia's ruleset: <owner>/micro-fix/<slug>.
 func (h *handoffCloud) publishBranch() (string, error) {
 	branch, err := h.git("branch", "--show-current")
 	if err != nil {
 		return "", fmt.Errorf("%s is not a git checkout", h.dir)
 	}
 	if branch == "" || branch == "main" || branch == "master" {
-		top, _ := h.git("rev-parse", "--show-toplevel")
-		branch = fmt.Sprintf("handoff/%s-%s", filepath.Base(top), time.Now().Format("20060102-1504"))
+		branch = fmt.Sprintf("%s/micro-fix/handoff-%s", branchOwner(), time.Now().Format("20060102-1504"))
 		if _, err := h.git("checkout", "-b", branch); err != nil {
 			return "", err
 		}
@@ -254,6 +254,15 @@ func swapHome(path, remoteHome string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s is outside the home directory", path)
+}
+
+func branchOwner() string {
+	for _, name := range []string{"USER", "LOGNAME"} {
+		if value := strings.ToLower(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return "handoff"
 }
 
 func realHome(home string) string {
