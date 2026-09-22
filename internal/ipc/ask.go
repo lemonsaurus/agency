@@ -86,6 +86,53 @@ func Ask(ctx context.Context, socket string, request AskRequest) (AskReply, erro
 	return reply, nil
 }
 
+type TranscriptRequest struct {
+	ID    string `json:"id"`
+	Limit int    `json:"limit"`
+}
+
+type TranscriptReply struct {
+	ID      string            `json:"id"`
+	Entries []json.RawMessage `json:"entries"`
+	Error   *AskError         `json:"error,omitempty"`
+}
+
+func Transcript(ctx context.Context, socket string, request TranscriptRequest) (TranscriptReply, error) {
+	if !requestIDPattern.MatchString(request.ID) || request.Limit < 1 || request.Limit > 500 {
+		return TranscriptReply{}, fmt.Errorf("invalid transcript ID or limit (1..500)")
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	if err != nil {
+		return TranscriptReply{}, fmt.Errorf("bridge unavailable; update Agency and /reload Pi in the target pane")
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	data, err := json.Marshal(request)
+	if err != nil {
+		return TranscriptReply{}, err
+	}
+	if _, err := fmt.Fprintf(conn, "transcript:%s\n", data); err != nil {
+		return TranscriptReply{}, err
+	}
+	reader := bufio.NewScanner(conn)
+	reader.Buffer(make([]byte, 4096), 16*1024*1024)
+	if !reader.Scan() {
+		if ctx.Err() != nil {
+			return TranscriptReply{}, ctx.Err()
+		}
+		if reader.Err() != nil {
+			return TranscriptReply{}, reader.Err()
+		}
+		return TranscriptReply{}, fmt.Errorf("bridge disconnected before replying")
+	}
+	var reply TranscriptReply
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || (reply.Entries == nil) == (reply.Error == nil) {
+		return TranscriptReply{}, fmt.Errorf("invalid bridge reply")
+	}
+	return reply, nil
+}
+
 func (s *Server) handleAsk(conn net.Conn, reader io.Reader, payload string) {
 	var request AskRequest
 	if err := json.Unmarshal([]byte(payload), &request); err != nil {

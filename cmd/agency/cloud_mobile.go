@@ -63,6 +63,108 @@ func runProjects(args []string) {
 	}
 }
 
+const maxFileBytes = 5 * 1024 * 1024
+
+func mobileFileRoot(home, path string) string {
+	for _, name := range []string{"git", ".agents"} {
+		root := filepath.Join(home, name)
+		if strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return root
+		}
+	}
+	return ""
+}
+
+func fileRead(home, path string, output io.Writer) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || mobileFileRoot(home, path) == "" {
+		return fmt.Errorf("file must be an absolute path under ~/git or ~/.agents")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	rootPath := mobileFileRoot(home, resolved)
+	if rootPath == "" {
+		return fmt.Errorf("file resolves outside ~/git and ~/.agents")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxFileBytes {
+		return fmt.Errorf("file must be regular and at most 5 MiB")
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	file, err := root.Open(strings.TrimPrefix(resolved, rootPath+string(filepath.Separator)))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxFileBytes {
+		return fmt.Errorf("file must be regular and at most 5 MiB")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxFileBytes {
+		return fmt.Errorf("file exceeds 5 MiB")
+	}
+	mime := "application/octet-stream"
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		mime = "image/png"
+	case ".jpg", ".jpeg":
+		mime = "image/jpeg"
+	case ".gif":
+		mime = "image/gif"
+	case ".webp":
+		mime = "image/webp"
+	case ".svg":
+		mime = "image/svg+xml"
+	case ".md":
+		mime = "text/markdown"
+	case ".txt":
+		mime = "text/plain"
+	case ".json":
+		mime = "application/json"
+	}
+	metadata := struct {
+		Name string `json:"name"`
+		Size int    `json:"size"`
+		MIME string `json:"mime"`
+	}{filepath.Base(path), len(data), mime}
+	if err := json.NewEncoder(output).Encode(metadata); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(output, base64.StdEncoding.EncodeToString(data))
+	return err
+}
+
+func runFile(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud file <absolute-path>")
+		os.Exit(1)
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		err = fileRead(home, args[0], os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
 var personaFiles = []string{"IDENTITY.md", "SOUL.md", "SLOP.md"}
 
 func persona(dir string) (string, error) {

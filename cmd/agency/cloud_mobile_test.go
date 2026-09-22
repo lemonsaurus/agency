@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +34,101 @@ func TestProjects(t *testing.T) {
 	want := []project{{"a/one", filepath.Join(root, "a", "one")}, {"b/two", filepath.Join(root, "b", "two")}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("projects=%v, %v", got, err)
+	}
+}
+
+func TestFileRead(t *testing.T) {
+	home := t.TempDir()
+	for _, dir := range []string{"git/repo", ".agents/files", "git-other", "outside"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := []byte("hello\n\x00\xff")
+	for _, path := range []string{"git/repo/y.kt", ".agents/files/note.md", "git-other/file", "outside/file"} {
+		if err := os.WriteFile(filepath.Join(home, path), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range map[string]string{
+		"git/repo/escape": "outside/file", "git/repo/escape-dir": "outside",
+		"git/repo/allowed": ".agents/files/note.md", "git/repo/missing": "not-found",
+	} {
+		if err := os.Symlink(filepath.Join(home, target), filepath.Join(home, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oversize := filepath.Join(home, "git/repo/large")
+	file, err := os.Create(oversize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	for _, tt := range []struct {
+		path string
+		mime string
+	}{
+		{"git/repo/y.kt", "application/octet-stream"},
+		{".agents/files/note.md", "text/markdown"},
+		{"git/repo/allowed", "application/octet-stream"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			var output strings.Builder
+			if err := fileRead(home, filepath.Join(home, tt.path), &output); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(output.String(), "\n")
+			if len(lines) != 3 || lines[2] != "" {
+				t.Fatalf("wrong framing: %q", output.String())
+			}
+			var metadata struct {
+				Name string `json:"name"`
+				Size int    `json:"size"`
+				MIME string `json:"mime"`
+			}
+			if err := json.Unmarshal([]byte(lines[0]), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(lines[1])
+			if err != nil || string(decoded) != string(body) || metadata.Name != filepath.Base(tt.path) || metadata.Size != len(body) || metadata.MIME != tt.mime {
+				t.Fatalf("metadata=%+v decoded=%q err=%v", metadata, decoded, err)
+			}
+		})
+	}
+	for _, path := range []string{
+		filepath.Join(home, "outside/file"), filepath.Join(home, "git-other/file"),
+		filepath.Join(home, "git/repo/escape"), filepath.Join(home, "git/repo/escape-dir/file"),
+		filepath.Join(home, "git/repo/missing"), filepath.Join(home, "git/repo"),
+		home + "/git/../outside/file", "git/repo/y.kt", oversize,
+	} {
+		t.Run("reject "+path, func(t *testing.T) {
+			var output strings.Builder
+			if err := fileRead(home, path, &output); err == nil || output.Len() != 0 {
+				t.Fatalf("accepted %q or wrote partial output: %v", path, err)
+			}
+		})
+	}
+	for ext, mime := range map[string]string{
+		"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+		"webp": "image/webp", "svg": "image/svg+xml", "md": "text/markdown", "txt": "text/plain", "json": "application/json",
+	} {
+		path := filepath.Join(home, ".agents/files/file."+strings.ToUpper(ext))
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var output strings.Builder
+		if err := fileRead(home, path, &output); err != nil || !strings.Contains(output.String(), `"mime":"`+mime+`"`) || !strings.HasSuffix(output.String(), "\n\n") {
+			t.Fatalf("mime for %s: %q, %v", ext, output.String(), err)
+		}
+	}
+	if err := os.Truncate(oversize, maxFileBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileRead(home, oversize, io.Discard); err != nil {
+		t.Fatalf("5 MiB boundary: %v", err)
 	}
 }
 

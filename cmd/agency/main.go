@@ -118,6 +118,8 @@ Usage:
   agency cloud <command> ...        Run a command against the headless server (used over SSH)
   agency cloud attach <window-id>   Attach this terminal to one headless window
   agency cloud ask [--timeout 10m] <pane> <text>  Send a prompt and print its final reply
+  agency cloud transcript <pane> [--limit 200]  Print the pane's conversation as JSON
+  agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud voice-token          Mint an ephemeral gpt-realtime token
   agency cloud persona              Print Carla's identity, soul and slop rules
@@ -255,6 +257,12 @@ func runCloud(args []string) {
 	cfg := loadConfig()
 	os.Setenv("AGENCY_TMUX_SOCKET", "agency-"+cfg.Session.Name)
 	switch args[0] {
+	case "transcript":
+		runTranscript(args[1:])
+		return
+	case "file":
+		runFile(args[1:])
+		return
 	case "projects":
 		runProjects(args[1:])
 		return

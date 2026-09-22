@@ -280,6 +280,8 @@ agency cloud projects --json
 agency cloud spawn --role manager --label 'Mobile task' pi ~/git/owner/repo
 agency cloud ask %310 'say hi'
 agency cloud ask --timeout 2m %310 'Explain the current task'
+agency cloud transcript %310 --limit 200
+agency cloud file /home/lemon/git/owner/repo/README.md
 agency cloud voice-token
 agency cloud persona
 agency cloud voice-sample marin Irish
@@ -293,7 +295,11 @@ agency cloud kill %310
 
 `ask` prints only the final assistant text, preserving whitespace, then exits zero. Errors go to stderr and exit nonzero. Busy panes reject immediately. A second prompt interrupts the request's correlation rather than returning that prompt's answer. Ctrl+C, SIGTERM, SIGHUP, client-process exit, and the request deadline cancel the owned turn. The default deadline is 10 minutes; the maximum is 30 minutes. SSH clients use `ask --cancel-on-stdin-close`, keep command stdin open during the request, and close it on explicit cancellation. This flag does not apply to ordinary terminal calls. Closing a non-PTY SSH channel alone may leave its command running until the deadline.
 
-The daemon authenticates the caller through process ancestry and adds pane/role attribution for agent callers. Each Pi owns a local Unix socket under `~/.agents/run/agency/`, with a private directory (0700) and socket (0600). `agency bridge-path` resolves the current pane through the daemon, independent of inherited pane-ID environment variables. The protocol uses a request ID and LF-delimited JSON on one connection per request. Pi injects a user message with that ID, captures the last assistant message from `agent_end`, and replies at `agent_settled`. Reload and session replacement close listeners and fail pending requests. The sockets share the OS account's trust boundary.
+`transcript <pane-id> [--limit 200]` reads the pane's active session branch directly from its Pi socket, including messages before compaction. It works while the pane is busy and leaves running turns alone. The limit is 1 to 500 messages, in conversation order. It prints one JSON line with `{"id":"<32 hex>","entries":[{"role":"user","at":1727000000000,"blocks":[{"type":"text","text":"hello"}]}]}`. Roles are `user`, `assistant`, and `toolResult`; timestamps are Unix milliseconds. Blocks are `text`, `thinking`, `toolCall` (`id`, `name`, `args`), `toolResult` (`id`, `name`, `text`, `error`), or `image` (`note: "image omitted"`). Text and thinking blocks stop at 20,000 characters; tool results stop at 4,000, including a trailing `…` when truncated. Tool arguments keep scalar strings, numbers and booleans, with strings capped at 300 characters. Injected Agency request prefixes are stripped from user text. Image bytes and tool-result details are omitted. The request deadline is 10 seconds and the reply scanner accepts up to 16 MiB. Requests retain the bridge's 128 KiB limit.
+
+`file <absolute-path>` prints a JSON metadata line (`{"name":"README.md","size":1234,"mime":"text/markdown"}`), then a base64 line. Files must be regular, at most 5 MiB, and under `~/git` or `~/.agents` both before and after resolving symlinks. MIME types come from png, jpg, jpeg, gif, webp, svg, md, txt and json extensions; other extensions use `application/octet-stream`.
+
+The daemon authenticates ask callers through process ancestry and adds pane/role attribution for agent callers. Each Pi owns a local Unix socket under `~/.agents/run/agency/`, with a private directory (0700) and socket (0600). `agency bridge-path` resolves the current pane through the daemon, independent of inherited pane-ID environment variables. The protocol uses a request ID and LF-delimited JSON on one connection per request. Pi injects a user message with that ID, captures the last assistant message from `agent_end`, and replies at `agent_settled`. Reload and session replacement close listeners and fail pending requests. The sockets share the OS account's trust boundary.
 
 Install the updated Agency binary, restart the daemon without killing tmux, and `/reload` Pi in each existing target pane. New Pi panes load the bridge at startup. `agency capabilities` reports `promptBridge: true` when the daemon supports it. The CLI checks this before sending a prompt.
 

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -56,6 +58,107 @@ func askFixture(t *testing.T, requester control.Requester, respond func(net.Conn
 		respond(conn, request)
 	}()
 	return socket, AskRequest{ID: strings.Repeat("a", 32), Pane: "%9", Text: "say hi\nUnicode 🐍", TimeoutMS: 5000}
+}
+
+func TestTranscript(t *testing.T) {
+	dir, err := os.MkdirTemp("", "transcript-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	request := TranscriptRequest{ID: strings.Repeat("b", 32), Limit: 200}
+	for _, tt := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"messages", `{"id":"` + request.ID + `","entries":[{"role":"user","at":1727000000000,"blocks":[{"type":"text","text":"hello"}]}]}`, ""},
+		{"empty", `{"id":"` + request.ID + `","entries":[]}`, ""},
+		{"large", `{"id":"` + request.ID + `","entries":[{"role":"assistant","blocks":[{"type":"text","text":"` + strings.Repeat("a", 9*1024*1024) + `"}]}]}`, ""},
+		{"error", `{"id":"` + request.ID + `","error":{"code":"unavailable","message":"closed"}}`, ""},
+		{"mismatched ID", `{"id":"wrong","entries":[]}`, "invalid bridge reply"},
+		{"malformed", `not JSON`, "invalid bridge reply"},
+		{"missing entries", `{"id":"` + request.ID + `"}`, "invalid bridge reply"},
+		{"null entries", `{"id":"` + request.ID + `","entries":null}`, "invalid bridge reply"},
+		{"both entries and error", `{"id":"` + request.ID + `","entries":[],"error":{"code":"bad"}}`, "invalid bridge reply"},
+		{"disconnected", "", "bridge disconnected"},
+		{"oversize", strings.Repeat("a", 16*1024*1024), "token too long"},
+		{"timeout", "", "context deadline exceeded"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(dir, "pane.sock")
+			listener, err := net.Listen("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			input := make(chan string, 1)
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				line, _ := bufio.NewReader(conn).ReadString('\n')
+				input <- line
+				if tt.name == "timeout" {
+					io.Copy(io.Discard, conn)
+				} else if tt.body != "" {
+					fmt.Fprintln(conn, tt.body)
+				}
+			}()
+			timeout := 5 * time.Second
+			if tt.name == "timeout" {
+				timeout = 100 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			reply, err := Transcript(ctx, path, request)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err=%v, want %q", err, tt.wantErr)
+				}
+				if tt.name == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal(err)
+				}
+			} else if err != nil || reply.ID != request.ID {
+				t.Fatalf("id=%q err=%v", reply.ID, err)
+			} else if tt.name == "error" {
+				if reply.Error == nil || reply.Error.Code != "unavailable" {
+					t.Fatal(reply)
+				}
+			} else {
+				encoded, err := json.Marshal(reply)
+				if err != nil || string(encoded) != tt.body {
+					t.Fatal("reply changed")
+				}
+			}
+			select {
+			case line := <-input:
+				want := `transcript:{"id":"` + request.ID + `","limit":200}` + "\n"
+				if line != want {
+					t.Fatalf("request=%q", line)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("no request")
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("connection remained open")
+			}
+		})
+	}
+	for _, invalid := range []TranscriptRequest{{ID: "bad", Limit: 200}, {ID: request.ID, Limit: 0}, {ID: request.ID, Limit: 501}} {
+		if _, err := Transcript(context.Background(), "", invalid); err == nil || !strings.Contains(err.Error(), "invalid transcript") {
+			t.Fatalf("accepted %+v: %v", invalid, err)
+		}
+	}
+	if _, err := Transcript(context.Background(), filepath.Join(dir, "missing.sock"), request); err == nil || err.Error() != "bridge unavailable; update Agency and /reload Pi in the target pane" {
+		t.Fatal(err)
+	}
 }
 
 func TestAskAttributionAndExactReply(t *testing.T) {
