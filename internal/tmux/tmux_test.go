@@ -424,7 +424,7 @@ func TestGenerateConfig(t *testing.T) {
 		"bind " + cfg.Keys.CopyMode + " copy-mode",
 		"bind " + cfg.Keys.Paste + " paste-buffer",
 		"bind " + cfg.Keys.Terminal + " if -F '#{@agency_cloud}'",
-		"cloud-act spawn #{@agency_cloud}",
+		"cloud-act spawn #{@agency_cloud} --cmd '\\$SHELL'",
 		"cloud-act kill #{@agency_cloud}",
 		"cloud-act approve #{@agency_cloud}",
 		"Close View",

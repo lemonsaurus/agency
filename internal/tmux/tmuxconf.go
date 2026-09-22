@@ -229,7 +229,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Terminal: spawn a tracked terminal pane via agency (so it gets a label + color)
 	// in the window the key was pressed in.
-	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { run-shell \"%s cloud-act spawn #{@agency_cloud} --cmd '$SHELL'\" } { run-shell \"%s spawn --window \\\"#{window_name}\\\" --cmd \\\"$SHELL\\\" #{pane_current_path}\" }\n", cfg.Keys.Terminal, agencyBin, agencyBin)
+	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { run-shell \"%s cloud-act spawn #{@agency_cloud} --cmd '\\$SHELL'\" } { run-shell \"%s spawn --window \\\"#{window_name}\\\" --cmd \\\"$SHELL\\\" #{pane_current_path}\" }\n", cfg.Keys.Terminal, agencyBin, agencyBin)
 
 	// Keys 2-5: agent spawn dialogs pre-filled with focused pane's directory.
 	i := 2
