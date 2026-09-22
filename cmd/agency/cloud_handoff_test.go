@@ -55,3 +55,25 @@ func TestRemoteCheckout(t *testing.T) {
 		t.Errorf("missing worktree add: %s", script)
 	}
 }
+
+func TestUnpublished(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		if _, err := gitIn(dir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+	if !unpublished(dir) {
+		t.Error("commit without any remote counts as unpublished")
+	}
+	run("update-ref", "refs/remotes/origin/main", "HEAD")
+	if unpublished(dir) {
+		t.Error("clean and on a remote ref is published")
+	}
+	os.WriteFile(dir+"/f", []byte("x"), 0o600)
+	if !unpublished(dir) {
+		t.Error("dirty tree is unpublished")
+	}
+}

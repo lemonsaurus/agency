@@ -65,28 +65,63 @@ func runHandoffCloud(args []string) {
 	}
 }
 
+// checkout is one working tree that travels with the session.
+type checkout struct {
+	dir    string
+	branch string
+}
+
 func (h *handoffCloud) run(ctx context.Context) error {
-	branch, err := h.publishBranch()
+	dirs, err := h.checkoutsToPublish()
 	if err != nil {
 		return err
+	}
+	var checkouts []checkout
+	for _, dir := range dirs {
+		branch, err := publishBranch(dir)
+		if err != nil {
+			return err
+		}
+		checkouts = append(checkouts, checkout{dir: dir, branch: branch})
 	}
 	remoteHome, err := h.remote.Shell(ctx, 20*time.Second, "echo \"$HOME\"")
 	if err != nil {
 		return err
 	}
 	remoteHome = strings.TrimSpace(remoteHome)
-	remoteDir, remoteMain, err := h.remotePaths(remoteHome)
+	mainRoot, err := gitIn(h.dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return err
 	}
-	fmt.Printf("checking out %s in %s:%s\n", branch, h.remote.Host, remoteDir)
-	if _, err := h.remote.Shell(ctx, 3*time.Minute, remoteCheckout(remoteMain, remoteDir, branch)); err != nil {
+	remoteMain, err := swapHome(filepath.Dir(mainRoot), remoteHome)
+	if err != nil {
+		return err
+	}
+	var script strings.Builder
+	var remoteDir string
+	for _, c := range checkouts {
+		dir, err := swapHome(c.dir, remoteHome)
+		if err != nil {
+			return err
+		}
+		if c.dir == h.dir {
+			remoteDir = dir
+		}
+		fmt.Printf("checking out %s in %s:%s\n", c.branch, h.remote.Host, dir)
+		linked := ""
+		if dir != remoteMain {
+			linked = remoteMain
+		}
+		script.WriteString(remoteCheckout(linked, dir, c.branch))
+	}
+	if _, err := h.remote.Shell(ctx, 5*time.Minute, script.String()); err != nil {
 		return err
 	}
 	remoteSession, err := h.copySession(ctx, remoteHome, remoteDir)
 	if err != nil {
 		return err
 	}
+	branch := checkouts[0].branch
 	prompt := h.prompt
 	if prompt == "" {
 		prompt = fmt.Sprintf("This session moved from Lemon's workstation to the cloud harness box. Same repo on branch %s, with the local work committed and pushed. Tell Lemon you arrived, then continue the active work.", branch)
@@ -105,63 +140,74 @@ func (h *handoffCloud) run(ctx context.Context) error {
 	return nil
 }
 
+// checkoutsToPublish is the session's directory followed by every other
+// worktree of the same repository holding dirty or unpushed work.
+func (h *handoffCloud) checkoutsToPublish() ([]string, error) {
+	top, err := gitIn(h.dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a git checkout", h.dir)
+	}
+	dirs := []string{h.dir}
+	list, err := gitIn(h.dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(list, "\n") {
+		dir, ok := strings.CutPrefix(line, "worktree ")
+		if !ok || dir == top {
+			continue
+		}
+		if unpublished(dir) {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs, nil
+}
+
+func unpublished(dir string) bool {
+	status, err := gitIn(dir, "status", "--porcelain")
+	if err != nil || status != "" {
+		return err == nil
+	}
+	ahead, err := gitIn(dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	return err == nil && ahead != "0"
+}
+
 // publishBranch commits dirty work and pushes the branch. Work on main or a
 // detached HEAD moves to a fresh handoff branch first. The name satisfies
-// Journalia's ruleset: <owner>/micro-fix/<slug>.
-func (h *handoffCloud) publishBranch() (string, error) {
-	branch, err := h.git("branch", "--show-current")
+// Journalia's ruleset: <owner>/micro-fix/<slug>. A clean, pushed main stays
+// main.
+func publishBranch(dir string) (string, error) {
+	branch, err := gitIn(dir, "branch", "--show-current")
 	if err != nil {
-		return "", fmt.Errorf("%s is not a git checkout", h.dir)
+		return "", fmt.Errorf("%s is not a git checkout", dir)
+	}
+	if (branch == "main" || branch == "master") && !unpublished(dir) {
+		return branch, nil
 	}
 	if branch == "" || branch == "main" || branch == "master" {
 		branch = fmt.Sprintf("%s/micro-fix/handoff-%s", branchOwner(), time.Now().Format("20060102-1504"))
-		if _, err := h.git("checkout", "-b", branch); err != nil {
+		if _, err := gitIn(dir, "checkout", "-b", branch); err != nil {
 			return "", err
 		}
 	}
-	status, err := h.git("status", "--porcelain")
+	status, err := gitIn(dir, "status", "--porcelain")
 	if err != nil {
 		return "", err
 	}
 	if status != "" {
-		if _, err := h.git("add", "-A"); err != nil {
+		if _, err := gitIn(dir, "add", "-A"); err != nil {
 			return "", err
 		}
-		if _, err := h.git("commit", "-q", "--no-verify", "-m", "wip: cloud handoff"); err != nil {
+		if _, err := gitIn(dir, "commit", "-q", "--no-verify", "-m", "wip: cloud handoff"); err != nil {
 			return "", err
 		}
 	}
-	fmt.Printf("pushing %s\n", branch)
-	if _, err := h.git("push", "-q", "--no-verify", "-u", "origin", branch); err != nil {
+	fmt.Printf("pushing %s from %s\n", branch, dir)
+	if _, err := gitIn(dir, "push", "-q", "--no-verify", "-u", "origin", branch); err != nil {
 		return "", err
 	}
 	return branch, nil
-}
-
-// remotePaths maps the checkout and its main repository root onto the box by
-// swapping home directories.
-func (h *handoffCloud) remotePaths(remoteHome string) (string, string, error) {
-	top, err := h.git("rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", "", err
-	}
-	common, err := h.git("rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", "", err
-	}
-	mainRoot := filepath.Dir(common)
-	remoteDir, err := swapHome(h.dir, remoteHome)
-	if err != nil {
-		return "", "", err
-	}
-	remoteMain, err := swapHome(mainRoot, remoteHome)
-	if err != nil {
-		return "", "", err
-	}
-	if top == mainRoot {
-		return remoteDir, "", nil
-	}
-	return remoteDir, remoteMain, nil
 }
 
 func (h *handoffCloud) copySession(ctx context.Context, remoteHome, remoteDir string) (string, error) {
@@ -209,8 +255,8 @@ func rewriteSessionCwd(session, cwd string) (string, error) {
 	return tmp.Name(), nil
 }
 
-func (h *handoffCloud) git(args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", h.dir}, args...)...)
+func gitIn(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
