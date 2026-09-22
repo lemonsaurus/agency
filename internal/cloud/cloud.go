@@ -58,6 +58,35 @@ func (c *Client) Run(ctx context.Context, timeout time.Duration, remote ...strin
 	return stdout.String(), nil
 }
 
+// Shell runs a bash script on the host and returns its stdout.
+func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", c.Host, "bash -s"}
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = strings.NewReader(script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ssh %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// Copy uploads a local file to a path on the host.
+func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote string) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "scp", "-q", "-o", "BatchMode=yes", local, c.Host+":"+remote)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("scp to %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 // Attach hands this terminal to one remote window until the link drops or
 // the window dies.
 func (c *Client) Attach(ctx context.Context, windowID string) error {

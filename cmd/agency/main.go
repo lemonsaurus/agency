@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,6 +80,8 @@ func main() {
 		runRenameWindow(os.Args[2:])
 	case "move-window":
 		runMoveWindow(os.Args[2:])
+	case "handoff-cloud":
+		runHandoffCloud(os.Args[2:])
 	case "kill-all":
 		runKillAll()
 	case "list":
@@ -128,6 +131,8 @@ Usage:
   agency cloud persona              Print Carla's identity, soul and slop rules
   agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
+  agency handoff-cloud [--label task] [--prompt text] --session <file> <dir>
+                                    Push the branch, copy the Pi session, resume it on the cloud host
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
