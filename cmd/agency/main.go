@@ -44,7 +44,7 @@ func main() {
 	case "cloud-view":
 		runCloudView(os.Args[2:])
 	case "sync-cloud":
-		runSyncCloud()
+		runSyncCloud(false)
 	case "cloud-act":
 		runCloudAct(os.Args[2:])
 	case "ask":
@@ -296,7 +296,9 @@ func runCloud(args []string) {
 	main()
 }
 
-func runSyncCloud() {
+// runSyncCloud reconciles the viewers. Keybindings and menus call it quietly:
+// tmux would otherwise show the summary in a pane.
+func runSyncCloud(quiet bool) {
 	cfg := loadConfig()
 	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud")
 	if err != nil {
@@ -307,7 +309,9 @@ func runSyncCloud() {
 		fmt.Fprintln(os.Stderr, resp)
 		os.Exit(1)
 	}
-	fmt.Println(resp)
+	if !quiet {
+		fmt.Println(resp)
+	}
 }
 
 // runCloudAct is what keybindings and menus call when the focused pane is a
@@ -360,7 +364,7 @@ func runCloudAct(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	runSyncCloud()
+	runSyncCloud(true)
 }
 
 // runCloudView is the viewer pane's process: it stays attached to one remote
