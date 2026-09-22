@@ -420,7 +420,7 @@ func TestGenerateConfig(t *testing.T) {
 		"set -g menu-selected-style bg=" + cfg.Theme.ActiveBorder,
 		"set -g menu-border-style fg=" + cfg.Theme.ActiveBorder,
 		"set -g menu-border-lines rounded",
-		"×  Kill",
+		"×  #{?@agency_cloud,Destroy,Kill}",
 		"bind " + cfg.Keys.CopyMode + " copy-mode",
 		"bind " + cfg.Keys.Paste + " paste-buffer",
 		"bind " + cfg.Keys.Terminal + " if -F '#{@agency_cloud}'",

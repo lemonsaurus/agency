@@ -242,6 +242,8 @@ With `[cloud] host` set, launch and `agency sync-cloud` mirror every pane on the
 
 Cloud viewers mirror the remote task label and remote folder name. Label writes targeting a local viewer route to its remote pane after the local role check. Sync refreshes edits made on the host.
 
+The cloud pane's right-click menu has **Destroy** to terminate the remote agent after confirmation and **Close View** to close only the local viewer. `Prefix+x` also confirms remote destruction. Closing a viewer, its local window, or local Agency leaves the remote agent running; `agency sync-cloud` restores its viewer. Local panes keep **Kill**.
+
 From a viewer, the spawn keys and palette create the agent on the host in that pane's directory, `Prefix+x` kills the remote agent, `Prefix+r` reconnects the view, and `Prefix+P` approves the remote worker. The pane menu has a separate Close View. On the host, requests from outside every pane carry human authority: only your SSH key reaches it, and agents live in panes.
 
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.

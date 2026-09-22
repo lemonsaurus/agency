@@ -35,7 +35,7 @@ const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@ag
 	` '#{?#{>:#{window_panes},1},,-}⇣  Swap Down' 'd' {swap-pane -D}` +
 	` '#{?pane_marked_set,,-}⇄  Swap Marked' 's' {swap-pane}` +
 	` '' '' ''` +
-	` '#[fg=#f38ba8,bold]×  Kill#[default]' 'X' {if -F '#{@agency_cloud}' {confirm-before -p 'Kill remote agent #{@agency_label}? (y/n)' {run-shell "agency cloud-act kill #{@agency_cloud}"}} {kill-pane}}` +
+	` '#[fg=#f38ba8,bold]×  #{?@agency_cloud,Destroy,Kill}#[default]' 'X' {if -F '#{@agency_cloud}' {run-shell "agency cloud-act kill #{@agency_cloud} >/dev/null"} {kill-pane}}` +
 	` '#{?@agency_cloud,⨯  Close View,}' 'V' {kill-pane}` +
 	` '#[fg=#f9e2af]↻  Respawn#[default]' 'R' {respawn-pane -k}` +
 	` '#{?pane_marked,◇  Unmark,◆  Mark}' 'm' {select-pane -m}` +
@@ -269,7 +269,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 
 	// Management.
 	b.WriteString("# Management\n")
-	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { confirm-before -p 'Kill remote agent #{@agency_label}? (y/n)' 'run-shell \"%s cloud-act kill #{@agency_cloud}\"' } { confirm-before -y -p 'Kill pane? (y/n)' kill-pane }\n", cfg.Keys.KillPane, agencyBin)
+	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { confirm-before -p 'Destroy remote agent #{@agency_label}? (y/n)' 'run-shell \"%s cloud-act kill #{@agency_cloud}\"' } { confirm-before -y -p 'Kill pane? (y/n)' kill-pane }\n", cfg.Keys.KillPane, agencyBin)
 	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill session? (y/n)' kill-session\n", cfg.Keys.KillSession)
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
