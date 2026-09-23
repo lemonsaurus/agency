@@ -78,7 +78,7 @@ func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string
 func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote string) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "scp", "-q", "-o", "BatchMode=yes", local, c.Host+":"+remote)
+	cmd := exec.CommandContext(ctx, "scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", local, c.Host+":"+remote)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

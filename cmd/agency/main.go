@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/agents"
+	"github.com/lemonsaurus/agency/internal/clipboard"
 	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
@@ -317,9 +318,10 @@ func runSyncCloud(quiet bool) {
 //	cloud-act spawn <window> <agent>|--cmd <command>   new remote agent in that pane's directory
 //	cloud-act kill <window>                            kill the remote agent
 //	cloud-act approve <window>                         approve its pending promotion
+//	cloud-act paste-image <window>                     upload the clipboard image and type its path
 func runCloudAct(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|kill|approve <window-id> ...")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|kill|approve|paste-image <window-id> ...")
 		os.Exit(1)
 	}
 	cfg := loadConfig()
@@ -353,6 +355,23 @@ func runCloudAct(args []string) {
 		remoteArgs = []string{"kill", target.Pane.ID}
 	case "approve":
 		remoteArgs = []string{"approve-promotion", target.Pane.ID}
+	case "paste-image":
+		localPath, err := clipboard.ReadImage(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(localPath)
+		remotePath := "/tmp/" + filepath.Base(localPath)
+		if err := remote.Copy(ctx, 30*time.Second, localPath, remotePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := remote.Run(ctx, 20*time.Second, "send", "--no-enter", target.Pane.ID, remotePath+" "); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown cloud action %s\n", args[0])
 		os.Exit(1)

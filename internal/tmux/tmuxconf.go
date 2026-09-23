@@ -37,6 +37,7 @@ const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@ag
 	` '' '' ''` +
 	` '#[fg=#f38ba8,bold]×  #{?@agency_cloud,Destroy,Kill}#[default]' 'X' {if -F '#{@agency_cloud}' {run-shell "agency cloud-act kill #{@agency_cloud}"} {kill-pane}}` +
 	` '#{?@agency_cloud,⨯  Close View,}' 'V' {kill-pane}` +
+	` '#{?@agency_cloud,📋  Paste Image,}' 'p' {run-shell "agency cloud-act paste-image #{@agency_cloud}"}` +
 	` '#[fg=#f9e2af]↻  Respawn#[default]' 'R' {respawn-pane -k}` +
 	` '#{?pane_marked,◇  Unmark,◆  Mark}' 'm' {select-pane -m}` +
 	` '#{?#{>:#{window_panes},1},,-}□  #{?window_zoomed_flag,Unzoom,Zoom}' 'z' {resize-pane -Z}`
@@ -163,7 +164,10 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// (like Claude Code) see it as Ctrl+Enter.
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
 	b.WriteString("unbind -n Home\n")
-	b.WriteString("unbind -n End\n\n")
+	b.WriteString("unbind -n End\n")
+	// Ctrl+V on a cloud viewer uploads the local clipboard image to the box; the
+	// remote agent cannot see this machine's clipboard. Elsewhere it passes through.
+	fmt.Fprintf(&b, "bind -n C-v if -F '#{@agency_cloud}' { run-shell \"%s cloud-act paste-image #{@agency_cloud}\" } { send-keys C-v }\n\n", agencyBin)
 
 	// Keep the pane menu available when a fullscreen application captures mouse input.
 	fmt.Fprintf(&b, "bind -T root MouseDown3Pane %s\n", PaneContextMenu)
