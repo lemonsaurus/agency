@@ -126,12 +126,8 @@ Usage:
   agency cloud transcript <pane> [--limit 200]  Print the pane's conversation as JSON
   agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*
-  agency cloud voice-token          Mint an ephemeral gpt-realtime token
-  agency cloud live-session <json>  Create a GPT-Live WebRTC session; prints the SDP answer JSON
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, sdp}; prints the answer JSON
   agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|close
-  agency cloud persona              Print Carla's identity, soul and slop rules
-  agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
   agency handoff-cloud [--label task] [--prompt text] --session <file> <dir>
                                     Push the branch, copy the Pi session, resume it on the cloud host
@@ -277,20 +273,8 @@ func runCloud(args []string) {
 	case "projects":
 		runProjects(args[1:])
 		return
-	case "voice-token":
-		runVoiceToken(args[1:])
-		return
-	case "live-session":
-		runLiveSession(args[1:])
-		return
 	case "live":
 		runLive(cfg.Session.Name, args[1:])
-		return
-	case "persona":
-		runPersona(args[1:])
-		return
-	case "voice-sample":
-		runVoiceSample(args[1:])
 		return
 	}
 	if args[0] == "attach" {

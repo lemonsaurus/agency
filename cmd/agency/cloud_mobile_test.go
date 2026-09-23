@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -131,97 +129,6 @@ func TestFileRead(t *testing.T) {
 	}
 }
 
-func TestCreateLiveSession(t *testing.T) {
-	offer := `{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"v=0"}}`
-	for _, tt := range []struct {
-		name    string
-		body    string
-		status  int
-		reply   string
-		wantErr string
-	}{
-		{"success", offer, 201, `{"session":{"id":"live_1"},"transport":{"type":"webrtc","sdp":"v=0 answer"}}`, ""},
-		{"provider error", offer, 400, `{"error":{"message":"bad voice private-key"}}`, "HTTP 400: bad voice [key]"},
-		{"redirect", offer, 302, `{}`, "HTTP 302"},
-		{"malformed reply", offer, 201, `nope`, "invalid live session reply"},
-		{"missing sdp", `{"session":{},"transport":{"type":"webrtc"}}`, 201, ``, "invalid live session request"},
-		{"not webrtc", `{"session":{},"transport":{"type":"websocket","sdp":"x"}}`, 201, ``, "invalid live session request"},
-		{"garbage", `nope`, 201, ``, "invalid live session request"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.Method != "POST" || r.URL.String() != "https://api.openai.com/v1/live/sessions" || r.Header.Get("Authorization") != "Bearer private-key" {
-					t.Fatal("wrong request")
-				}
-				body, _ := io.ReadAll(r.Body)
-				if string(body) != tt.body {
-					t.Fatalf("body=%s", body)
-				}
-				return &http.Response{StatusCode: tt.status, Body: io.NopCloser(strings.NewReader(tt.reply))}, nil
-			})}
-			reply, err := createLiveSession(context.Background(), client, "private-key", tt.body)
-			if tt.wantErr == "" && (err != nil || reply != tt.reply) {
-				t.Fatalf("reply=%q err=%v", reply, err)
-			}
-			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr) || strings.Contains(err.Error(), "private-key")) {
-				t.Fatalf("err=%v", err)
-			}
-		})
-	}
-}
-
-func TestVoiceToken(t *testing.T) {
-	for _, tt := range []struct {
-		name    string
-		status  int
-		body    string
-		wantErr bool
-	}{
-		{"success", 200, fmt.Sprintf(`{"value":"ephemeral","expires_at":%d,"session":{"model":"gpt-realtime"}}`, time.Now().Unix()+60), false},
-		{"provider error", 401, `secret must never reach stderr`, true},
-		{"redirect", 302, `{}`, true},
-		{"malformed", 200, `nope`, true},
-		{"missing token", 200, `{}`, true},
-		{"expired", 200, `{"value":"ephemeral","expires_at":1}`, true},
-		{"long lived key", 200, fmt.Sprintf(`{"value":"private-key","expires_at":%d}`, time.Now().Unix()+60), true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.Method != "POST" || r.URL.String() != "https://api.openai.com/v1/realtime/client_secrets" || r.Header.Get("Authorization") != "Bearer private-key" {
-					t.Fatal("wrong request")
-				}
-				body, _ := io.ReadAll(r.Body)
-				if string(body) != `{"session":{"type":"realtime","model":"gpt-realtime"}}` {
-					t.Fatalf("body=%s", body)
-				}
-				return &http.Response{StatusCode: tt.status, Body: io.NopCloser(strings.NewReader(tt.body))}, nil
-			})}
-			token, err := mintVoiceToken(context.Background(), client, "private-key")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("token=%v err=%v", token, err)
-			}
-			if err != nil && (strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "private-key")) {
-				t.Fatal("credential leaked")
-			}
-			if err == nil {
-				encoded, _ := json.Marshal(token)
-				if strings.Contains(string(encoded), "session") || token.Value != "ephemeral" {
-					t.Fatal("wrong token output")
-				}
-			}
-		})
-	}
-	if _, err := mintVoiceToken(context.Background(), nil, ""); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, r.Context().Err() })}
-	if _, err := mintVoiceToken(ctx, client, "private-key"); err == nil || strings.Contains(err.Error(), "private-key") {
-		t.Fatal(err)
-	}
-}
-
 func TestVoiceAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private.env")
 	if got, err := voiceAPIKey("from-env", path); err != nil || got != "from-env" {
@@ -278,23 +185,5 @@ func TestPersona(t *testing.T) {
 	got, err := persona(dir)
 	if err != nil || got != "# Carla\n\n# Soul\n\n# Slop\n" {
 		t.Fatalf("persona=%q, %v", got, err)
-	}
-}
-
-func TestVoiceSample(t *testing.T) {
-	var got map[string]string
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		json.NewDecoder(r.Body).Decode(&got)
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("MP3"))}, nil
-	})}
-	audio, err := voiceSample(context.Background(), client, "sk-test", "marin", "Irish")
-	if err != nil || string(audio) != "MP3" || got["voice"] != "marin" || !strings.HasPrefix(got["instructions"], "Speak Irish English") {
-		t.Fatalf("sample=%q err=%v request=%v", audio, err, got)
-	}
-	if _, err := voiceSample(context.Background(), client, "sk-test", "hal", ""); err == nil {
-		t.Fatal("unknown voice accepted")
-	}
-	if _, err := voiceSample(context.Background(), client, "sk-test", "marin", "Irish; rm -rf"); err == nil {
-		t.Fatal("bad accent accepted")
 	}
 }

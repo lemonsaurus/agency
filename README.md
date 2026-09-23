@@ -133,9 +133,8 @@ agency serve                        Headless daemon on its own tmux server (the 
 agency cloud <command> ...          Run a CLI command against the headless server (over SSH)
 agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's final reply
 agency cloud projects --json         List directories under ~/git/*/*
-agency cloud voice-token             Mint an ephemeral gpt-realtime token
-agency cloud persona                 Print Carla's identity, soul and slop rules
-agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
+agency cloud live start <json>       Create a GPT-Live session the box drives: {voice, accent, sdp}
+agency cloud live status|said|discord|discord-done|close
 agency sync-cloud                   Mirror the cloud host's panes into the cloud-harness window
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
@@ -285,14 +284,12 @@ agency cloud ask %310 'say hi'
 agency cloud ask --timeout 2m %310 'Explain the current task'
 agency cloud transcript %310 --limit 200
 agency cloud file /home/lemon/git/owner/repo/README.md
-agency cloud voice-token
-agency cloud persona
-agency cloud voice-sample marin Irish
+agency cloud live status
 agency cloud capture %310 200
 agency cloud kill %310
 ```
 
-`list --json` adds `bridge: true` for panes whose Pi bridge socket exists; other panes need `/reload` before `ask` works. `persona` prints `~/.agents/IDENTITY.md`, `SOUL.md` and `SLOP.md` joined in that order, so the phone speaks with the same character as the harness. `voice-sample` returns a base64 mp3 of a fixed Carla line from `gpt-4o-mini-tts` in the named voice, with an optional accent instruction, so the phone can preview voices before a session.
+`list --json` adds `bridge: true` for panes whose Pi bridge socket exists; other panes need `/reload` before `ask` works.
 
 `projects --json` returns `[{"name":"owner/repo","path":"/home/lemon/git/owner/repo"}]`, sorted by owner and directory. It skips hidden directories and symlinks. External human cloud spawns default to managers under an existing controller. Spawns are silent on success; refresh `list --json` to find the new pane. Requests from agent panes keep their existing child-role restrictions.
 
@@ -306,7 +303,7 @@ The daemon authenticates ask callers through process ancestry and adds pane/role
 
 Install the updated Agency binary, restart the daemon without killing tmux, and `/reload` Pi in each existing target pane. New Pi panes load the bridge at startup. `agency capabilities` reports `promptBridge: true` when the daemon supports it. The CLI checks this before sending a prompt.
 
-`voice-token` returns `{"value":"...","expires_at":1234567890}` from OpenAI's `/v1/realtime/client_secrets`, with session type `realtime` and model `gpt-realtime`. It reads `OPENAI_API_KEY` from the environment first, then its literal assignment in `~/.pi/agent/private.env`. The file accepts optional `export` and single or double quotes, without shell execution or variable expansion. Only the ephemeral token reaches stdout; errors omit provider response bodies. Missing credentials produce an error naming `OPENAI_API_KEY`.
+`live start` reads `OPENAI_API_KEY` from the environment first, then its literal assignment in `~/.pi/agent/private.env` (optional `export`, single or double quotes, no shell expansion). The key never leaves the box; the phone only receives the SDP answer. The daemon composes the session from `~/.agents/IDENTITY.md`, `SOUL.md`, `SLOP.md` and `~/.agents/voice/live.md`, answers delegations with the Responses API and `~/.agents/voice/backend.md`, and narrates pane progress back into the call. `live status` reports narrated panes, pending spoken updates and Discord replies for the phone to send.
 
 Bridge tests:
 
