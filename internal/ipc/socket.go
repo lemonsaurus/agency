@@ -468,6 +468,7 @@ func SendMessageContext(ctx context.Context, socketPath, message string) (string
 	fmt.Fprintf(conn, "%s\n", message)
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 4096), 4*1024*1024)
 	if scanner.Scan() {
 		return scanner.Text(), nil
 	}
