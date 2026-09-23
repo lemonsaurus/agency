@@ -70,6 +70,8 @@ type Manager struct {
 	// label. The headless cloud server runs this way so viewers can attach
 	// to exactly one agent.
 	WindowPerPane bool
+	// LiveHandler serves the phone's voice requests; nil until the daemon wires it.
+	LiveHandler func(ctx context.Context, payload string) (string, error)
 	// OutsideIsHuman grants human authority to requests from processes that
 	// belong to no pane. On the cloud box every agent lives in a pane and only
 	// Lemon's SSH key reaches the host, so outside means Lemon.
@@ -88,6 +90,14 @@ func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.
 		counters:       make(map[string]int),
 		processOwnedBy: processDescendsFrom,
 	}
+}
+
+// Live forwards voice requests from the phone to the live manager.
+func (m *Manager) Live(ctx context.Context, payload string) (string, error) {
+	if m.LiveHandler == nil {
+		return "", fmt.Errorf("voice is not available on this server")
+	}
+	return m.LiveHandler(ctx, payload)
 }
 
 // SpawnAgent spawns a new pane running the named agent.

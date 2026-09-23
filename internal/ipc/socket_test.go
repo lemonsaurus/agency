@@ -85,6 +85,8 @@ func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Reques
 	return control.Requester{PaneID: "%0", Role: control.RoleController, RootID: "%0", Human: true}, nil
 }
 
+func (m *mockHandler) Live(_ context.Context, payload string) (string, error) { return "live:" + payload, nil }
+
 func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

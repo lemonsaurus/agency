@@ -37,6 +37,8 @@ type Handler interface {
 	RequestPromotion(ctx context.Context, requester control.Requester, reason string) error
 	ApprovePromotion(ctx context.Context, requester control.Requester, paneID string) error
 	SyncCloud(ctx context.Context) (string, error)
+	// Live serves the phone's voice requests: session start, status, Discord relay.
+	Live(ctx context.Context, payload string) (string, error)
 }
 
 type spawnPayload struct {
@@ -160,6 +162,20 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if strings.HasPrefix(line, "ask:") {
 		s.handleAsk(conn, conn, strings.TrimPrefix(line, "ask:"))
+		return
+	}
+	if strings.HasPrefix(line, "live:") {
+		requester, err := s.requester(peerPIDForConn(conn))
+		if err != nil || !requester.Human {
+			fmt.Fprintln(conn, "error: voice requests come from Lemon only")
+			return
+		}
+		reply, err := s.handler.Live(s.ctx, strings.TrimPrefix(line, "live:"))
+		if err != nil {
+			fmt.Fprintf(conn, "error: %v\n", err)
+			return
+		}
+		fmt.Fprintln(conn, strings.ReplaceAll(reply, "\n", " "))
 		return
 	}
 	response, err := s.dispatch(line, peerPIDForConn(conn))

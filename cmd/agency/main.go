@@ -128,6 +128,8 @@ Usage:
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud voice-token          Mint an ephemeral gpt-realtime token
   agency cloud live-session <json>  Create a GPT-Live WebRTC session; prints the SDP answer JSON
+  agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, sdp}; prints the answer JSON
+  agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|close
   agency cloud persona              Print Carla's identity, soul and slop rules
   agency cloud voice-sample <voice> [accent]  Base64 mp3 preview of a Realtime voice
   agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
@@ -280,6 +282,9 @@ func runCloud(args []string) {
 		return
 	case "live-session":
 		runLiveSession(args[1:])
+		return
+	case "live":
+		runLive(cfg.Session.Name, args[1:])
 		return
 	case "persona":
 		runPersona(args[1:])
@@ -514,6 +519,9 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 
 	// Start IPC socket server.
 	sockPath := socketPath(sessionName)
+	if cloud {
+		mgr.LiveHandler = newLiveManager(tc, mgr, sockPath).Handle
+	}
 	srv := ipc.NewServer(sockPath, mgr)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Starting socket server: %v", err)
