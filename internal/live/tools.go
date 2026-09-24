@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const phonePrefix = "Phone ·"
-
 // Dispatcher runs tool calls for the backend model. Asks become tickets that start the work and
 // return at once; a Narrator per pane carries the progress back into the conversation.
 type Dispatcher struct {
@@ -20,6 +18,7 @@ type Dispatcher struct {
 
 	mu        sync.Mutex
 	narrators map[string]*Narrator
+	owned     map[string]string // project path → pane the phone opened there
 	tickets   []*Ticket
 	nextID    int
 	polling   bool
@@ -39,7 +38,7 @@ type Ticket struct {
 }
 
 func NewDispatcher(box Box, discord *Discord, emit func(Update)) *Dispatcher {
-	return &Dispatcher{box: box, discord: discord, emit: emit, narrators: map[string]*Narrator{}}
+	return &Dispatcher{box: box, discord: discord, emit: emit, narrators: map[string]*Narrator{}, owned: map[string]string{}}
 }
 
 // Schema is the function list the backend model sees.
@@ -108,22 +107,29 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 		if err != nil {
 			return nil, err
 		}
-		label := phonePrefix + " " + project.Name
+		// Reuse the pane the phone opened in this project; otherwise spawn one unlabeled and let Pi
+		// name it from the first prompt. deliver finds it as the bridged pane in that directory
+		// that did not exist before the spawn.
 		panes, err := d.box.Panes(ctx)
 		if err != nil {
 			return nil, err
 		}
+		d.mu.Lock()
+		ownedID := d.owned[project.Path]
+		d.mu.Unlock()
 		var pane *Pane
+		existing := map[string]bool{}
 		for i := range panes {
-			if panes[i].Label == label {
+			existing[panes[i].ID] = true
+			if panes[i].ID == ownedID {
 				pane = &panes[i]
 			}
 		}
 		if pane == nil {
-			if err := d.box.Spawn(ctx, project.Path, label); err != nil {
+			if err := d.box.Spawn(ctx, project.Path, ""); err != nil {
 				return nil, fmt.Errorf("could not start a session in %s: %v", project.Name, err)
 			}
-			pane = &Pane{Label: label, Dir: project.Path}
+			pane = &Pane{Dir: project.Path, before: existing}
 		}
 		return d.enqueue(*pane, args.Text, ParseMode(args.Mode)), nil
 	case "check_pane":
@@ -277,7 +283,7 @@ func (d *Dispatcher) deliver(ticket *Ticket, pane Pane) {
 				continue
 			}
 			for _, candidate := range panes {
-				if candidate.Bridge && ((pane.ID != "" && candidate.ID == pane.ID) || (pane.ID == "" && candidate.Label == pane.Label)) {
+				if candidate.Bridge && ((pane.ID != "" && candidate.ID == pane.ID) || (pane.ID == "" && candidate.Dir == pane.Dir && !pane.before[candidate.ID])) {
 					ready, found = candidate, true
 					break
 				}
@@ -290,6 +296,9 @@ func (d *Dispatcher) deliver(ticket *Ticket, pane Pane) {
 	}
 	d.mu.Lock()
 	ticket.paneID = ready.ID
+	if pane.ID == "" {
+		d.owned[ready.Dir] = ready.ID
+	}
 	d.mu.Unlock()
 	if err := d.box.Send(ctx, ready.ID, ticket.Text); err != nil {
 		d.fail(ticket, err.Error())

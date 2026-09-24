@@ -5,6 +5,7 @@ package live
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 )
 
 // Box is what the dispatcher needs from the daemon: panes, projects, and the prompt bridge.
@@ -26,12 +27,18 @@ type Pane struct {
 	Command string `json:"command"`
 	Role    string `json:"role"`
 	Bridge  bool   `json:"bridge"`
+
+	before map[string]bool // panes that existed before this one was spawned
 }
 
-// Title is how Carla refers to a pane out loud.
+// Title is how Carla refers to a pane out loud. Pi names a fresh pane from its first prompt;
+// until then the project stands in.
 func (p Pane) Title() string {
 	if p.Label != "" {
 		return p.Label
+	}
+	if p.Dir != "" {
+		return filepath.Base(p.Dir)
 	}
 	if p.Command != "" {
 		return p.Command

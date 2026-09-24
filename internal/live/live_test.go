@@ -215,7 +215,7 @@ func TestDispatcherQueuesAndNarrates(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(box.spawned) != 1 || box.spawned[0] != "Phone · quill" || len(box.sent) != 1 {
+	if len(box.spawned) != 1 || box.spawned[0] != "" || len(box.sent) != 1 {
 		t.Fatalf("spawned=%v sent=%v", box.spawned, box.sent)
 	}
 	joined := fmt.Sprint(updates)
