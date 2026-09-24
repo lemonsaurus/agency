@@ -54,6 +54,7 @@ var Schema = json.RawMessage(`[
 {"type":"function","name":"spawn_pane","description":"Open a named session for a project when Lemon asks for one to keep.","parameters":{"type":"object","properties":{"project_path":{"type":"string"},"label":{"type":"string"}},"required":["project_path","label"],"additionalProperties":false}},
 {"type":"function","name":"tickets","description":"What the dispatcher is doing: queued, running and finished instructions to sessions.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"discord_recent","description":"Recent Discord messages the phone was notified about: id, sender, place, text, and whether a reply can still be sent.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
+{"type":"function","name":"conversation","description":"Change the phone's conversation state when Lemon asks to stop, pause, go quiet, or turn off. doze: close the voice stream but keep listening on the phone and wake for news or speech. off: stop listening entirely. Takes effect after your next sentence, so say a short goodbye.","parameters":{"type":"object","properties":{"state":{"type":"string","enum":["doze","off"]}},"required":["state"],"additionalProperties":false}},
 {"type":"function","name":"discord_reply","description":"Send Lemon's dictated reply to a Discord message by id, through Discord's own notification on the phone. Only after Lemon has said the exact wording. Never automatically retry.","parameters":{"type":"object","properties":{"id":{"type":"integer"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}}
 ]`)
 
@@ -64,6 +65,7 @@ type toolArgs struct {
 	Mode        string `json:"mode"`
 	Label       string `json:"label"`
 	ID          int    `json:"id"`
+	State       string `json:"state"`
 }
 
 // Call runs one tool and returns its JSON result. Every call returns within a few seconds.

@@ -32,6 +32,7 @@ type Manager struct {
 	session *Session
 	pending []Update
 	said    []string
+	phone   string
 }
 
 func NewManager(box Box, key string, persona func() (string, error), promptDir, memoryPath string) *Manager {
@@ -117,7 +118,7 @@ func (m *Manager) attach(id string, instructions string) error {
 		return fmt.Errorf("sideband attach failed: %v", err)
 	}
 	conn.SetReadLimit(8 << 20)
-	backend := &Backend{Client: m.client, URL: m.API + "/v1/responses", Key: m.key, Model: "gpt-5.6-terra", Instructions: instructions, Tools: m.dispatcher.Call}
+	backend := &Backend{Client: m.client, URL: m.API + "/v1/responses", Key: m.key, Model: "gpt-5.6-terra", Instructions: instructions, Tools: m.call}
 	session := NewSession(id, wsConn{conn}, m.memory, backend, m.state)
 	m.mu.Lock()
 	previous := m.session
@@ -178,10 +179,27 @@ func (m *Manager) state() string {
 	return b.String()
 }
 
-// Status is what the phone polls: what to show on the orb, whether a doze should wake, and
-// Discord replies it must send.
+// call routes conversation control to the phone and everything else to the dispatcher.
+func (m *Manager) call(ctx context.Context, name, arguments string) (any, error) {
+	if name != "conversation" {
+		return m.dispatcher.Call(ctx, name, arguments)
+	}
+	var args toolArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil || (args.State != "doze" && args.State != "off") {
+		return nil, fmt.Errorf("state must be doze or off")
+	}
+	m.mu.Lock()
+	m.phone = args.State
+	m.mu.Unlock()
+	return "The phone will go " + args.State + " after your next sentence. Say a short goodbye.", nil
+}
+
+// Status is what the phone polls: what to show on the orb, whether a doze should wake,
+// Discord replies it must send, and a conversation state the backend asked for. The phone
+// request is handed over once.
 type Status struct {
 	Session   string         `json:"session,omitempty"`
+	Phone     string         `json:"phone,omitempty"`
 	Narrating []string       `json:"narrating"`
 	Tickets   []Ticket       `json:"tickets"`
 	Pending   int            `json:"pending"`
@@ -195,8 +213,10 @@ func (m *Manager) Status() Status {
 		id = m.session.ID
 	}
 	pending := len(m.pending)
+	phone := m.phone
+	m.phone = ""
 	m.mu.Unlock()
-	status := Status{Session: id, Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending()}
+	status := Status{Session: id, Phone: phone, Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending()}
 	if status.Narrating == nil {
 		status.Narrating = []string{}
 	}

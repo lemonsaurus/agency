@@ -403,3 +403,21 @@ func TestManagerStartAttachesSideband(t *testing.T) {
 	}
 	m.Handle(context.Background(), `{"op":"close"}`)
 }
+
+func TestConversationTool(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(&fakeBox{transcripts: map[string][]json.RawMessage{}}, "key", func() (string, error) { return "persona", nil }, dir, filepath.Join(dir, "memory.jsonl"))
+	if _, err := m.call(context.Background(), "conversation", `{"state":"later"}`); err == nil {
+		t.Fatal("bad state accepted")
+	}
+	result, err := m.call(context.Background(), "conversation", `{"state":"doze"}`)
+	if err != nil || !strings.Contains(fmt.Sprint(result), "doze") {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+	if got := m.Status().Phone; got != "doze" {
+		t.Fatalf("phone=%q", got)
+	}
+	if got := m.Status().Phone; got != "" {
+		t.Fatalf("phone not consumed: %q", got)
+	}
+}
