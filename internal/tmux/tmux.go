@@ -74,6 +74,8 @@ type PaneInfo struct {
 	AgencyCommand    string `json:"agencyCommand,omitempty"`
 	CloudWindow      string `json:"cloudWindow,omitempty"` // remote window id this local pane views
 	TaskLabel        string `json:"taskLabel,omitempty"`
+	Group            string `json:"group,omitempty"` // cloud agent's remote-world window
+	Session          string `json:"session,omitempty"`
 }
 
 type windowRef struct {
@@ -227,6 +229,12 @@ func (c *Client) splitWithRetile(ctx context.Context, target, command, dir strin
 	return strings.TrimSpace(out), err
 }
 
+// NewSessionWindow creates the session with a named first window running command.
+func (c *Client) NewSessionWindow(ctx context.Context, name, command string) (string, error) {
+	out, err := c.Cmd.Run(ctx, "new-session", "-d", "-s", c.SessionName, "-n", name, "-P", "-F", "#{pane_id}", command)
+	return strings.TrimSpace(out), err
+}
+
 func (c *Client) NewWindow(ctx context.Context, name, command, dir string) (string, error) {
 	// Trailing colon: a bare session name resolves to its current window,
 	// making new-window fail with "index in use". The colon picks the next free index.
@@ -259,6 +267,18 @@ func (c *Client) WindowExists(ctx context.Context, name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// WindowID returns the id of the session's window with this name, or "" when
+// there is none. Ids stay valid targets for names containing '.' or ':'.
+func (c *Client) WindowID(ctx context.Context, name string) (string, error) {
+	windows, err := c.listWindowRefs(ctx)
+	for _, window := range windows {
+		if window.Name == name {
+			return window.ID, nil
+		}
+	}
+	return "", err
 }
 
 func (c *Client) listWindowRefs(ctx context.Context) ([]windowRef, error) {
@@ -429,7 +449,7 @@ func (c *Client) windowTarget(windowName string) string {
 }
 
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
-	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}\t#{@agency_task_label}"
+	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}\t#{@agency_task_label}\t#{@agency_group}\t#{session_name}"
 	out, err := c.Cmd.Run(ctx,
 		"list-panes", "-a", "-s", "-t", c.SessionName, "-F", format,
 	)
@@ -491,6 +511,10 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		}
 		if len(parts) >= 16 {
 			pane.TaskLabel = parts[15]
+		}
+		if len(parts) >= 18 {
+			pane.Group = parts[16]
+			pane.Session = parts[17]
 		}
 		panes = append(panes, pane)
 	}

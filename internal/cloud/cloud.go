@@ -14,8 +14,20 @@ import (
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
-// WindowName is the local window that mirrors the remote panes.
-const WindowName = "cloud-harness"
+// DefaultGroup is the remote-world window for agents spawned without one.
+const DefaultGroup = "main"
+
+// Placeholder is the viewer id of the pane that keeps an empty or unreachable
+// remote world open.
+const Placeholder = "none"
+
+// Group is the remote-world window a remote agent belongs in.
+func Group(pane tmux.PaneInfo) string {
+	if pane.Group == "" {
+		return DefaultGroup
+	}
+	return pane.Group
+}
 
 // Client runs `agency cloud ...` on the remote host.
 type Client struct {

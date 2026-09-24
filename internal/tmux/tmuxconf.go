@@ -28,8 +28,8 @@ const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@ag
 	` '#{?mouse_hyperlink,↗  Type #[underscore]#{=/9/...:mouse_hyperlink},}' 'C-h' {copy-mode -q; send-keys -l -- "#{q:mouse_hyperlink}"}` +
 	` '#{?mouse_hyperlink,⛓  Copy #[underscore]#{=/9/...:mouse_hyperlink},}' 'h' {copy-mode -q; set-buffer -- "#{q:mouse_hyperlink}"}` +
 	` '' '' ''` +
-	` '↔  Horizontal Split' 'h' {split-window -h}` +
-	` '↕  Vertical Split' 'v' {split-window -v}` +
+	` '↔  Horizontal Split' 'h' {if -F '#{@agency_cloud}' {run-shell -b "agency cloud-act spawn #{@agency_cloud} --cmd '\$SHELL'"} {split-window -h}}` +
+	` '↕  Vertical Split' 'v' {if -F '#{@agency_cloud}' {run-shell -b "agency cloud-act spawn #{@agency_cloud} --cmd '\$SHELL'"} {split-window -v}}` +
 	` '' '' ''` +
 	` '#{?#{>:#{window_panes},1},,-}⇡  Swap Up' 'u' {swap-pane -U}` +
 	` '#{?#{>:#{window_panes},1},,-}⇣  Swap Down' 'd' {swap-pane -D}` +
@@ -177,6 +177,28 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "bind -T root MouseUp1Pane %s\n", MouseUpPaneFallback)
 	b.WriteString("bind -T root MouseUp1Status select-window -t =\n\n")
 
+	// Worlds: the local session and the remote one holding cloud viewers. The
+	// status-left badge toggles on mouse-up only, so a click never fires twice.
+	remote := cfg.Session.RemoteName()
+	inRemote := fmt.Sprintf("#{==:#{session_name},%s}", remote)
+	world := fmt.Sprintf(`run-shell -b "%s world '#{client_name}' '#{session_name}'"`, agencyBin)
+	newWindow := fmt.Sprintf(`command-prompt -p 'New window:' { run-shell -b "%s new-window '#{session_name}' '%%%%' '#{pane_current_path}'" }`, agencyBin)
+	rename := fmt.Sprintf(`command-prompt -F -I '#W' -p 'Rename window:' { run-shell -b "%s rename-window '#{window_id}' '%%%%' >/dev/null" }`, agencyBin)
+	worldItem := fmt.Sprintf(`'#{?%s,♁ Earth,☁ Sky}' 'k' { %s }`, inRemote, world)
+	b.WriteString("# Worlds\n")
+	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.World, world)
+	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.NewWindow, newWindow)
+	fmt.Fprintf(&b, "bind -T root MouseUp1StatusLeft %s\n", world)
+	fmt.Fprintf(&b, "bind -T root MouseDown3StatusLeft display-menu -T '#[align=centre] #{session_name} ' -t = -x M -y W '＋  New Window' 'n' { %s } '' %s\n", newWindow, worldItem)
+	fmt.Fprintf(&b, "bind -T root MouseDown3Status display-menu -T '#[align=centre] #{window_index}:#{window_name} ' -t = -x W -y W"+
+		" '＋  New Window' 'n' { %s }"+
+		" '✎  Rename' 'r' { %s }"+
+		" '#{?#{>:#{session_windows},1},,-}⇠  Swap Left' 'l' { swap-window -t :-1 }"+
+		" '#{?#{>:#{session_windows},1},,-}⇢  Swap Right' 'R' { swap-window -t :+1 }"+
+		" '#[fg=#f38ba8,bold]×  #{?%s,Destroy,Kill}#[default]' 'X' { if -F '%s' { confirm-before -p 'Destroy every remote agent in #W? (y/n)' { run-shell -b \"%s cloud-act kill-window '#{window_name}'\" } } { confirm-before -p 'Kill window #W? (y/n)' kill-window } }"+
+		" '' %s\n", newWindow, rename, inRemote, inRemote, agencyBin, worldItem)
+	b.WriteString("\n")
+
 	// Clipboard: drag to select, Ctrl+C to copy.
 	// MouseDragEnd keeps the selection without auto-copying to clipboard.
 	// This prevents spurious drags from overwriting the clipboard.
@@ -213,7 +235,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g status-position bottom\n")
 	b.WriteString("set -g status-interval 5\n")
 	fmt.Fprintf(&b, "set -g status-style bg=%s,fg=%s\n", cfg.Theme.StatusBG, cfg.Theme.StatusFG)
-	fmt.Fprintf(&b, "set -g status-left \"#[bg=#89b4fa,fg=#1e1e2e,bold] %s #[default] \"\n", cfg.Session.Name)
+	// No leading space: the terminal's window padding takes the badge color.
+	fmt.Fprintf(&b, "set -g status-left \"#{?#{==:#{session_name},%s},#[bg=#fab387#,fg=#1e1e2e#,bold]☁  sky  ,#[bg=#a6e3a1#,fg=#1e1e2e#,bold]♁ earth  }#[default] \"\n", cfg.Session.RemoteName())
 	b.WriteString("set -g status-left-length 30\n")
 	b.WriteString("set -g status-right \"#{pane_count} panes | %H:%M \"\n")
 	b.WriteString("set -g status-right-length 50\n\n")
@@ -274,7 +297,9 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Management.
 	b.WriteString("# Management\n")
 	fmt.Fprintf(&b, "bind %s if -F '#{@agency_cloud}' { confirm-before -p 'Destroy remote agent #{@agency_label}? (y/n)' 'run-shell \"%s cloud-act kill #{@agency_cloud}\"' } { confirm-before -y -p 'Kill pane? (y/n)' kill-pane }\n", cfg.Keys.KillPane, agencyBin)
-	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill session? (y/n)' kill-session\n", cfg.Keys.KillSession)
+	// Killing Agency takes both worlds; the remote one goes first so the client
+	// lands in the local session before it closes.
+	fmt.Fprintf(&b, "bind %s confirm-before -y -p 'Kill session? (y/n)' \"run-shell 'tmux kill-session -t =%s; tmux kill-session -t =%s'\"\n", cfg.Keys.KillSession, cfg.Session.RemoteName(), cfg.Session.Name)
 	fmt.Fprintf(&b, "bind %s resize-pane -Z\n", cfg.Keys.Zoom)
 	fmt.Fprintf(&b, "bind %s set-window-option synchronize-panes\n", cfg.Keys.Broadcast)
 	fmt.Fprintf(&b, "bind %s display-popup -E -w 64 -h 7 \"%s broadcast-dialog\"\n", cfg.Keys.BroadcastInput, agencyBin)

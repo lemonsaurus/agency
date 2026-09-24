@@ -36,6 +36,8 @@ func DefaultConfig() *Config {
 			Respawn:          "r",
 			CopyMode:         "[",
 			Paste:            "]",
+			World:            "k",
+			NewWindow:        "c",
 		},
 		Agents: map[string]AgentConfig{
 			"claudejail": {Command: "claudejail", Icon: "🔒", BorderColor: "#f38ba8"},

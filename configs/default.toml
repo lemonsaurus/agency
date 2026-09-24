@@ -5,7 +5,7 @@ max_panes = 32
 max_managers = 12
 max_workers_per_manager = 8
 
-# SSH host running `agency serve`. Its panes appear in the cloud-harness window.
+# SSH host running `agency serve`. Its panes appear in the sky harness (Prefix+k).
 # [cloud]
 # host = "lemon.harness.journalia.com"
 
@@ -62,6 +62,8 @@ border_color = "#a6e3a1"         # green
 # respawn = "r"                   # respawn dead pane
 # copy_mode = "["                 # enter copy mode
 # paste = "]"                     # paste buffer
+# world = "k"                     # switch between local and the sky harness
+# new_window = "c"                # new named window with a shell
 
 # Add your own agent types below:
 #

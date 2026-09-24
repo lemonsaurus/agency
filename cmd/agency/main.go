@@ -49,6 +49,10 @@ func main() {
 		runSyncCloud(false)
 	case "cloud-act":
 		runCloudAct(os.Args[2:])
+	case "world":
+		runWorld(os.Args[2:])
+	case "new-window":
+		runNewWindow(os.Args[2:])
 	case "ask":
 		runAsk(os.Args[2:])
 	case "bridge-path":
@@ -129,7 +133,9 @@ Usage:
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, sdp}; prints the answer JSON
   agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|close
-  agency sync-cloud                 Mirror the cloud host's panes into the cloud-harness window
+  agency sync-cloud                 Mirror the cloud host's panes into the sky harness
+  agency world <client> <session>   Switch a client between local and the sky harness (tmux keybinding)
+  agency new-window <session> <name> [dir]  Open a named shell window in that session's world
   agency handoff-cloud [--label task] [--prompt text] --session <file> <dir>
                                     Push the branch, copy the Pi session, resume it on the cloud host
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)
@@ -312,33 +318,39 @@ func runSyncCloud(quiet bool) {
 	}
 }
 
-// runCloudAct is what keybindings and menus call when the focused pane is a
-// viewer: act on the remote agent behind it, then re-sync the mirror.
+// runCloudAct is what keybindings and menus call in the remote world: act on
+// the remote agent behind a viewer, then re-sync the mirror.
 //
-//	cloud-act spawn <window> <agent>|--cmd <command>   new remote agent in that pane's directory
+//	cloud-act spawn <window> <agent>|--cmd <command>   new remote agent beside that viewer, in its directory
+//	cloud-act new-window <name>                        new remote shell in a new remote-world window
 //	cloud-act kill <window>                            kill the remote agent
+//	cloud-act kill-window <name>                       kill every remote agent in that group
 //	cloud-act approve <window>                         approve its pending promotion
 //	cloud-act paste-image <window>                     upload the clipboard image and type its path
 func runCloudAct(args []string) {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|kill|approve|paste-image <window-id> ...")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|new-window|kill|kill-window|approve|paste-image <window-id> ...")
 		os.Exit(1)
 	}
 	cfg := loadConfig()
 	remote := &cloud.Client{Host: cfg.Cloud.Host}
 	ctx := context.Background()
-	windows, err := remote.Windows(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	var target *cloud.Window
-	for i := range windows {
-		if windows[i].ID == args[1] {
-			target = &windows[i]
+	var target cloud.Window
+	found := false
+	if args[0] != "new-window" && args[0] != "kill-window" {
+		windows, err := remote.Windows(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		for i := range windows {
+			if windows[i].ID == args[1] {
+				target, found = windows[i], true
+			}
 		}
 	}
-	if target == nil {
+	// The placeholder has no remote agent; spawns from it start in the remote home.
+	if !found && args[0] != "new-window" && args[0] != "kill-window" && args[0] != "spawn" {
 		fmt.Fprintf(os.Stderr, "Error: remote window %s not found\n", args[1])
 		os.Exit(1)
 	}
@@ -349,10 +361,16 @@ func runCloudAct(args []string) {
 			fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn <window-id> <agent>|--cmd <command>")
 			os.Exit(1)
 		}
-		remoteArgs = append([]string{"spawn"}, args[2:]...)
-		remoteArgs = append(remoteArgs, target.Pane.CWD)
+		remoteArgs = append([]string{"spawn", "--window", cloud.Group(target.Pane)}, args[2:]...)
+		if found {
+			remoteArgs = append(remoteArgs, target.Pane.CWD)
+		}
+	case "new-window":
+		remoteArgs = []string{"spawn", "--window", args[1], "--cmd", "$SHELL"}
 	case "kill":
 		remoteArgs = []string{"kill", target.Pane.ID}
+	case "kill-window":
+		remoteArgs = []string{"kill", "--window", args[1]}
 	case "approve":
 		remoteArgs = []string{"approve-promotion", target.Pane.ID}
 	case "paste-image":
@@ -383,21 +401,64 @@ func runCloudAct(args []string) {
 	runSyncCloud(true)
 }
 
+// runWorld switches a client between the local and the remote world. The
+// remote session appears on the first sync, so a missing one is synced first.
+func runWorld(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency world <client> <current-session>")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	ctx := context.Background()
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	client, target := args[0], cfg.Session.RemoteName()
+	if args[1] == target {
+		target = cfg.Session.Name
+	} else if cfg.Cloud.Host == "" {
+		_, _ = tc.Cmd.Run(ctx, "display-message", "-c", client, "No [cloud] host configured")
+		return
+	} else if _, err := tc.Cmd.Run(ctx, "has-session", "-t", "="+target); err != nil {
+		_, _ = ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud")
+	}
+	if _, err := tc.Cmd.Run(ctx, "switch-client", "-c", client, "-t", "="+target); err != nil {
+		_, _ = tc.Cmd.Run(ctx, "display-message", "-c", client, "Sky harness unavailable: "+err.Error())
+	}
+}
+
+// runNewWindow opens a named window with a shell in the given world.
+func runNewWindow(args []string) {
+	if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+		fmt.Fprintln(os.Stderr, "Usage: agency new-window <session> <name> [dir]")
+		os.Exit(1)
+	}
+	if args[0] == loadConfig().Session.RemoteName() {
+		runCloudAct([]string{"new-window", args[1]})
+		return
+	}
+	spawn := []string{"--window", args[1], "--cmd", os.Getenv("SHELL")}
+	if len(args) > 2 {
+		spawn = append(spawn, args[2])
+	}
+	runSpawn(spawn)
+}
+
 // runCloudView is the viewer pane's process: it stays attached to one remote
 // window, reconnects after a dropped link, and exits once the window is gone.
-// It never restarts the agent. With no window id it is the offline
-// placeholder and retries the sync on Enter.
+// It never restarts the agent. As the placeholder it re-syncs on Enter until
+// a sync replaces it.
 func runCloudView(args []string) {
 	cfg := loadConfig()
 	remote := &cloud.Client{Host: cfg.Cloud.Host}
 	ctx := context.Background()
-	if len(args) == 0 || args[0] == "offline" {
+	if len(args) == 0 || args[0] == cloud.Placeholder {
+		fmt.Printf("☁  No remote panes from %s.\n   Prefix+%s opens a shell there, Prefix+%s picks an agent. Enter re-syncs.\n", cfg.Cloud.Host, cfg.Keys.Terminal, cfg.Keys.Palette)
 		for {
-			fmt.Printf("☁  %s unreachable. Press Enter to retry.\n", cfg.Cloud.Host)
 			fmt.Scanln()
-			if resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud"); err == nil && !strings.HasPrefix(resp, "error:") {
-				return
+			resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud")
+			if err != nil {
+				resp = err.Error()
 			}
+			fmt.Println("☁  " + resp)
 		}
 	}
 	windowID := args[0]
@@ -484,7 +545,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 
 	// Create status poller. Status changes light up window names for
 	// windows containing panes that wait for input.
-	attention := &attentionTracker{tc: tc, last: make(map[int]bool)}
+	attention := &attentionTracker{tc: tc, last: make(map[string]bool)}
 	var poller *status.Poller
 	poller = status.NewPoller(tc, func(paneID, agentType, s string) {
 		log.Printf("status: %s (%s) → %s", paneID, agentType, s)
@@ -591,7 +652,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 type attentionTracker struct {
 	tc   *tmux.Client
 	mu   sync.Mutex
-	last map[int]bool // window index → attention currently set
+	last map[string]bool // window id → attention currently set
 }
 
 func (a *attentionTracker) update(ctx context.Context, statuses map[string]string) {
@@ -602,26 +663,26 @@ func (a *attentionTracker) update(ctx context.Context, statuses map[string]strin
 	if err != nil {
 		return
 	}
-	waiting := make(map[int]bool)
-	sample := make(map[int]string) // window index → any pane ID in it
+	waiting := make(map[string]bool)
+	sample := make(map[string]string) // window id → any pane ID in it
 	for _, p := range panes {
-		if _, ok := sample[p.WindowIndex]; !ok {
-			sample[p.WindowIndex] = p.ID
+		if _, ok := sample[p.WindowID]; !ok {
+			sample[p.WindowID] = p.ID
 		}
 		if statuses[p.ID] == status.StatusWaiting {
-			waiting[p.WindowIndex] = true
+			waiting[p.WindowID] = true
 		}
 	}
-	for idx, paneID := range sample {
-		if a.last[idx] == waiting[idx] {
+	for id, paneID := range sample {
+		if a.last[id] == waiting[id] {
 			continue
 		}
 		val := ""
-		if waiting[idx] {
+		if waiting[id] {
 			val = "1"
 		}
 		if err := a.tc.SetWindowOption(ctx, paneID, "@agency_attention", val); err == nil {
-			a.last[idx] = waiting[idx]
+			a.last[id] = waiting[id]
 		}
 	}
 }

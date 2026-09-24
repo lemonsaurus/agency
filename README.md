@@ -80,7 +80,7 @@ Each pane gets a unique color and its folder name in the top border. A separate 
 - **Glob support** — `agency spawn claude ~/projects/client-*` expands via your shell
 - **Bounded delegation**: controllers create managers, managers create workers, workers cannot spawn
 - **Spawn dialog** — `Prefix+2/3/4/5` opens a directory picker pre-filled with the current pane's path
-- **Command palette** — `Prefix+c` fuzzy-searches all configured agent types
+- **Command palette** — `Prefix+a` fuzzy-searches all configured agent types
 - **Crash recovery** — if agency restarts, it re-adopts existing tmux panes automatically
 - **Isolated tmux config** — agency manages its own `tmux.conf`, never touches your `~/.tmux.conf`
 - **Catppuccin Mocha theme** — inline, no plugin dependencies
@@ -96,7 +96,7 @@ Each pane gets a unique color and its folder name in the top border. A separate 
 agency                            # launch (creates a new tmux session, or reattaches)
 ```
 
-Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette and pick an agent type. Or use the number keys:
+Inside the session, use `Prefix+a` (`Ctrl+Space, a`) to open the command palette and pick an agent type. Or use the number keys:
 
 | Shortcut | Action |
 |---|---|
@@ -105,7 +105,7 @@ Inside the session, use `Prefix+c` (`Ctrl+Space, c`) to open the command palette
 | `Prefix+3` | Spawn claudejail |
 | `Prefix+4` | Spawn codex |
 | `Prefix+5` | Spawn gemini |
-| `Prefix+c` | Command palette (all agent types) |
+| `Prefix+a` | Command palette (all agent types) |
 
 ---
 
@@ -135,7 +135,7 @@ agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's fi
 agency cloud projects --json         List directories under ~/git/*/*
 agency cloud live start <json>       Create a GPT-Live session the box drives: {voice, accent, sdp}
 agency cloud live status|said|discord|discord-done|close
-agency sync-cloud                   Mirror the cloud host's panes into the cloud-harness window
+agency sync-cloud                   Mirror the cloud host's panes into the sky harness
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
 agency help                         Show help
@@ -161,7 +161,8 @@ The tmux prefix is **`Ctrl+Space`**.
 
 | Shortcut | Action |
 |---|---|
-| `Prefix+c` | Command palette |
+| `Prefix+a` | Command palette |
+| `Prefix+c` | New named window with a shell (in the current world) |
 | `Prefix+1` | New terminal |
 | `Prefix+2–5` | Spawn agent (opens directory picker) |
 
@@ -189,12 +190,13 @@ The tmux prefix is **`Ctrl+Space`**.
 | Shortcut | Action |
 |---|---|
 | `Prefix+x` | Kill focused pane (with confirmation) |
-| `Prefix+q` | Kill session (Enter or y to confirm) |
+| `Prefix+q` | Kill both worlds (Enter or y to confirm) |
 | `Prefix+f` | Zoom/unzoom focused pane |
 | `Prefix+b` | Broadcast — type in all panes at once |
 | `Prefix+P` | Confirm the focused worker's pending promotion |
 | `Prefix+r` | Respawn dead pane |
 | `Prefix+d` | Detach (session keeps running) |
+| `Prefix+k` | Switch between local and the sky harness |
 
 ---
 
@@ -238,7 +240,13 @@ Task labels use `@agency_task_label`; folder borders use `@agency_label`. Both s
 
 ## Cloud panes
 
-With `[cloud] host` set, launch and `agency sync-cloud` mirror every pane on the host's `agency serve` into a local `cloud-harness` window. Each local pane is a viewer: an SSH attachment to one remote window that reconnects after a dropped link and exits when the remote pane is gone. The remote server keeps one agent per window, has no prefix or status bar, and sizes each window to the client that typed last. Wheel scroll uses the remote scrollback.
+With `[cloud] host` set, Agency has two worlds: the local session and the sky harness (`remote-<session>` on the same tmux server). Click the badge at the bottom left or press `Prefix+k` to switch; it reads `♁ earth` locally and `☁  sky` in the sky harness. Each world keeps its own windows.
+
+Launch and `agency sync-cloud` mirror every pane on the host's `agency serve` into the sky harness. Each sky harness pane is a viewer: an SSH attachment to one remote window that reconnects after a dropped link and exits when the remote pane is gone. The remote server keeps one agent per window, has no prefix or status bar, and sizes each window to the client that typed last. Wheel scroll uses the remote scrollback.
+
+Remote agents carry a group (`@agency_group` on the host), and sync puts each viewer in the sky harness window named after it. Agents without one go to `main`; phone spawns go to `phone`. On the host, `spawn --window`, `move`, and `rename-window` set groups instead of tmux windows, and `kill --window` kills a group. The host is the source of truth, so every workstation shows the same windows, and sync moves viewers placed anywhere else. While the sky harness shows no agents, a placeholder pane keeps it open.
+
+Right-click a window or the badge for **New Window**, which asks for a name and opens a shell there: a local shell in the local world, a shell on the host in the sky harness. `Prefix+c` does the same. Renaming a sky harness window renames its group on the host; **Destroy** kills every agent in the group after confirmation.
 
 Cloud viewers mirror the remote task label and remote folder name. Label writes targeting a local viewer route to its remote pane after the local role check. Sync refreshes edits made on the host.
 

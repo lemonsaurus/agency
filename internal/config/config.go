@@ -37,6 +37,8 @@ type KeysConfig struct {
 	Respawn          string `toml:"respawn"`
 	CopyMode         string `toml:"copy_mode"`
 	Paste            string `toml:"paste"`
+	World            string `toml:"world"`
+	NewWindow        string `toml:"new_window"`
 }
 
 type SessionConfig struct {
@@ -49,8 +51,15 @@ type SessionConfig struct {
 	MaxWorkersPerManager int    `toml:"max_workers_per_manager"`
 }
 
+// RemoteName is the tmux session holding the remote world: one viewer pane per
+// cloud agent. It never shares a prefix with Name, since tmux prefix-matches
+// session targets.
+func (s SessionConfig) RemoteName() string {
+	return "remote-" + s.Name
+}
+
 // CloudConfig names the SSH host running `agency serve`. Empty disables the
-// cloud-harness window.
+// remote world.
 type CloudConfig struct {
 	Host string `toml:"host"`
 }

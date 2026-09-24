@@ -59,7 +59,7 @@ func (b *liveBox) Projects() ([]live.Project, error) {
 }
 
 func (b *liveBox) Spawn(ctx context.Context, dir, label string) error {
-	return b.mgr.SpawnAgent(ctx, control.Requester{Human: true}, control.RoleController, "pi", dir, label)
+	return b.mgr.SpawnAgentWindow(ctx, control.Requester{Human: true}, control.RoleController, "phone", "pi", dir, label)
 }
 
 func (b *liveBox) Kill(ctx context.Context, paneID string) error {

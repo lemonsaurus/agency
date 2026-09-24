@@ -55,6 +55,7 @@ type TrackedPane struct {
 type Manager struct {
 	mu       sync.Mutex
 	tmux     *tmux.Client
+	remote   *tmux.Client // the remote world: cloud viewers on the same tmux server
 	registry *agents.Registry
 	cfg      *config.Config
 	poller   *status.Poller
@@ -68,7 +69,9 @@ type Manager struct {
 
 	// WindowPerPane gives every spawn its own window, named after the pane
 	// label. The headless cloud server runs this way so viewers can attach
-	// to exactly one agent.
+	// to exactly one agent. Window names given to spawn, move, and
+	// rename-window become the @agency_group that viewers are grouped by, and
+	// kill --window kills a whole group.
 	WindowPerPane bool
 	// LiveHandler serves the phone's voice requests; nil until the daemon wires it.
 	LiveHandler func(ctx context.Context, payload string) (string, error)
@@ -82,6 +85,7 @@ type Manager struct {
 func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.Config, poller *status.Poller) *Manager {
 	return &Manager{
 		tmux:           tmuxClient,
+		remote:         &tmux.Client{Cmd: tmuxClient.Cmd, SessionName: cfg.Session.RemoteName()},
 		registry:       registry,
 		cfg:            cfg,
 		poller:         poller,
@@ -149,8 +153,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 
 	var paneID string
 	var err error
+	group := ""
 	if m.WindowPerPane {
-		windowName = displayName
+		group, windowName = windowName, displayName
 		paneID, err = m.tmux.NewWindow(ctx, windowName, spawnCommand, dir)
 	} else if windowName != "" {
 		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
@@ -173,6 +178,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", label); err != nil {
 		_ = m.tmux.KillPane(ctx, paneID)
 		return fmt.Errorf("storing task label: %w", err)
+	}
+	if group != "" {
+		_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_group", group)
 	}
 	if role == control.RoleController {
 		rootID = paneID
@@ -606,6 +614,9 @@ func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.WindowPerPane {
+		return m.killGroup(ctx, windowName)
+	}
 	if err := m.tmux.KillWindow(ctx, windowName); err != nil {
 		return err
 	}
@@ -638,6 +649,9 @@ func (m *Manager) MovePane(ctx context.Context, paneID, windowName string) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.WindowPerPane {
+		return m.tmux.SetPaneOption(ctx, paneID, "@agency_group", windowName)
+	}
 	if err := m.tmux.MovePane(ctx, paneID, windowName); err != nil {
 		return err
 	}
@@ -651,8 +665,17 @@ func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := m.tmux.RenameWindow(ctx, target, name); err != nil {
+	if m.WindowPerPane {
+		return m.renameGroup(ctx, target, name)
+	}
+	renamed, err := m.renameRemoteWindow(ctx, target, name)
+	if err != nil {
 		return err
+	}
+	if !renamed {
+		if err := m.tmux.RenameWindow(ctx, target, name); err != nil {
+			return err
+		}
 	}
 	panes, err := m.tmux.ListPanes(ctx)
 	if err != nil {

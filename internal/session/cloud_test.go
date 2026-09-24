@@ -122,3 +122,83 @@ func TestLabelCloudViewerRoutesToRemotePane(t *testing.T) {
 		t.Fatal("accepted vanished cloud window")
 	}
 }
+
+func TestSyncCloudPlacesViewersByRemoteGroup(t *testing.T) {
+	ctx := context.Background()
+	// %1 still sits in the old local cloud-harness window; @10 has no viewer yet.
+	mock := &testMock{listOutput: "3\tcloud-harness\t%1\t0\tssh\t/tmp\t1\t200\t\t\t\t\t\t@1\t@9\t\t\tagency"}
+	mgr := newTestManager(mock)
+	mgr.cfg.Cloud.Host = "cloud"
+	mgr.cloud = &mockCloud{windows: []cloud.Window{
+		{ID: "@9", Pane: tmux.PaneInfo{ID: "%42", CWD: "/srv/journalia", Group: "journalia"}},
+		{ID: "@10", Pane: tmux.PaneInfo{ID: "%43", CWD: "/srv/agency"}},
+	}}
+	if _, err := mgr.SyncCloud(ctx); err != nil {
+		t.Fatal(err)
+	}
+	moved := mock.findCall("break-pane")
+	if strings.Join(moved, " ") != "break-pane -d -s %1 -n journalia -t remote-agency:" {
+		t.Fatalf("misplaced viewer move = %v", moved)
+	}
+	created := mock.findCall("new-window")
+	if strings.Join(created[:5], " ") != "new-window -t remote-agency: -n "+cloud.DefaultGroup {
+		t.Fatalf("new viewer window = %v", created)
+	}
+	if !strings.HasSuffix(created[len(created)-1], "cloud-view @10") {
+		t.Fatalf("new viewer command = %v", created)
+	}
+}
+
+func TestRenameRemoteWorldWindowRenamesRemoteGroup(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{
+		listOutput:   "1\tmain\t%1\t0\tssh\t/tmp\t1\t200\t\t\t\t\t\t@3\t@9\t\t\tremote-agency",
+		windowOutput: "@3\t1\tmain",
+	}
+	mgr := newTestManager(mock)
+	mgr.cfg.Cloud.Host = "cloud"
+	remote := &mockCloud{}
+	mgr.cloud = remote
+	if err := mgr.RenameWindow(ctx, "@3", "journalia"); err != nil {
+		t.Fatal(err)
+	}
+	if len(remote.calls) != 1 || strings.Join(remote.calls[0], "|") != "rename-window|main|journalia" {
+		t.Fatalf("remote calls = %v", remote.calls)
+	}
+	if renamed := mock.findCall("rename-window"); strings.Join(renamed, " ") != "rename-window -t @3 journalia" {
+		t.Fatalf("local rename = %v", renamed)
+	}
+}
+
+func TestBoxRenameWindowRegroupsAgents(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{listOutput: "1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\t\tcloud\n" +
+		"2\tπ pi@b\t%2\t0\tpi\t/tmp\t1\t201\t\t\t\t\t\t@2\t\t\tphone\tcloud"}
+	mgr := newTestManager(mock)
+	mgr.WindowPerPane = true
+	if err := mgr.RenameWindow(ctx, cloud.DefaultGroup, "journalia"); err != nil {
+		t.Fatal(err)
+	}
+	calls := mock.findCalls("set-option")
+	if len(calls) != 1 || strings.Join(calls[0], " ") != "set-option -p -t %1 @agency_group journalia" {
+		t.Fatalf("regroup calls = %v", calls)
+	}
+	if err := mgr.RenameWindow(ctx, "missing", "x"); err == nil {
+		t.Fatal("renamed a group with no agents")
+	}
+}
+
+func TestBoxKillWindowKillsGroup(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{listOutput: "1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud\n" +
+		"2\tπ pi@b\t%2\t0\tpi\t/tmp\t1\t201\t\t\t\t\t\t@2\t\t\t\tcloud\n" +
+		"1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tview-7"}
+	mgr := newTestManager(mock)
+	mgr.WindowPerPane = true
+	if err := mgr.KillWindow(ctx, "journalia"); err != nil {
+		t.Fatal(err)
+	}
+	if calls := mock.findCalls("kill-pane"); len(calls) != 1 || calls[0][2] != "%1" {
+		t.Fatalf("kill calls = %v", calls)
+	}
+}
