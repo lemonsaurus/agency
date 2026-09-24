@@ -97,9 +97,14 @@ func (s *Session) Run() {
 func (s *Session) delegate(id string) {
 	// The delegation can arrive before the last transcript fragments; let them land.
 	time.Sleep(400 * time.Millisecond)
-	input := []map[string]any{seedMessage("developer", s.state())}
-	for _, message := range s.memory.Recent(time.Now(), 24) {
-		input = append(input, seedMessage(message.Role, message.Text))
+	now := time.Now()
+	input := []map[string]any{seedMessage("developer", "It is "+now.Format("Monday 15:04")+". "+s.state())}
+	for _, message := range s.memory.Recent(now, 24) {
+		text := message.Text
+		if since := now.Sub(time.UnixMilli(message.At)); since >= pauseGap {
+			text = "(" + ago(since) + ") " + text
+		}
+		input = append(input, seedMessage(message.Role, text))
 	}
 	input = append(input, seedMessage("developer", "Handle the latest thing Lemon asked for in the transcript above. Reply with what to say to him now."))
 	text, err := s.backend.Answer(s.ctx, input)

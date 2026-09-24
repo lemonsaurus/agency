@@ -31,6 +31,8 @@ const (
 	memoryMaxSeed = 60
 	memoryMsgMax  = 2000
 	memorySeedMax = 12000
+	resumeGap     = 2 * time.Minute  // shorter than this and the conversation simply continues
+	pauseGap      = 10 * time.Minute // silences this long are marked inside the seed
 )
 
 func OpenMemory(path string) *Memory {
@@ -130,20 +132,39 @@ func (m *Memory) Seed(now time.Time) []map[string]any {
 	if len(kept) == 0 {
 		return nil
 	}
-	minutes := int(now.Sub(time.UnixMilli(kept[len(kept)-1].At)).Minutes())
-	if minutes < 1 {
-		minutes = 1
+	last := time.UnixMilli(kept[len(kept)-1].At)
+	note := "It is " + now.Format("Monday 15:04") + ". This is what you and Lemon said in your previous voice conversation; the last thing was " + ago(now.Sub(last)) + ". "
+	if now.Sub(last) < resumeGap {
+		note += "You were just talking, so carry straight on."
+	} else {
+		note += "Time has passed since then: he may be somewhere else doing something else, so open the way a coworker does after a break and do not continue the old thread as though it were seconds ago. Pick it back up only if he does, and never recap it unprompted."
 	}
-	ago := fmt.Sprintf("%d minutes ago", minutes)
-	if minutes >= 60 {
-		ago = fmt.Sprintf("%d hours ago", minutes/60)
-	}
-	seed := []map[string]any{seedMessage("developer", "This is what you and Lemon said in your previous voice conversation, which ended "+ago+". Continue naturally if he picks a thread back up; do not recap it unprompted.")}
+	seed := []map[string]any{seedMessage("developer", note)}
+	previous := time.UnixMilli(kept[0].At)
 	for _, message := range kept {
+		at := time.UnixMilli(message.At)
+		if gap := at.Sub(previous); gap >= pauseGap {
+			seed = append(seed, seedMessage("developer", "("+span(gap)+" pass in silence)"))
+		}
 		seed = append(seed, seedMessage(message.Role, message.Text))
+		previous = at
 	}
 	return seed
 }
+
+// span words a duration the way it would be said: "40 seconds", "5 minutes", "2 hours".
+func span(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%d hours", int(d.Hours()))
+	}
+}
+
+func ago(d time.Duration) string { return span(d) + " ago" }
 
 func seedMessage(role, text string) map[string]any {
 	kind := "input_text"

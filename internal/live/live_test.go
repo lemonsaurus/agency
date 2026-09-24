@@ -140,7 +140,11 @@ func TestMemoryLogAndSeed(t *testing.T) {
 		t.Fatalf("roles=%v", roles)
 	}
 	note := seed[0]["content"].([]map[string]any)[0]["text"].(string)
-	if !strings.Contains(note, "1 minutes ago") {
+	if !strings.Contains(note, "1 minutes ago") || !strings.Contains(note, "carry straight on") {
+		t.Fatalf("note=%q", note)
+	}
+	note = OpenMemory(path).Seed(base.Add(3 * time.Hour))[0]["content"].([]map[string]any)[0]["text"].(string)
+	if !strings.Contains(note, "2 hours ago") || !strings.Contains(note, "Time has passed") {
 		t.Fatalf("note=%q", note)
 	}
 	if got := seed[1]["content"].([]map[string]any)[0]["text"]; got != "pick a ticket" {
@@ -419,5 +423,21 @@ func TestConversationTool(t *testing.T) {
 	}
 	if got := m.Status().Phone; got != "" {
 		t.Fatalf("phone not consumed: %q", got)
+	}
+}
+
+func TestMemorySeedMarksPauses(t *testing.T) {
+	m := OpenMemory("")
+	base := time.Unix(1000, 0)
+	m.Add("user", "first", base)
+	m.Add("assistant", "yep", base.Add(2*time.Second))
+	m.Add("user", "later", base.Add(25*time.Minute))
+	seed := m.Seed(base.Add(26 * time.Minute))
+	if len(seed) != 5 {
+		t.Fatalf("seed=%d", len(seed))
+	}
+	pause := seed[3]["content"].([]map[string]any)[0]["text"].(string)
+	if pause != "(24 minutes pass in silence)" && pause != "(25 minutes pass in silence)" {
+		t.Fatalf("pause=%q", pause)
 	}
 }
