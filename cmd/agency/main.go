@@ -1240,6 +1240,18 @@ func runList(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	// On the headless server a pane's window is its group, as the sky harness
+	// shows it, and viewer sessions repeat every pane.
+	if os.Getenv("AGENCY_TMUX_SOCKET") != "" {
+		own := panes[:0]
+		for _, pane := range panes {
+			if pane.Session == cfg.Session.Name {
+				pane.WindowName = cloud.Group(pane)
+				own = append(own, pane)
+			}
+		}
+		panes = own
+	}
 
 	if listAsJSON(args) {
 		type bridgedPane struct {

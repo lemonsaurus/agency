@@ -155,6 +155,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	var err error
 	group := ""
 	if m.WindowPerPane {
+		if windowName == "" {
+			windowName = m.paneGroup(ctx, requester.PaneID)
+		}
 		group, windowName = windowName, displayName
 		paneID, err = m.tmux.NewWindow(ctx, windowName, spawnCommand, dir)
 	} else if windowName != "" {
@@ -690,7 +693,28 @@ func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 }
 
 func (m *Manager) MoveWindow(ctx context.Context, target string, index int) error {
+	if m.WindowPerPane {
+		return fmt.Errorf("sky harness window order is local to each workstation")
+	}
 	return m.tmux.MoveWindow(ctx, target, index)
+}
+
+// paneGroup is a pane's group, so a spawn without a window joins the
+// requester's window as it does on earth.
+func (m *Manager) paneGroup(ctx context.Context, paneID string) string {
+	if paneID == "" {
+		return ""
+	}
+	panes, err := m.tmux.ListPanes(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, pane := range panes {
+		if pane.ID == paneID {
+			return pane.Group
+		}
+	}
+	return ""
 }
 
 // KillAll kills all tracked agent panes.

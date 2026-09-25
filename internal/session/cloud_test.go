@@ -188,6 +188,21 @@ func TestBoxRenameWindowRegroupsAgents(t *testing.T) {
 	}
 }
 
+func TestBoxSpawnJoinsRequesterGroup(t *testing.T) {
+	mock := &testMock{listOutput: "1\tπ pi@a\t%0\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud"}
+	mgr := newTestManager(mock)
+	mgr.WindowPerPane = true
+	if err := mgr.SpawnCommand(context.Background(), testController, control.RoleManager, "pi", "/tmp", "Task"); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range mock.findCalls("set-option") {
+		if strings.Join(call, " ") == "set-option -p -t %1 @agency_group journalia" {
+			return
+		}
+	}
+	t.Fatalf("set-option calls = %v", mock.findCalls("set-option"))
+}
+
 func TestBoxKillWindowKillsGroup(t *testing.T) {
 	ctx := context.Background()
 	mock := &testMock{listOutput: "1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud\n" +
