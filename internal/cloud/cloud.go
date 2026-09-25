@@ -43,8 +43,9 @@ type Window struct {
 }
 
 // sshOptions share one connection to the host across viewers, the watch, and
-// commands, so each new one skips the SSH handshake.
-var sshOptions = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/agency-ssh-%C", "-o", "ControlPersist=10m"}
+// commands, so each new one skips the SSH handshake. The control path is the
+// cloud-harness installer's, so the master also carries its browser link.
+var sshOptions = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cloud-harness-%C", "-o", "ControlPersist=10m"}
 
 // sshArgs builds a non-interactive SSH invocation. ~/.local/bin is only on
 // PATH in interactive shells on the box, so the remote command adds it.
