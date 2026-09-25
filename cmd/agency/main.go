@@ -53,6 +53,8 @@ func main() {
 		runWorld(os.Args[2:])
 	case "new-window":
 		runNewWindow(os.Args[2:])
+	case "send-to-sky":
+		runSendToSky(os.Args[2:])
 	case "ask":
 		runAsk(os.Args[2:])
 	case "bridge-path":
@@ -136,6 +138,7 @@ Usage:
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
   agency world <client> <session>   Switch a client between local and the sky harness (tmux keybinding)
   agency new-window <session> <name> [dir]  Open a named shell window in that session's world
+  agency send-to-sky <client> <window-id>  Move a window's idle Pi panes and shells to the sky harness
   agency handoff-cloud [--label task] [--prompt text] --session <file> <dir>
                                     Push the branch, copy the Pi session, resume it on the cloud host
   agency cloud-view <window-id>     Viewer pane process: attach and reconnect (used by sync-cloud)

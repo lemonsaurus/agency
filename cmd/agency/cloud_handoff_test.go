@@ -24,6 +24,18 @@ func TestSwapHome(t *testing.T) {
 	}
 }
 
+func TestSwapHomeFollowsGitSymlinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outside := t.TempDir()
+	os.MkdirAll(home+"/git/org", 0o755)
+	os.Symlink(outside, home+"/git/org/repo")
+	got, err := swapHome(outside+"/sub", "/home/box")
+	if err != nil || got != "/home/box/git/org/repo/sub" {
+		t.Errorf("swapHome = %q, %v", got, err)
+	}
+}
+
 func TestRewriteSessionCwd(t *testing.T) {
 	src := t.TempDir() + "/s.jsonl"
 	os.WriteFile(src, []byte(`{"type":"session","version":3,"cwd":"/var/home/lemon/x"}`+"\n"+`{"type":"message"}`+"\n"), 0o600)

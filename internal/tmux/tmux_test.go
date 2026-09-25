@@ -484,6 +484,7 @@ func TestGenerateConfig(t *testing.T) {
 		"bind " + cfg.Keys.NewWindow + " command-prompt -p 'New window:'",
 		"new-window '#{session_name}' '%%' '#{pane_current_path}'",
 		"rename-window '#{window_id}' '%%'",
+		"send-to-sky '#{client_name}' '#{window_id}'",
 		"#{?#{==:#{session_name},remote-agency},#[bg=#fab387#,fg=#1e1e2e#,bold]☁  sky  ,#[bg=#a6e3a1#,fg=#1e1e2e#,bold]♁ earth  }",
 		"bind " + cfg.Keys.Zoom + " resize-pane -Z",
 		"bind " + cfg.Keys.ApprovePromotion + " if -F '#{@agency_cloud}'",

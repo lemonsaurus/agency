@@ -10,11 +10,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
+	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
 func cancelOnInputClose(input io.Reader, cancel context.CancelFunc) {
@@ -114,6 +118,91 @@ func runTranscript(args []string) {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// runSendToSky moves a window to the sky harness. Idle Pi panes run their own
+// /handoff-cloud, which serializes them; shells reopen in the same folder in
+// the matching sky window.
+func runSendToSky(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency send-to-sky <client> <window-id>")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	socket := socketPath(cfg.Session.Name)
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := tc.Cmd.Run(ctx, "list-panes", "-t", args[1], "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{window_name}")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	remote := &cloud.Client{Host: cfg.Cloud.Host}
+	remoteHome := ""
+	sent, shells := 0, 0
+	var skipped []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 {
+			continue
+		}
+		pane, command, dir, window := fields[0], fields[1], fields[2], fields[3]
+		path, err := ipc.BridgePath(socket, pane)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			id := make([]byte, 16)
+			if _, err := rand.Read(id); err != nil {
+				fmt.Fprintln(os.Stderr, "Error generating request ID")
+				os.Exit(1)
+			}
+			reply, err := ipc.Command(ctx, path, ipc.CommandRequest{ID: hex.EncodeToString(id), Name: "handoff-cloud"})
+			switch {
+			case err != nil:
+				skipped = append(skipped, fmt.Sprintf("%s (%v)", pane, err))
+			case reply.Error != nil:
+				skipped = append(skipped, fmt.Sprintf("%s (%s)", pane, reply.Error.Code))
+			default:
+				sent++
+			}
+			continue
+		}
+		if command != filepath.Base(os.Getenv("SHELL")) {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", pane, command))
+			continue
+		}
+		if remoteHome == "" {
+			home, err := remote.Shell(ctx, 20*time.Second, "echo \"$HOME\"")
+			if err != nil {
+				skipped = append(skipped, fmt.Sprintf("%s (%v)", pane, err))
+				continue
+			}
+			remoteHome = strings.TrimSpace(home)
+		}
+		remoteDir, err := swapHome(dir, remoteHome)
+		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s (%v)", pane, err))
+			continue
+		}
+		if _, err := remote.Run(ctx, 20*time.Second, "spawn", "--window", window, "--cmd", "$SHELL", remoteDir); err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s (%v)", pane, err))
+			continue
+		}
+		if resp, err := ipc.SendMessage(socket, "kill:"+pane); err != nil || strings.HasPrefix(resp, "error:") {
+			_, _ = tc.Cmd.Run(ctx, "kill-pane", "-t", pane)
+		}
+		shells++
+	}
+	if shells > 0 {
+		_, _ = ipc.SendMessage(socket, "sync-cloud")
+	}
+	message := fmt.Sprintf("☁  Sending %d Pi panes and %d shells to the sky", sent, shells)
+	if len(skipped) > 0 {
+		message += "; skipped " + strings.Join(skipped, ", ")
+	}
+	_, _ = tc.Cmd.Run(ctx, "display-message", "-c", args[0], "-d", "8000", message)
 }
 
 func runBridgePath() {

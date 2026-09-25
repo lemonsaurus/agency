@@ -246,7 +246,7 @@ Launch and `agency sync-cloud` mirror every pane on the host's `agency serve` in
 
 Remote agents carry a group (`@agency_group` on the host), and sync puts each viewer in the sky harness window named after it. Agents without one go to `main`; phone spawns go to `phone`. On the host, `spawn --window`, `move`, and `rename-window` set groups instead of tmux windows, and `kill --window` kills a group. The host is the source of truth, so every workstation shows the same windows, and sync moves viewers placed anywhere else. While the sky harness shows no agents, a placeholder pane keeps it open.
 
-Right-click a window or the badge for **New Window**, which asks for a name and opens a shell there: a local shell in the local world, a shell on the host in the sky harness. `Prefix+c` does the same. Renaming a sky harness window renames its group on the host; **Destroy** kills every agent in the group after confirmation.
+Right-click a window or the badge for **New Window**, which asks for a name and opens a shell there: a local shell in the local world, a shell on the host in the sky harness. `Prefix+c` does the same. Renaming a sky harness window renames its group on the host; **Destroy** kills every agent in the group after confirmation. On earth, **Send to Sky** moves the window into the sky window of the same name: idle Pi panes hand off with `/handoff-cloud`, one at a time, and shells reopen in the same folder. Busy panes and other programs stay.
 
 Cloud viewers mirror the remote task label and remote folder name. Label writes targeting a local viewer route to its remote pane after the local role check. Sync refreshes edits made on the host.
 

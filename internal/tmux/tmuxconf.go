@@ -184,19 +184,20 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	world := fmt.Sprintf(`run-shell -b "%s world '#{client_name}' '#{session_name}'"`, agencyBin)
 	newWindow := fmt.Sprintf(`command-prompt -p 'New window:' { run-shell -b "%s new-window '#{session_name}' '%%%%' '#{pane_current_path}'" }`, agencyBin)
 	rename := fmt.Sprintf(`command-prompt -F -I '#W' -p 'Rename window:' { run-shell -b "%s rename-window '#{window_id}' '%%%%' >/dev/null" }`, agencyBin)
-	worldItem := fmt.Sprintf(`'#{?%s,♁ Earth,☁ Sky}' 'k' { %s }`, inRemote, world)
+	worldItem := fmt.Sprintf(`'#{?%s,♁  Earth,☁  Sky}' 'k' { %s }`, inRemote, world)
 	b.WriteString("# Worlds\n")
 	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.World, world)
 	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.NewWindow, newWindow)
 	fmt.Fprintf(&b, "bind -T root MouseUp1StatusLeft %s\n", world)
-	fmt.Fprintf(&b, "bind -T root MouseDown3StatusLeft display-menu -T '#[align=centre] #{session_name} ' -t = -x M -y W '＋  New Window' 'n' { %s } '' %s\n", newWindow, worldItem)
+	fmt.Fprintf(&b, "bind -T root MouseDown3StatusLeft display-menu -T '#[align=centre] #{session_name} ' -t = -x M -y W '+  New Window' 'n' { %s } '' %s\n", newWindow, worldItem)
 	fmt.Fprintf(&b, "bind -T root MouseDown3Status display-menu -T '#[align=centre] #{window_index}:#{window_name} ' -t = -x W -y W"+
-		" '＋  New Window' 'n' { %s }"+
+		" '+  New Window' 'n' { %s }"+
 		" '✎  Rename' 'r' { %s }"+
 		" '#{?#{>:#{session_windows},1},,-}⇠  Swap Left' 'l' { swap-window -t :-1 }"+
 		" '#{?#{>:#{session_windows},1},,-}⇢  Swap Right' 'R' { swap-window -t :+1 }"+
+		" '#{?%s,,☁  Send to Sky}' 's' { confirm-before -p 'Send #W to the sky? (y/n)' { run-shell -b \"%s send-to-sky '#{client_name}' '#{window_id}'\" } }"+
 		" '#[fg=#f38ba8,bold]×  #{?%s,Destroy,Kill}#[default]' 'X' { if -F '%s' { confirm-before -p 'Destroy every remote agent in #W? (y/n)' { run-shell -b \"%s cloud-act kill-window '#{window_name}'\" } } { confirm-before -p 'Kill window #W? (y/n)' kill-window } }"+
-		" '' %s\n", newWindow, rename, inRemote, inRemote, agencyBin, worldItem)
+		" '' %s\n", newWindow, rename, inRemote, agencyBin, inRemote, inRemote, agencyBin, worldItem)
 	b.WriteString("\n")
 
 	// Clipboard: drag to select, Ctrl+C to copy.

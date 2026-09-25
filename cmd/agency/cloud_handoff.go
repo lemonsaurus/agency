@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/cloud"
+	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
 // handoffCloud moves a Pi session to the cloud host: the branch is committed
@@ -22,6 +24,7 @@ type handoffCloud struct {
 	dir     string
 	session string
 	label   string
+	window  string
 	prompt  string
 }
 
@@ -59,7 +62,23 @@ func runHandoffCloud(args []string) {
 		os.Exit(1)
 	}
 	h.dir = dir
-	if err := h.run(context.Background()); err != nil {
+	// The sky window matches the local one.
+	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+		name, err := tmux.NewClient(cfg.Session.Name, "").Cmd.Run(context.Background(), "display-message", "-p", "-t", pane, "#{window_name}")
+		if err == nil {
+			h.window = name
+		}
+	}
+	// Handoffs from one window run together and would race on shared checkouts.
+	lock, err := os.OpenFile(lockPath(cfg.Session.Name+"-handoff-cloud"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err == nil {
+		defer lock.Close()
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	}
+	if err == nil {
+		err = h.run(context.Background())
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -117,17 +136,25 @@ func (h *handoffCloud) run(ctx context.Context) error {
 	if _, err := h.remote.Shell(ctx, 5*time.Minute, script.String()); err != nil {
 		return err
 	}
-	remoteSession, err := h.copySession(ctx, remoteHome, remoteDir)
-	if err != nil {
-		return err
-	}
 	branch := checkouts[0].branch
-	prompt := h.prompt
-	if prompt == "" {
-		prompt = fmt.Sprintf("This session moved from Lemon's workstation to the cloud harness box. Same repo on branch %s, with the local work committed and pushed. Tell Lemon you arrived, then continue the active work.", branch)
+	// Pi writes the session file with the first message; an empty session
+	// becomes a fresh Pi.
+	command := `PATH="$HOME/.local/bin:$PATH" pi`
+	if _, err := os.Stat(h.session); err == nil {
+		remoteSession, err := h.copySession(ctx, remoteHome, remoteDir)
+		if err != nil {
+			return err
+		}
+		prompt := h.prompt
+		if prompt == "" {
+			prompt = fmt.Sprintf("This session moved from Lemon's workstation to the cloud harness box. Same repo on branch %s, with the local work committed and pushed. Tell Lemon you arrived, then continue the active work.", branch)
+		}
+		command += fmt.Sprintf(" --session %s %s", shellQuote(remoteSession), shellQuote(prompt))
 	}
-	command := fmt.Sprintf(`PATH="$HOME/.local/bin:$PATH" pi --session %s %s`, shellQuote(remoteSession), shellQuote(prompt))
 	spawn := []string{"spawn"}
+	if h.window != "" {
+		spawn = append(spawn, "--window", h.window)
+	}
 	if h.label != "" {
 		spawn = append(spawn, "--label", h.label)
 	}
@@ -299,7 +326,33 @@ func swapHome(path, remoteHome string) (string, error) {
 			return remoteHome, nil
 		}
 	}
+	if link, ok := homeLink(path, home); ok {
+		return swapHome(link, remoteHome)
+	}
 	return "", fmt.Errorf("%s is outside the home directory", path)
+}
+
+// homeLink finds the ~/git/<org>/<repo> symlink that points at path or one of
+// its parents, e.g. a checkout on a Windows drive.
+func homeLink(path, home string) (string, bool) {
+	links, _ := filepath.Glob(filepath.Join(home, "git", "*", "*"))
+	for _, link := range links {
+		info, err := os.Lstat(link)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := filepath.EvalSymlinks(link)
+		if err != nil {
+			continue
+		}
+		if path == target {
+			return link, true
+		}
+		if rel, ok := strings.CutPrefix(path, target+"/"); ok {
+			return filepath.Join(link, rel), true
+		}
+	}
+	return "", false
 }
 
 func branchOwner() string {

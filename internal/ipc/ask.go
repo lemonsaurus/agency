@@ -103,6 +103,39 @@ func Ask(ctx context.Context, socket string, request AskRequest) (AskReply, erro
 	return reply, nil
 }
 
+type CommandRequest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Command runs a slash command in an idle Pi pane. Pi refuses busy panes and
+// every command but handoff-cloud.
+func Command(ctx context.Context, socket string, request CommandRequest) (AskReply, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	if err != nil {
+		return AskReply{}, fmt.Errorf("no Pi bridge")
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	data, err := json.Marshal(request)
+	if err != nil {
+		return AskReply{}, err
+	}
+	if _, err := fmt.Fprintf(conn, "command:%s\n", data); err != nil {
+		return AskReply{}, err
+	}
+	reader := bufio.NewScanner(conn)
+	if !reader.Scan() {
+		return AskReply{}, fmt.Errorf("bridge disconnected before replying")
+	}
+	var reply AskReply
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || reply.Text != nil || reply.Accepted == (reply.Error != nil) {
+		return AskReply{}, fmt.Errorf("invalid bridge reply")
+	}
+	return reply, nil
+}
+
 type TranscriptRequest struct {
 	ID    string `json:"id"`
 	Limit int    `json:"limit"`
