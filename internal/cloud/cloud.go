@@ -42,10 +42,14 @@ type Window struct {
 	Pane tmux.PaneInfo
 }
 
+// sshOptions share one connection to the host across viewers, the watch, and
+// commands, so each new one skips the SSH handshake.
+var sshOptions = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/agency-ssh-%C", "-o", "ControlPersist=10m"}
+
 // sshArgs builds a non-interactive SSH invocation. ~/.local/bin is only on
 // PATH in interactive shells on the box, so the remote command adds it.
 func (c *Client) sshArgs(tty bool, remote ...string) []string {
-	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15"}
+	args := append(append([]string{}, sshOptions...), "-o", "ServerAliveInterval=15")
 	if tty {
 		args = append(args, "-t")
 	}
@@ -75,7 +79,7 @@ func (c *Client) Run(ctx context.Context, timeout time.Duration, remote ...strin
 func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", c.Host, "bash -s"}
+	args := append(append([]string{}, sshOptions...), c.Host, "bash -s")
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin = strings.NewReader(script)
 	var stdout, stderr bytes.Buffer
@@ -91,7 +95,7 @@ func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string
 func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote string) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", local, c.Host+":"+remote)
+	cmd := exec.CommandContext(ctx, "scp", append(append([]string{"-q"}, sshOptions...), local, c.Host+":"+remote)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
