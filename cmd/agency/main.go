@@ -133,6 +133,7 @@ Usage:
   agency cloud transcript <pane> [--limit 200]  Print the pane's conversation as JSON
   agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*
+  agency cloud watch                Print a line whenever the headless panes change (used over SSH)
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, sdp}; prints the answer JSON
   agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|close
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
@@ -285,6 +286,9 @@ func runCloud(args []string) {
 		return
 	case "live":
 		runLive(cfg.Session.Name, args[1:])
+		return
+	case "watch":
+		runCloudWatch(cfg)
 		return
 	}
 	if args[0] == "attach" {
@@ -631,15 +635,8 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 		}
 	}()
 
-	// Mirror the cloud host without blocking startup.
 	if !cloud && cfg.Cloud.Host != "" {
-		go func() {
-			if result, err := mgr.SyncCloud(ctx); err != nil {
-				log.Printf("sync-cloud: %v", err)
-			} else {
-				log.Printf("sync-cloud: %s", result)
-			}
-		}()
+		go watchCloud(ctx, mgr, cfg.Cloud.Host)
 	}
 
 	return &daemon{ctx: ctx, cancel: cancel, tc: tc, close: func() {

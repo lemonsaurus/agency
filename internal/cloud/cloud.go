@@ -2,6 +2,7 @@
 package cloud
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -95,6 +96,35 @@ func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote 
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("scp to %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// Watch calls changed for every change notice from the host's `agency cloud
+// watch` until the link drops or ctx ends. The open stdin pipe keeps the
+// remote side alive.
+func (c *Client) Watch(ctx context.Context, changed func()) error {
+	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(false, "watch")...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	defer stdin.Close()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	lines := bufio.NewScanner(stdout)
+	for lines.Scan() {
+		changed()
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
