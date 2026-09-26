@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/tmux"
@@ -42,15 +44,42 @@ type Window struct {
 	Pane tmux.PaneInfo
 }
 
-// sshOptions share one connection to the host across viewers, the watch, and
-// commands, so each new one skips the SSH handshake. The control path is the
-// cloud-harness installer's, so the master also carries its browser link.
-var sshOptions = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cloud-harness-%C", "-o", "ControlPersist=10m"}
+// controlPath is the cloud-harness installer's, so viewers, the watch, and
+// commands share the master that carries its browser link.
+const controlPath = "ControlPath=~/.ssh/cloud-harness-%C"
+
+// sshOptions join the shared master and skip the config's forwards. A
+// connection the master refuses runs on its own, and its copy of the link
+// forward would rebind link.sock on the box away from the master's listener.
+var sshOptions = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=no", "-o", controlPath, "-o", "ClearAllForwardings=yes"}
+
+// ensureMaster starts the shared master unless one is running. The lock keeps
+// concurrent Agency processes from racing to become it.
+func (c *Client) ensureMaster(ctx context.Context) error {
+	lock, err := os.OpenFile(filepath.Join(os.TempDir(), "agency-ssh-master.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	if exec.CommandContext(ctx, "ssh", "-o", controlPath, "-O", "check", c.Host).Run() == nil {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlMaster=yes", "-o", controlPath, "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15", c.Host, "true")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh master for %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
 
 // sshArgs builds a non-interactive SSH invocation. ~/.local/bin is only on
 // PATH in interactive shells on the box, so the remote command adds it.
 func (c *Client) sshArgs(tty bool, remote ...string) []string {
-	args := append(append([]string{}, sshOptions...), "-o", "ServerAliveInterval=15")
+	args := append([]string{}, sshOptions...)
 	if tty {
 		args = append(args, "-t")
 	}
@@ -66,6 +95,9 @@ func (c *Client) sshArgs(tty bool, remote ...string) []string {
 func (c *Client) Run(ctx context.Context, timeout time.Duration, remote ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := c.ensureMaster(ctx); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(false, remote...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -80,6 +112,9 @@ func (c *Client) Run(ctx context.Context, timeout time.Duration, remote ...strin
 func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := c.ensureMaster(ctx); err != nil {
+		return "", err
+	}
 	args := append(append([]string{}, sshOptions...), c.Host, "bash -s")
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin = strings.NewReader(script)
@@ -96,6 +131,9 @@ func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string
 func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote string) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := c.ensureMaster(ctx); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "scp", append(append([]string{"-q"}, sshOptions...), local, c.Host+":"+remote)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -109,6 +147,9 @@ func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote 
 // watch` until the link drops or ctx ends. The open stdin pipe keeps the
 // remote side alive.
 func (c *Client) Watch(ctx context.Context, changed func()) error {
+	if err := c.ensureMaster(ctx); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(false, "watch")...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -137,6 +178,9 @@ func (c *Client) Watch(ctx context.Context, changed func()) error {
 // Attach hands this terminal to one remote window until the link drops or
 // the window dies.
 func (c *Client) Attach(ctx context.Context, windowID string) error {
+	if err := c.ensureMaster(ctx); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(true, "attach", windowID)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
