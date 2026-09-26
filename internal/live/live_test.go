@@ -414,11 +414,14 @@ func TestConversationTool(t *testing.T) {
 	if _, err := m.call(context.Background(), "conversation", `{"state":"later"}`); err == nil {
 		t.Fatal("bad state accepted")
 	}
-	result, err := m.call(context.Background(), "conversation", `{"state":"doze"}`)
-	if err != nil || !strings.Contains(fmt.Sprint(result), "doze") {
+	if _, err := m.call(context.Background(), "conversation", `{"state":"doze"}`); err == nil {
+		t.Fatal("doze accepted")
+	}
+	result, err := m.call(context.Background(), "conversation", `{"state":"off"}`)
+	if err != nil || !strings.Contains(fmt.Sprint(result), "off") {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
-	if got := m.Status().Phone; got != "doze" {
+	if got := m.Status().Phone; got != "off" {
 		t.Fatalf("phone=%q", got)
 	}
 	if got := m.Status().Phone; got != "" {

@@ -185,8 +185,8 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 		return m.dispatcher.Call(ctx, name, arguments)
 	}
 	var args toolArgs
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil || (args.State != "doze" && args.State != "off") {
-		return nil, fmt.Errorf("state must be doze or off")
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil || args.State != "off" {
+		return nil, fmt.Errorf("state must be off")
 	}
 	m.mu.Lock()
 	m.phone = args.State
@@ -194,8 +194,8 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 	return "The phone will go " + args.State + " after your next sentence. Say a short goodbye.", nil
 }
 
-// Status is what the phone polls: what to show on the orb, whether a doze should wake,
-// Discord replies it must send, and a conversation state the backend asked for. The phone
+// Status is what the phone polls: what to show on the orb, Discord replies it must send, and
+// whether the backend asked to turn the conversation off. The phone
 // request is handed over once.
 type Status struct {
 	Session   string         `json:"session,omitempty"`
