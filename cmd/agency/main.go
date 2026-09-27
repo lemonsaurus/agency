@@ -284,9 +284,6 @@ func runCloud(args []string) {
 	case "projects":
 		runProjects(args[1:])
 		return
-	case "overview":
-		runOverview(cfg)
-		return
 	case "activity":
 		runActivity(cfg)
 		return
