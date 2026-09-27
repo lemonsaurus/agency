@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
 	"github.com/lemonsaurus/agency/internal/live"
@@ -121,6 +122,20 @@ func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.
 	return live.NewManager(&liveBox{tc: tc, mgr: mgr, socket: socket, home: home}, key,
 		func() (string, error) { return persona(agentsDir) },
 		filepath.Join(agentsDir, "voice"), filepath.Join(agentsDir, "run", "agency", "voice-memory.jsonl"))
+}
+
+// runActivity prints the voice backend's activity tool result, for Pi and anyone else on the box.
+func runActivity(cfg *config.Config) {
+	home, _ := os.UserHomeDir()
+	box := &liveBox{tc: tmux.NewClient(cfg.Session.Name, ""), socket: socketPath(cfg.Session.Name), home: home}
+	sessions, err := live.Activity(context.Background(), box, filepath.Join(home, ".agents", "run", "agency", "activity.jsonl"), time.Now(), 12*time.Hour)
+	if err == nil {
+		err = json.NewEncoder(os.Stdout).Encode(sessions)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
 }
 
 // runLive relays one voice request from the phone to the daemon.

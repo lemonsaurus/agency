@@ -13,6 +13,7 @@ import (
 // return at once; a Narrator per pane carries the progress back into the conversation.
 type Dispatcher struct {
 	box     Box
+	Diary   string // the box's activity.jsonl
 	discord *Discord
 	emit    func(Update)
 
@@ -43,6 +44,7 @@ func NewDispatcher(box Box, discord *Discord, emit func(Update)) *Dispatcher {
 
 // Schema is the function list the backend model sees.
 var Schema = json.RawMessage(`[
+{"type":"function","name":"activity","description":"What every session on the box has been doing in the last 12 hours, from the diary all sessions write: state (working, idle, stopped, failed, closed), their latest prompts, narrated steps and answers, most recently active first. Call this first whenever Lemon asks how things are going, what is happening, or what everyone is doing.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"list_panes","description":"List open sessions with their task names and status, plus the projects on the box where a session can be opened.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"ask_project","description":"Ask a question or give an instruction inside a project. Reuses the phone's own session in that project or opens one. Queued and returned at once; the session's progress and answer arrive in the conversation on their own. Use this by default for anything project-related; no permission needed. Never automatically retry.","parameters":{"type":"object","properties":{"project_path":{"type":"string"},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"],"description":"narrate: Lemon is focused on this and wants to hear progress. background: he asked to set it up and move on; only the finish is announced."}},"required":["project_path","text","mode"],"additionalProperties":false}},
 {"type":"function","name":"ask_pane","description":"Send Lemon's instruction to a specific existing session he named. Queued and returned at once; progress and answer arrive in the conversation on their own. Never automatically retry.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","text","mode"],"additionalProperties":false}},
@@ -78,6 +80,12 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	switch name {
+	case "activity":
+		sessions, err := Activity(ctx, d.box, d.Diary, time.Now(), activityWindow)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"sessions": sessions}, nil
 	case "list_panes":
 		panes, err := d.box.Panes(ctx)
 		if err != nil {

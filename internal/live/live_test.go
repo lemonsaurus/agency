@@ -457,3 +457,32 @@ func TestGlanceAt(t *testing.T) {
 		t.Fatalf("idle=%+v", got)
 	}
 }
+
+func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
+	now := time.UnixMilli(10_000_000)
+	path := filepath.Join(t.TempDir(), "activity.jsonl")
+	lines := []string{
+		`{"at":1000,"pane":"%1","label":"Old","cwd":"/home/lemon/git/a/b","kind":"answered","text":"too old"}`,
+		`not json`,
+		`{"at":9000000,"pane":"%1","label":"Grant Coverage","cwd":"/home/lemon/git/hm/brood","kind":"asked","text":"cover UK funds"}`,
+		`{"at":9500000,"pane":"%1","label":"Grant Coverage","cwd":"/home/lemon/git/hm/brood","kind":"step","text":"Norway done, starting UK"}`,
+		`{"at":9900000,"pane":"%2","label":"Gone","cwd":"/home/lemon/git/x/y","kind":"answered","text":"shipped"}`,
+	}
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	box := &fakeBox{panes: []Pane{{ID: "%1", Label: "Grant Coverage", Bridge: true}, {ID: "%3", Label: "Quiet", Dir: "/home/lemon/git/q/r", Bridge: true}},
+		transcripts: map[string][]json.RawMessage{"%3": {json.RawMessage(`{"role":"assistant","at":5000000,"blocks":[{"type":"text","text":"all done"}]}`)}}}
+	sessions, err := Activity(context.Background(), box, path, now, time.Hour)
+	if err != nil || len(sessions) != 3 {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+	gone, grant, quiet := sessions[0], sessions[1], sessions[2]
+	if gone.Session != "Gone" || gone.Open || gone.State != "closed after idle" {
+		t.Fatalf("gone=%+v", gone)
+	}
+	if grant.State != "working" || !grant.Open || grant.Project != "hm/brood" || len(grant.Entries) != 2 || grant.Entries[1].Text != "Norway done, starting UK" {
+		t.Fatalf("grant=%+v", grant)
+	}
+	if quiet.State != "idle" || quiet.LastAnswer != "all done" || quiet.Project != "q/r" {
+		t.Fatalf("quiet=%+v", quiet)
+	}
+}

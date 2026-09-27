@@ -39,6 +39,7 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 	m := &Manager{box: box, key: key, persona: persona, prompts: promptDir, memory: OpenMemory(memoryPath), client: &http.Client{Timeout: 120 * time.Second}, API: "https://api.openai.com"}
 	m.discord = NewDiscord(m.Emit)
 	m.dispatcher = NewDispatcher(box, m.discord, m.Emit)
+	m.dispatcher.Diary = filepath.Join(filepath.Dir(memoryPath), "activity.jsonl")
 	return m
 }
 
