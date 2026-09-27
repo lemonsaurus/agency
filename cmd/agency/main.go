@@ -284,6 +284,9 @@ func runCloud(args []string) {
 	case "projects":
 		runProjects(args[1:])
 		return
+	case "overview":
+		runOverview(cfg)
+		return
 	case "live":
 		runLive(cfg.Session.Name, args[1:])
 		return

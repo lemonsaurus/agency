@@ -141,28 +141,13 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 		if err != nil {
 			return nil, err
 		}
-		turns := ParseTranscript(raw)
-		result := map[string]any{"pane": pane.Title(), "state": "working"}
-		if len(turns) > 0 {
-			last := turns[len(turns)-1]
-			if last.Kind == "carla" && last.Text != "" {
-				result["state"] = "idle"
-			} else if last.Kind == "lemon" {
-				result["current"] = "just received: " + truncate(last.Text, 200)
-			} else {
-				for i := len(turns) - 1; i >= 0; i-- {
-					if turns[i].Kind == "tool" {
-						result["current"] = strings.TrimSpace(turns[i].Name + " " + truncate(turns[i].Summary, 120))
-						break
-					}
-				}
-			}
-			for i := len(turns) - 1; i >= 0; i-- {
-				if turns[i].Kind == "carla" && turns[i].Text != "" {
-					result["last_answer"] = truncate(turns[i].Text, updateLimit)
-					break
-				}
-			}
+		glance := GlanceAt(ParseTranscript(raw), updateLimit)
+		result := map[string]any{"pane": pane.Title(), "state": glance.State}
+		if glance.Doing != "" {
+			result["current"] = glance.Doing
+		}
+		if glance.Answer != "" {
+			result["last_answer"] = glance.Answer
 		}
 		return result, nil
 	case "follow_pane":

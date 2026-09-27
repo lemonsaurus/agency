@@ -444,3 +444,16 @@ func TestMemorySeedMarksPauses(t *testing.T) {
 		t.Fatalf("pause=%q", pause)
 	}
 }
+
+func TestGlanceAt(t *testing.T) {
+	if got := GlanceAt(nil, 10); got.State != "idle" {
+		t.Fatalf("empty=%+v", got)
+	}
+	turns := []Turn{{Kind: "lemon", At: 1, Text: "go"}, {Kind: "carla", At: 2, Text: "first answer"}, {Kind: "tool", At: 3, Name: "bash", Summary: "ls"}}
+	if got := GlanceAt(turns, 5); got.State != "working" || got.Doing != "bash ls" || got.Answer != "first" || got.At != 3 {
+		t.Fatalf("working=%+v", got)
+	}
+	if got := GlanceAt(append(turns, Turn{Kind: "carla", At: 4, Text: "done"}), 50); got.State != "idle" || got.Doing != "" || got.Answer != "done" {
+		t.Fatalf("idle=%+v", got)
+	}
+}
