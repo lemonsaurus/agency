@@ -240,7 +240,7 @@ Task labels use `@agency_task_label`; folder borders use `@agency_label`. Both s
 
 ## Cloud panes
 
-With `[cloud] host` set, Agency has two worlds: the local session and the sky harness (`remote-<session>` on the same tmux server). Click the badge at the bottom left or press `Prefix+k` to switch; it reads `♁ earth` locally and `☁  sky` in the sky harness. Each world keeps its own windows.
+With `[cloud] host` set, Agency has two worlds: the local session and the sky harness (`remote-<session>` on the same tmux server). Click the badge at the bottom left or press `Prefix+k` to switch; it reads `♁ earth` locally and `☁ sky` in the sky harness. Each world keeps its own windows.
 
 Agency mirrors every pane on the host's `agency serve` into the sky harness and keeps one SSH link open to the host's `agency cloud watch`, so panes, windows, groups, and labels created or changed there appear within a second. A dropped link reconnects with backoff; `agency sync-cloud` syncs by hand. Each sky harness pane is a viewer: an SSH attachment to one remote window that reconnects after a dropped link and exits when the remote pane is gone. The remote server keeps one agent per window, has no prefix or status bar, and sizes each window to the client that typed last. Wheel scroll uses the remote scrollback.
 

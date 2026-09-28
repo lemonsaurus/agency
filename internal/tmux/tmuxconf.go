@@ -237,7 +237,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("set -g status-interval 5\n")
 	fmt.Fprintf(&b, "set -g status-style bg=%s,fg=%s\n", cfg.Theme.StatusBG, cfg.Theme.StatusFG)
 	// No leading space: the terminal's window padding takes the badge color.
-	fmt.Fprintf(&b, "set -g status-left \"#{?#{==:#{session_name},%s},#[bg=#fab387#,fg=#1e1e2e#,bold]☁  sky  ,#[bg=#a6e3a1#,fg=#1e1e2e#,bold]♁ earth  }#[default] \"\n", cfg.Session.RemoteName())
+	fmt.Fprintf(&b, "set -g status-left \"#{?#{==:#{session_name},%s},#[bg=#fab387#,fg=#1e1e2e#,bold]☁ sky  ,#[bg=#a6e3a1#,fg=#1e1e2e#,bold]♁ earth  }#[default] \"\n", cfg.Session.RemoteName())
 	b.WriteString("set -g status-left-length 30\n")
 	b.WriteString("set -g status-right \"#{pane_count} panes | %H:%M \"\n")
 	b.WriteString("set -g status-right-length 50\n\n")
