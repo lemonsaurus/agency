@@ -924,7 +924,7 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			continue
 		}
 		if pane.CloudWindow != "" {
-			m.adoptViewer(pane)
+			m.adoptViewer(ctx, pane)
 			continue
 		}
 

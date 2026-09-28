@@ -60,6 +60,19 @@ func TestCloudViewerMirrorsFolderAndTaskLabel(t *testing.T) {
 	}
 }
 
+func TestAdoptedViewerRestartsOnDaemonBinary(t *testing.T) {
+	mock := &testMock{listOutput: "1\tcloud-harness\t%1\t0\tssh\t/tmp\t1\t200\t\t\t\t\t\t@1\t@9\tTask\n" +
+		"1\tcloud-harness\t%2\t1\tpi\t/tmp\t0\t201\t\t\t\t\t\t@1\t\t"}
+	mgr := newTestManager(mock)
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := mock.findCalls("respawn-pane")
+	if len(calls) != 1 || strings.Join(calls[0], " ") != "respawn-pane -t %1 -k "+viewerCommand("@9") {
+		t.Fatalf("respawn calls = %v", calls)
+	}
+}
+
 type mockCloud struct {
 	windows    []cloud.Window
 	calls      [][]string

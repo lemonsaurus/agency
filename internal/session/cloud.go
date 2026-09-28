@@ -279,8 +279,10 @@ func (m *Manager) mirrorViewer(ctx context.Context, paneID string, remote tmux.P
 }
 
 // adoptViewer re-tracks a viewer pane after a daemon restart. Its label and
-// color are already in pane options.
-func (m *Manager) adoptViewer(pane tmux.PaneInfo) {
+// color are already in pane options. The viewer restarts on the daemon's
+// binary, so an installed update replaces old reconnect loops.
+func (m *Manager) adoptViewer(ctx context.Context, pane tmux.PaneInfo) {
+	_ = m.tmux.RespawnPane(ctx, pane.ID, viewerCommand(pane.CloudWindow))
 	agentType := m.registry.DetectType(pane.Command)
 	m.panes[pane.ID] = &TrackedPane{
 		PaneID:     pane.ID,
@@ -299,11 +301,7 @@ func (m *Manager) adoptViewer(pane tmux.PaneInfo) {
 // spawnViewer opens a remote-world pane that attaches to one remote window.
 // The pane has no local role: nothing inside it may call the local daemon.
 func (m *Manager) spawnViewer(ctx context.Context, window cloud.Window, agentType string) string {
-	bin, err := os.Executable()
-	if err != nil {
-		bin = "agency"
-	}
-	command := fmt.Sprintf("%s cloud-view %s", bin, window.ID)
+	command := viewerCommand(window.ID)
 	group := cloud.Group(window.Pane)
 	paneID, err := m.openViewer(ctx, group, command)
 	if err != nil || paneID == "" {
@@ -329,4 +327,12 @@ func (m *Manager) spawnViewer(ctx context.Context, window cloud.Window, agentTyp
 		m.poller.Track(paneID, agentType)
 	}
 	return paneID
+}
+
+func viewerCommand(windowID string) string {
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "agency"
+	}
+	return fmt.Sprintf("%s cloud-view %s", bin, windowID)
 }
