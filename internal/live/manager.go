@@ -16,7 +16,7 @@ import (
 )
 
 // Manager is the box side of Carla's voice: it creates Live sessions for the phone, attaches the
-// sideband, and keeps the dispatcher, Discord relay and memory alive between sessions.
+// sideband, and keeps the dispatcher, Discord relay, reminders and memory alive between sessions.
 type Manager struct {
 	box        Box
 	key        string
@@ -26,6 +26,7 @@ type Manager struct {
 	recall     *Recall
 	dispatcher *Dispatcher
 	discord    *Discord
+	reminders  *Reminders
 	client     *http.Client
 	API        string
 
@@ -39,6 +40,11 @@ type Manager struct {
 func NewManager(box Box, key string, persona func() (string, error), promptDir, memoryPath string) *Manager {
 	m := &Manager{box: box, key: key, persona: persona, prompts: promptDir, memory: OpenMemory(memoryPath), recall: &Recall{}, client: &http.Client{Timeout: 120 * time.Second}, API: "https://api.openai.com"}
 	m.discord = NewDiscord(m.Emit)
+	remindersPath := ""
+	if memoryPath != "" {
+		remindersPath = filepath.Join(filepath.Dir(memoryPath), "reminders.json")
+	}
+	m.reminders = OpenReminders(remindersPath, m.Emit)
 	m.dispatcher = NewDispatcher(box, m.discord, m.Emit)
 	m.dispatcher.Diary = filepath.Join(filepath.Dir(memoryPath), "activity.jsonl")
 	return m
@@ -47,6 +53,7 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 type startRequest struct {
 	Voice  string `json:"voice"`
 	Accent string `json:"accent"`
+	Zone   string `json:"zone"`
 	SDP    string `json:"sdp"`
 }
 
@@ -63,13 +70,15 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 	if err != nil {
 		return "", err
 	}
+	m.reminders.SetZone(request.Zone)
+	zone := m.reminders.Zone()
 	config := map[string]any{
 		"model":        "gpt-live-1",
 		"instructions": live,
 		"audio":        map[string]any{"output": map[string]any{"voice": request.Voice}},
 		"delegation":   map[string]any{"type": "client"},
 	}
-	if seed := m.memory.Seed(time.Now()); len(seed) > 0 {
+	if seed := m.memory.Seed(time.Now().In(zone)); len(seed) > 0 {
 		config["input"] = seed
 	}
 	body, _ := json.Marshal(map[string]any{"session": config, "transport": map[string]any{"type": "webrtc", "sdp": request.SDP}})
@@ -85,11 +94,14 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 	if json.Unmarshal(reply, &answer) != nil || answer.Session.ID == "" {
 		return "", fmt.Errorf("invalid live session reply")
 	}
-	if err := m.attach(answer.Session.ID, backend); err != nil {
+	if err := m.attach(answer.Session.ID, backend, zone); err != nil {
 		return "", err
 	}
 	return string(reply), nil
 }
+
+// SetPush lets reminders wake the phone through FCM.
+func (m *Manager) SetPush(p *Pusher) { m.reminders.Push = p }
 
 func (m *Manager) instructions(accent string) (string, string, error) {
 	persona, err := m.persona()
@@ -111,7 +123,7 @@ func (m *Manager) instructions(accent string) (string, string, error) {
 	return persona + "\n\n" + strings.TrimSpace(string(live)) + spoken, persona + "\n\n# Voice backend\n\n" + strings.TrimSpace(string(backend)), nil
 }
 
-func (m *Manager) attach(id string, instructions string) error {
+func (m *Manager) attach(id string, instructions string, zone *time.Location) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	url := strings.Replace(m.API, "http", "ws", 1) + "/v1/live/sessions/" + id + "/attach"
@@ -122,6 +134,7 @@ func (m *Manager) attach(id string, instructions string) error {
 	conn.SetReadLimit(8 << 20)
 	backend := &Backend{Client: m.client, URL: m.API + "/v1/responses", Key: m.key, Model: "gpt-5.6-terra", Instructions: instructions, Tools: m.call}
 	session := NewSession(id, wsConn{conn}, m.memory, m.recall, backend, m.state)
+	session.Zone = zone
 	m.mu.Lock()
 	previous := m.session
 	m.session = session
@@ -151,7 +164,7 @@ func (m *Manager) Emit(update Update) {
 	m.mu.Lock()
 	session := m.session
 	if session == nil && update.Spoken {
-		update.Content = "(From " + time.Now().Format("15:04") + ", while the call was off) " + update.Content
+		update.Content = "(From " + time.Now().In(m.reminders.Zone()).Format("15:04") + ", while the call was off) " + update.Content
 		m.pending = append(m.pending, update)
 		if len(m.pending) > 20 {
 			m.pending = m.pending[1:]
@@ -183,13 +196,19 @@ func (m *Manager) state() string {
 	return b.String()
 }
 
-// call routes conversation control to the phone and everything else to the dispatcher.
+// call routes conversation control and reminders to the phone and everything else to the dispatcher.
 func (m *Manager) call(ctx context.Context, name, arguments string) (any, error) {
-	if name != "conversation" {
+	if name != "conversation" && name != "remind" {
 		return m.dispatcher.Call(ctx, name, arguments)
 	}
 	var args toolArgs
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil || args.State != "off" {
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments")
+	}
+	if name == "remind" {
+		return m.reminders.Add(args.At, args.Text, time.Now().In(m.reminders.Zone()))
+	}
+	if args.State != "off" {
 		return nil, fmt.Errorf("state must be off")
 	}
 	m.mu.Lock()
@@ -198,7 +217,8 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 	return "The phone will go " + args.State + " after your next sentence. Say a short goodbye.", nil
 }
 
-// Status is what the phone polls: what to show on the orb, Discord replies it must send, and
+// Status is what the phone polls: what to show on the orb, Discord replies it must send, reminders
+// it must schedule, and
 // whether the backend asked to turn the conversation off. The phone
 // request is handed over once.
 type Status struct {
@@ -208,6 +228,7 @@ type Status struct {
 	Tickets   []Ticket       `json:"tickets"`
 	Pending   int            `json:"pending"`
 	Replies   []DiscordReply `json:"replies"`
+	Reminders []Reminder     `json:"reminders"`
 }
 
 func (m *Manager) Status() Status {
@@ -220,7 +241,7 @@ func (m *Manager) Status() Status {
 	phone := m.phone
 	m.phone = ""
 	m.mu.Unlock()
-	status := Status{Session: id, Phone: phone, Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending()}
+	status := Status{Session: id, Phone: phone, Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending(), Reminders: m.reminders.Pending(time.Now())}
 	if status.Narrating == nil {
 		status.Narrating = []string{}
 	}
@@ -236,6 +257,9 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		Op       string           `json:"op"`
 		Voice    string           `json:"voice"`
 		Accent   string           `json:"accent"`
+		Zone     string           `json:"zone"`
+		Token    string           `json:"token"`
+		When     string           `json:"when"`
 		SDP      string           `json:"sdp"`
 		Text     string           `json:"text"`
 		Messages []DiscordMessage `json:"messages"`
@@ -247,7 +271,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	}
 	switch request.Op {
 	case "start":
-		return m.Start(ctx, startRequest{Voice: request.Voice, Accent: request.Accent, SDP: request.SDP})
+		return m.Start(ctx, startRequest{Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP})
 	case "status":
 		data, _ := json.Marshal(m.Status())
 		return string(data), nil
@@ -270,6 +294,27 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	case "discord-done":
 		m.discord.Done(request.ID, request.Error)
 		return "ok", nil
+	case "reminder-done":
+		m.reminders.Done(request.ID, request.Error)
+		return "ok", nil
+	case "reminders":
+		data, _ := json.Marshal(m.reminders.Pending(time.Now()))
+		return string(data), nil
+	case "push-token":
+		// The phone reports in on every app start: its push address and the zone it is in.
+		m.reminders.SetToken(request.Token)
+		m.reminders.SetZone(request.Zone)
+		return "ok", nil
+	case "remind":
+		now := time.Now().In(m.reminders.Zone())
+		if request.When == "" && request.Text == "" {
+			return "It is " + clock(now) + ". Usage: agency remind <+20m|YYYY-MM-DDTHH:MM> <text>", nil
+		}
+		result, err := m.reminders.Add(request.When, request.Text, now)
+		if err != nil {
+			return "", err
+		}
+		return result["result"].(string), nil
 	case "close":
 		m.mu.Lock()
 		session := m.session

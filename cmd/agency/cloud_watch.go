@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -11,12 +12,15 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/live"
+	"github.com/lemonsaurus/agency/internal/notify"
 	"github.com/lemonsaurus/agency/internal/session"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
 // runCloudWatch runs on the host: it prints a line whenever the panes a sky
-// harness mirrors change, and exits when the SSH client closes stdin.
+// harness mirrors change, and a "reminder {json}" line when a reminder comes
+// due while the link is up. It exits when the SSH client closes stdin.
 func runCloudWatch(cfg *config.Config) {
 	tc := tmux.NewClient(cfg.Session.Name, "")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -25,7 +29,16 @@ func runCloudWatch(cfg *config.Config) {
 		cancel()
 	}()
 	last := ""
+	since := time.Now()
 	for {
+		now := time.Now()
+		for _, reminder := range live.DueReminders(remindersPath(), since, now) {
+			payload, _ := json.Marshal(reminder)
+			if _, err := fmt.Printf("reminder %s\n", payload); err != nil {
+				return
+			}
+		}
+		since = now
 		if panes, err := tc.ListPanes(ctx); err == nil {
 			if signature := watchSignature(panes, cfg.Session.Name); signature != last {
 				last = signature
@@ -84,7 +97,7 @@ func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
 	delay := time.Second
 	for {
 		started := time.Now()
-		err := remote.Watch(ctx, trigger)
+		err := remote.Watch(ctx, trigger, func(payload string) { showReminder(ctx, payload) })
 		if ctx.Err() != nil {
 			return
 		}
@@ -98,5 +111,16 @@ func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
 		case <-time.After(delay):
 		}
 		delay = min(delay*2, time.Minute)
+	}
+}
+
+// showReminder puts a reminder from the host on this desktop.
+func showReminder(ctx context.Context, payload string) {
+	var reminder live.Reminder
+	if json.Unmarshal([]byte(payload), &reminder) != nil {
+		return
+	}
+	if err := notify.Show(ctx, "Reminder", reminder.Text); err != nil {
+		log.Printf("reminder: notify: %v", err)
 	}
 }

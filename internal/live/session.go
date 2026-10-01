@@ -27,7 +27,8 @@ type Session struct {
 	backend *Backend
 	state   func() string
 	started time.Time
-	last    time.Time // when Lemon last spoke before this call
+	last    time.Time      // when Lemon last spoke before this call
+	Zone    *time.Location // Lemon's, from the phone
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -40,7 +41,7 @@ type Session struct {
 
 func NewSession(id string, conn Conn, memory *Memory, recall *Recall, backend *Backend, state func() string) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{ID: id, conn: conn, memory: memory, recall: recall, backend: backend, state: state, started: time.Now(), last: memory.Last(), ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
+	return &Session{ID: id, conn: conn, memory: memory, recall: recall, backend: backend, state: state, started: time.Now(), last: memory.Last(), Zone: time.Local, ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
 }
 
 // Run reads sideband events until the session closes.
@@ -102,8 +103,8 @@ func (s *Session) Run() {
 func (s *Session) delegate(id string) {
 	// The delegation can arrive before the last transcript fragments; let them land.
 	time.Sleep(400 * time.Millisecond)
-	now := time.Now()
-	note := "It is " + now.Format("Monday 15:04") + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
+	now := time.Now().In(s.Zone)
+	note := "It is " + clock(now) + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
 	if !fresh(s.started, s.last) && !s.recall.Checked(s.started) {
 		note += " Check the live state with your tools before reporting progress or what a session is doing."
 	}

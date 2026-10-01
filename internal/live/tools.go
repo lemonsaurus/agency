@@ -56,6 +56,7 @@ var Schema = json.RawMessage(`[
 {"type":"function","name":"tickets","description":"What the dispatcher is doing: queued, running and finished instructions to sessions.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"discord_recent","description":"Recent Discord messages the phone was notified about: id, sender, place, text, and whether a reply can still be sent.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"conversation","description":"Turn the phone's voice conversation off when Lemon is done, wants quiet, or asks to pause or turn off. The phone stops listening until he taps it on again. Takes effect after your next sentence, so say a short goodbye.","parameters":{"type":"object","properties":{"state":{"type":"string","enum":["off"]}},"required":["state"],"additionalProperties":false}},
+{"type":"function","name":"remind","description":"Set a one-off reminder that pops up as a notification on Lemon's phone. at is the local date and time in the zone of the clock note, as YYYY-MM-DDTHH:MM; work out relative times like 'in 20 minutes' or 'tomorrow at 9' from that clock. text is what to remind him of, in his words. Never automatically retry.","parameters":{"type":"object","properties":{"at":{"type":"string"},"text":{"type":"string"}},"required":["at","text"],"additionalProperties":false}},
 {"type":"function","name":"discord_reply","description":"Send Lemon's dictated reply to a Discord message by id, through Discord's own notification on the phone. Only after Lemon has said the exact wording. Never automatically retry.","parameters":{"type":"object","properties":{"id":{"type":"integer"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}}
 ]`)
 
@@ -67,6 +68,7 @@ type toolArgs struct {
 	Label       string `json:"label"`
 	ID          int    `json:"id"`
 	State       string `json:"state"`
+	At          string `json:"at"`
 }
 
 // Call runs one tool and returns its JSON result. Every call returns within a few seconds.

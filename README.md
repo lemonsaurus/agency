@@ -254,6 +254,12 @@ The cloud pane's right-click menu has **Destroy** to terminate the remote agent 
 
 From a viewer, the spawn keys and palette create the agent on the host in that pane's directory, `Prefix+x` kills the remote agent, `Prefix+r` reconnects the view, and `Prefix+P` approves the remote worker. The pane menu has a separate Close View. On the host, requests from outside every pane carry human authority: only your SSH key reaches it, and agents live in panes.
 
+## Reminders
+
+`agency remind <when> <text>` files a one-off reminder on the sky host, from earth (over the SSH link) or from sky. `<when>` is `+20m` (a Go duration from now) or `YYYY-MM-DDTHH:MM` in Lemon's zone; the zone is the one the phone last reported, since the host runs UTC. With no arguments it prints the time there. Carla's voice `remind` tool writes to the same store.
+
+The host keeps reminders, the zone and the phone's push token in `~/.agents/run/agency/reminders.json`. Saving a reminder sends the phone a data-only FCM message (service-account key at `~/.config/agency/fcm-service-account.json`); the phone fetches the reminder over SSH and sets its own alarm. Each earth daemon's `agency cloud watch` link also prints `reminder {json}` when one comes due, and the daemon shows a critical `notify-send` notification on Linux or a Windows reminder toast through `powershell.exe` on WSL. A desktop fires only what comes due while its link is up; nothing catches up.
+
 When agency launches it starts a unix socket server at `/tmp/agency-{session}.sock` and exports `AGENCY_SOCKET` into every pane's environment.
 
 The `agency-spawn` script (installed to `~/.local/bin/`) is a tiny wrapper agents can call:

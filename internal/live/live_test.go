@@ -2,8 +2,14 @@ package live
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -547,6 +553,94 @@ func TestConversationTool(t *testing.T) {
 	}
 	if got := m.Status().Phone; got != "" {
 		t.Fatalf("phone not consumed: %q", got)
+	}
+}
+
+func TestRemindersInLemonsZone(t *testing.T) {
+	oslo, err := time.LoadLocation("Europe/Oslo")
+	if err != nil {
+		t.Skip("no tzdata")
+	}
+	var said []Update
+	path := filepath.Join(t.TempDir(), "reminders.json")
+	r := OpenReminders(path, func(u Update) { said = append(said, u) })
+	r.SetZone("Europe/Oslo")
+	if r.Zone().String() != "Europe/Oslo" {
+		t.Fatalf("zone=%v", r.Zone())
+	}
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, oslo)
+	for _, bad := range []string{"2026-10-01T13:00", "3pm", "+0s", "+soon"} {
+		if _, err := r.Add(bad, "call Lara", now); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+	result, err := r.Add("2026-10-01T15:00", "call Lara", now)
+	if err != nil || !strings.Contains(fmt.Sprint(result), "Thursday 1 October, 15:00 CEST") {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+	if _, err := r.Add("+20m", "stretch", now); err != nil {
+		t.Fatal(err)
+	}
+	pending := r.Pending(now)
+	if len(pending) != 2 || pending[0].At != time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC).UnixMilli() || pending[1].At != now.Add(20*time.Minute).UnixMilli() {
+		t.Fatalf("pending=%+v", pending)
+	}
+	r.Done(pending[0].ID, "Notifications are off for Carla on the phone.")
+	if got := r.Pending(now); len(got) != 1 || got[0].Text != "stretch" || len(said) != 1 || !said[0].Spoken || !strings.Contains(said[0].Content, "Notifications are off") {
+		t.Fatalf("pending=%v said=%+v", got, said)
+	}
+	// The phone's ack keeps the reminder for desktops; a restart keeps it too.
+	due := DueReminders(path, now.Add(59*time.Minute), now.Add(61*time.Minute))
+	if len(due) != 1 || due[0].Text != "call Lara" || len(DueReminders(path, now.Add(61*time.Minute), now.Add(2*time.Hour))) != 0 {
+		t.Fatalf("due=%+v", due)
+	}
+	reopened := OpenReminders(path, nil)
+	if reopened.Zone().String() != "Europe/Oslo" || len(reopened.Pending(now)) != 1 {
+		t.Fatalf("reopened zone=%v pending=%v", reopened.Zone(), reopened.Pending(now))
+	}
+	if got := clock(now); got != "Thursday 1 October 2026, 14:00 CEST" {
+		t.Fatalf("clock=%q", got)
+	}
+}
+
+func TestPusherWakesThePhone(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	var sent []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/token":
+			req.ParseForm()
+			if len(strings.Split(req.Form.Get("assertion"), ".")) != 3 {
+				t.Errorf("assertion=%q", req.Form.Get("assertion"))
+			}
+			fmt.Fprint(w, `{"access_token":"at","expires_in":3600}`)
+		case "/v1/projects/proj/messages:send":
+			body, _ := io.ReadAll(req.Body)
+			sent = append(sent, req.Header.Get("Authorization")+" "+string(body))
+			if strings.Contains(string(body), "stale") {
+				http.Error(w, `{"error":{"status":"UNREGISTERED"}}`, http.StatusNotFound)
+			}
+		}
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "key.json")
+	account, _ := json.Marshal(map[string]string{"project_id": "proj", "client_email": "a@proj.iam", "token_uri": server.URL + "/token",
+		"private_key": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))})
+	os.WriteFile(file, account, 0o600)
+	pusher, err := NewPusher(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pusher.API = server.URL
+	if err := pusher.Send("tok"); err != nil || len(sent) != 1 || !strings.HasPrefix(sent[0], "Bearer at ") || !strings.Contains(sent[0], `"sync":"reminders"`) || !strings.Contains(sent[0], `"priority":"HIGH"`) {
+		t.Fatalf("err=%v sent=%v", err, sent)
+	}
+	if err := pusher.Send("stale"); !errors.Is(err, ErrTokenGone) {
+		t.Fatalf("stale err=%v", err)
 	}
 }
 

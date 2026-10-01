@@ -150,7 +150,7 @@ func away(started, last time.Time) string {
 // says how long Lemon was away.
 func (m *Memory) Seed(now time.Time) []map[string]any {
 	last := m.Last()
-	note := "It is " + now.Format("Monday 15:04") + ". " + away(now, last)
+	note := "It is " + clock(now) + ". " + away(now, last)
 	if !fresh(now, last) {
 		note += " Delegate a check of the live state before telling him anything about progress or what a session is doing. Open the way a coworker does after a break, pick the old thread back up only if he does, and never recap it unprompted."
 	}
@@ -194,6 +194,9 @@ func span(d time.Duration) string {
 }
 
 func ago(d time.Duration) string { return span(d) + " ago" }
+
+// clock is the date and time in Lemon's zone, as the models read it.
+func clock(now time.Time) string { return now.Format("Monday 2 January 2006, 15:04 MST") }
 
 func seedMessage(role, text string) map[string]any {
 	kind := "input_text"

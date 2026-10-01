@@ -144,9 +144,9 @@ func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote 
 }
 
 // Watch calls changed for every change notice from the host's `agency cloud
-// watch` until the link drops or ctx ends. The open stdin pipe keeps the
-// remote side alive.
-func (c *Client) Watch(ctx context.Context, changed func()) error {
+// watch` and reminder for every "reminder {json}" line, until the link drops
+// or ctx ends. The open stdin pipe keeps the remote side alive.
+func (c *Client) Watch(ctx context.Context, changed func(), reminder func(payload string)) error {
 	if err := c.ensureMaster(ctx); err != nil {
 		return err
 	}
@@ -167,6 +167,10 @@ func (c *Client) Watch(ctx context.Context, changed func()) error {
 	}
 	lines := bufio.NewScanner(stdout)
 	for lines.Scan() {
+		if payload, ok := strings.CutPrefix(lines.Text(), "reminder "); ok {
+			reminder(payload)
+			continue
+		}
 		changed()
 	}
 	if err := cmd.Wait(); err != nil {

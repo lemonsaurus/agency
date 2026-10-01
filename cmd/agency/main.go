@@ -43,6 +43,8 @@ func main() {
 		runServe()
 	case "cloud":
 		runCloud(os.Args[2:])
+	case "remind":
+		runRemind(os.Args[2:])
 	case "cloud-view":
 		runCloudView(os.Args[2:])
 	case "sync-cloud":
@@ -134,8 +136,9 @@ Usage:
   agency cloud file <absolute-path>  Print file metadata and base64 (up to 5 MiB)
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud watch                Print a line whenever the headless panes change (used over SSH)
-  agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, sdp}; prints the answer JSON
-  agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|close
+  agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, zone, sdp}; prints the answer JSON
+  agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|close
+  agency remind [<+20m|YYYY-MM-DDTHH:MM> <text>]  One-off reminder for the phone and connected desktops, in Lemon's zone; no arguments print the time there
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
   agency world <client> <session>   Switch a client between local and the sky harness (tmux keybinding)
   agency new-window <session> <name> [dir]  Open a named shell window in that session's world
@@ -289,6 +292,9 @@ func runCloud(args []string) {
 		return
 	case "live":
 		runLive(cfg.Session.Name, args[1:])
+		return
+	case "remind":
+		runLive(cfg.Session.Name, append([]string{"remind"}, args[1:]...))
 		return
 	case "watch":
 		runCloudWatch(cfg)

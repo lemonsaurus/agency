@@ -6,10 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
@@ -119,9 +122,36 @@ func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.
 		key = ""
 	}
 	agentsDir := filepath.Join(home, ".agents")
-	return live.NewManager(&liveBox{tc: tc, mgr: mgr, socket: socket, home: home}, key,
+	manager := live.NewManager(&liveBox{tc: tc, mgr: mgr, socket: socket, home: home}, key,
 		func() (string, error) { return persona(agentsDir) },
 		filepath.Join(agentsDir, "voice"), filepath.Join(agentsDir, "run", "agency", "voice-memory.jsonl"))
+	if pusher, err := live.NewPusher(filepath.Join(home, ".config", "agency", "fcm-service-account.json")); err == nil {
+		manager.SetPush(pusher)
+	} else if !os.IsNotExist(err) {
+		log.Printf("reminders: push disabled: %v", err)
+	}
+	return manager
+}
+
+// remindersPath is the store the live manager writes, next to the voice memory.
+func remindersPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".agents", "run", "agency", "reminders.json")
+}
+
+// runRemind files a one-off reminder on the sky host: directly on the host, forwarded over SSH on earth.
+func runRemind(args []string) {
+	cfg := loadConfig()
+	if cfg.Cloud.Host == "" {
+		runLive(cfg.Session.Name, append([]string{"remind"}, args...))
+		return
+	}
+	out, err := (&cloud.Client{Host: cfg.Cloud.Host}).Run(context.Background(), 40*time.Second, append([]string{"remind"}, args...)...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	fmt.Print(out)
 }
 
 // runActivity prints the voice backend's activity tool result, for Pi and anyone else on the box.
@@ -141,7 +171,7 @@ func runActivity(cfg *config.Config) {
 // runLive relays one voice request from the phone to the daemon.
 func runLive(sessionName string, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|close")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|close")
 		os.Exit(1)
 	}
 	request := map[string]any{"op": args[0]}
@@ -165,9 +195,9 @@ func runLive(sessionName string, args []string) {
 			os.Exit(1)
 		}
 		request["text"] = args[1]
-	case "discord-done":
+	case "discord-done", "reminder-done":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: agency cloud live discord-done <id> [error]")
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live "+args[0]+" <id> [error]")
 			os.Exit(1)
 		}
 		var id int
@@ -176,7 +206,21 @@ func runLive(sessionName string, args []string) {
 		if len(args) > 2 {
 			request["error"] = args[2]
 		}
-	case "status", "close":
+	case "push-token":
+		if len(args) != 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live push-token <token> <zone>")
+			os.Exit(1)
+		}
+		request["token"], request["zone"] = args[1], args[2]
+	case "remind":
+		if len(args) == 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency remind <+20m|YYYY-MM-DDTHH:MM> <text>")
+			os.Exit(1)
+		}
+		if len(args) > 2 {
+			request["when"], request["text"] = args[1], strings.Join(args[2:], " ")
+		}
+	case "status", "close", "reminders":
 	default:
 		fmt.Fprintln(os.Stderr, "Unknown live op:", args[0])
 		os.Exit(1)
