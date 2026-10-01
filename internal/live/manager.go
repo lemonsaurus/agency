@@ -23,6 +23,7 @@ type Manager struct {
 	persona    func() (string, error)
 	prompts    string
 	memory     *Memory
+	recall     *Recall
 	dispatcher *Dispatcher
 	discord    *Discord
 	client     *http.Client
@@ -36,7 +37,7 @@ type Manager struct {
 }
 
 func NewManager(box Box, key string, persona func() (string, error), promptDir, memoryPath string) *Manager {
-	m := &Manager{box: box, key: key, persona: persona, prompts: promptDir, memory: OpenMemory(memoryPath), client: &http.Client{Timeout: 120 * time.Second}, API: "https://api.openai.com"}
+	m := &Manager{box: box, key: key, persona: persona, prompts: promptDir, memory: OpenMemory(memoryPath), recall: &Recall{}, client: &http.Client{Timeout: 120 * time.Second}, API: "https://api.openai.com"}
 	m.discord = NewDiscord(m.Emit)
 	m.dispatcher = NewDispatcher(box, m.discord, m.Emit)
 	m.dispatcher.Diary = filepath.Join(filepath.Dir(memoryPath), "activity.jsonl")
@@ -120,7 +121,7 @@ func (m *Manager) attach(id string, instructions string) error {
 	}
 	conn.SetReadLimit(8 << 20)
 	backend := &Backend{Client: m.client, URL: m.API + "/v1/responses", Key: m.key, Model: "gpt-5.6-terra", Instructions: instructions, Tools: m.call}
-	session := NewSession(id, wsConn{conn}, m.memory, backend, m.state)
+	session := NewSession(id, wsConn{conn}, m.memory, m.recall, backend, m.state)
 	m.mu.Lock()
 	previous := m.session
 	m.session = session
@@ -146,6 +147,7 @@ func (m *Manager) attach(id string, instructions string) error {
 
 // Emit routes an update to the live session, or holds spoken ones for the next session.
 func (m *Manager) Emit(update Update) {
+	m.recall.Note(update.Content, time.Now())
 	m.mu.Lock()
 	session := m.session
 	if session == nil && update.Spoken {

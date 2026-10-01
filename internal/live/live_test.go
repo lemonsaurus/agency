@@ -250,8 +250,16 @@ func TestBackendToolLoop(t *testing.T) {
 		var body struct {
 			Input []json.RawMessage `json:"input"`
 			Store bool              `json:"store"`
+			Text  struct {
+				Format struct {
+					Type string `json:"type"`
+				} `json:"format"`
+			} `json:"text"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		if body.Text.Format.Type != "json_schema" {
+			t.Errorf("format=%q", body.Text.Format.Type)
+		}
 		rounds++
 		if rounds == 1 {
 			fmt.Fprint(w, `{"output":[{"type":"reasoning","id":"rs_1","summary":[]},{"type":"function_call","call_id":"c1","name":"tickets","arguments":"{}"}]}`)
@@ -260,16 +268,19 @@ func TestBackendToolLoop(t *testing.T) {
 		if len(body.Input) < 4 || !strings.Contains(string(body.Input[len(body.Input)-1]), "function_call_output") {
 			t.Errorf("continuation input=%s", body.Input)
 		}
-		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"Nothing running."}]}]}`)
+		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Nothing running.\",\"details\":\"No tickets.\"}"}]}]}`)
 	}))
 	defer server.Close()
 	b := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(_ context.Context, name, _ string) (any, error) {
 		calls = append(calls, name)
 		return map[string]any{"tickets": []Ticket{}}, nil
 	}}
-	answer, err := b.Answer(context.Background(), []map[string]any{seedMessage("user", "anything running?")})
-	if err != nil || answer != "Nothing running." || fmt.Sprint(calls) != "[tickets]" {
-		t.Fatalf("answer=%q err=%v calls=%v", answer, err, calls)
+	reply, err := b.Answer(context.Background(), []map[string]any{seedMessage("user", "anything running?")})
+	if err != nil || reply.Say != "Nothing running." || reply.Details != "No tickets." || fmt.Sprint(calls) != "[tickets]" {
+		t.Fatalf("reply=%+v err=%v calls=%v", reply, err, calls)
+	}
+	if len(reply.Fetched) != 1 || reply.Fetched[0].Tool != "tickets" || reply.Fetched[0].Result != `{"tickets":[]}` {
+		t.Fatalf("fetched=%+v", reply.Fetched)
 	}
 }
 
@@ -320,14 +331,14 @@ func TestSessionDelegatesAndRemembers(t *testing.T) {
 			texts[1] != "user: (30 minutes ago) how is quill" || texts[2] != "developer: (This call starts here.)" || texts[3] != "user: ask quill for status" {
 			t.Errorf("input=%q", texts)
 		}
-		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"Quill is queued."}]}]}`)
+		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill is queued.\",\"details\":\"\"}"}]}]}`)
 	}))
 	defer server.Close()
 	conn := &fakeConn{events: make(chan []byte, 8)}
 	memory := OpenMemory("")
 	memory.Add("user", "how is quill", time.Now().Add(-30*time.Minute))
 	backend := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(context.Context, string, string) (any, error) { return nil, nil }}
-	session := NewSession("ls_1", conn, memory, backend, func() string { return "Dispatcher state." })
+	session := NewSession("ls_1", conn, memory, &Recall{}, backend, func() string { return "Dispatcher state." })
 	go session.Run()
 	conn.events <- []byte(`{"type":"session.input_transcript.delta","delta":"ask quill for status"}`)
 	conn.events <- []byte(`{"type":"session.delegation.created","delegation":{"id":"item_1","target":"client"}}`)
@@ -350,6 +361,97 @@ func TestSessionDelegatesAndRemembers(t *testing.T) {
 	}
 	if recent := memory.Recent(time.Now(), 5); len(recent) != 2 || recent[1].Text != "ask quill for status" {
 		t.Fatalf("memory=%v", recent)
+	}
+}
+
+func TestSessionRecallsFollowUps(t *testing.T) {
+	var inputs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []json.RawMessage `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		last := string(body.Input[len(body.Input)-1])
+		inputs = append(inputs, string(body.Input[0])+"\n"+string(body.Input[1]))
+		switch {
+		case len(inputs) == 1:
+			fmt.Fprint(w, `{"output":[{"type":"function_call","call_id":"c1","name":"activity","arguments":"{}"}]}`)
+		case strings.Contains(last, "function_call_output"):
+			fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Two sessions are moving.\",\"details\":\"Quill: working on the dark theme. Brood: idle.\"}"}]}]}`)
+		default:
+			fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill's on the dark theme.\",\"details\":\"\"}"}]}]}`)
+		}
+	}))
+	defer server.Close()
+	conn := &fakeConn{events: make(chan []byte, 8)}
+	memory := OpenMemory("")
+	memory.Add("user", "morning", time.Now().Add(-30*time.Minute))
+	recall := &Recall{}
+	backend := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(context.Context, string, string) (any, error) {
+		return map[string]any{"sessions": "Quill working, Brood idle"}, nil
+	}}
+	session := NewSession("ls_1", conn, memory, recall, backend, func() string { return "Dispatcher state." })
+	go session.Run()
+	wait := func(n int) {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			conn.mu.Lock()
+			got := len(conn.wrote)
+			conn.mu.Unlock()
+			if got >= n {
+				return
+			}
+		}
+		t.Fatalf("waited for %d writes", n)
+	}
+	conn.events <- []byte(`{"type":"session.input_transcript.delta","delta":"how are things going"}`)
+	conn.events <- []byte(`{"type":"session.delegation.created","delegation":{"id":"item_1","target":"client"}}`)
+	wait(2)
+	recall.Note("Brood says: shipped.", time.Now())
+	conn.events <- []byte(`{"type":"session.input_transcript.delta","delta":"what is quill on"}`)
+	conn.events <- []byte(`{"type":"session.delegation.created","delegation":{"id":"item_2","target":"client"}}`)
+	wait(3)
+	conn.events <- []byte(`{"type":"session.closed","reason":"close_requested"}`)
+	<-session.Closed
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.wrote[0]["type"] != "session.thinking.append" || !strings.Contains(conn.wrote[0]["content"].(string), "Quill: working on the dark theme.") ||
+		conn.wrote[1]["type"] != "session.commentary.append" || conn.wrote[1]["content"] != "Two sessions are moving." || conn.wrote[1]["delegation_id"] != "item_1" ||
+		conn.wrote[2]["content"] != "Quill's on the dark theme." || conn.wrote[2]["delegation_id"] != "item_2" {
+		t.Fatalf("wrote=%v", conn.wrote)
+	}
+	if len(inputs) != 3 || !strings.Contains(inputs[0], "Check the live state") {
+		t.Fatalf("first input=%q", inputs)
+	}
+	followUp := inputs[2]
+	for _, want := range []string{"Recent results, oldest first.", "Lemon said: how are things going", `activity returned: {\"sessions\":\"Quill working, Brood idle\"}`, "You answered: Two sessions are moving.", "Details: Quill: working on the dark theme.", "Updates since:", "Brood says: shipped."} {
+		if !strings.Contains(followUp, want) {
+			t.Errorf("follow-up input lacks %q: %s", want, followUp)
+		}
+	}
+	if strings.Contains(followUp, "Check the live state") {
+		t.Errorf("follow-up still told to check live state: %s", followUp)
+	}
+}
+
+func TestRecallKeepsRecentExchanges(t *testing.T) {
+	recall := &Recall{}
+	now := time.Now()
+	if recall.Brief(now) != "" || recall.Checked(now.Add(-time.Hour)) {
+		t.Fatal("empty recall reported results")
+	}
+	recall.Note("before any exchange", now.Add(-10*time.Minute))
+	for i := 0; i < 7; i++ {
+		recall.Add(Exchange{At: now.Add(time.Duration(i-7) * time.Minute), Asked: fmt.Sprintf("question %d", i), Fetched: []Fetched{{"list_panes", "{}", strings.Repeat("x", 3000)}}, Said: fmt.Sprintf("answer %d", i)})
+	}
+	brief := recall.Brief(now)
+	if strings.Contains(brief, "question 0") || strings.Contains(brief, "question 1") || !strings.Contains(brief, "5 minutes ago, Lemon said: question 2") || !strings.Contains(brief, "question 6") {
+		t.Fatalf("kept the wrong exchanges: %s", brief)
+	}
+	if strings.Index(brief, "question 2") > strings.Index(brief, "question 6") || strings.Contains(brief, strings.Repeat("x", recallResult+1)) || strings.Contains(brief, "before any exchange") {
+		t.Fatalf("order, truncation or old updates wrong: %s", brief)
+	}
+	if !recall.Checked(now.Add(-2*time.Minute)) || recall.Checked(now) {
+		t.Fatal("Checked ignores exchange times")
 	}
 }
 

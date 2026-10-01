@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +23,7 @@ type Session struct {
 	ID      string
 	conn    Conn
 	memory  *Memory
+	recall  *Recall
 	backend *Backend
 	state   func() string
 	started time.Time
@@ -36,9 +38,9 @@ type Session struct {
 	Closed chan struct{}
 }
 
-func NewSession(id string, conn Conn, memory *Memory, backend *Backend, state func() string) *Session {
+func NewSession(id string, conn Conn, memory *Memory, recall *Recall, backend *Backend, state func() string) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{ID: id, conn: conn, memory: memory, backend: backend, state: state, started: time.Now(), last: memory.Last(), ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
+	return &Session{ID: id, conn: conn, memory: memory, recall: recall, backend: backend, state: state, started: time.Now(), last: memory.Last(), ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
 }
 
 // Run reads sideband events until the session closes.
@@ -95,18 +97,26 @@ func (s *Session) Run() {
 	}
 }
 
-// delegate answers one request from the voice model with the recent transcript as context.
+// delegate answers one request from the voice model with the recent transcript and recent results
+// as context, and leaves the facts behind the answer in the conversation for follow-ups.
 func (s *Session) delegate(id string) {
 	// The delegation can arrive before the last transcript fragments; let them land.
 	time.Sleep(400 * time.Millisecond)
 	now := time.Now()
 	note := "It is " + now.Format("Monday 15:04") + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
-	if !fresh(s.started, s.last) {
+	if !fresh(s.started, s.last) && !s.recall.Checked(s.started) {
 		note += " Check the live state with your tools before reporting progress or what a session is doing."
 	}
 	input := []map[string]any{seedMessage("developer", note+" "+s.state())}
+	if brief := s.recall.Brief(now); brief != "" {
+		input = append(input, seedMessage("developer", brief))
+	}
 	marked := false
+	asked := ""
 	for _, message := range s.memory.Recent(now, 24) {
+		if message.Role == "user" {
+			asked = message.Text
+		}
 		if !marked && message.At >= s.started.UnixMilli() {
 			input = append(input, seedMessage("developer", "(This call starts here.)"))
 			marked = true
@@ -118,11 +128,16 @@ func (s *Session) delegate(id string) {
 		input = append(input, seedMessage(message.Role, text))
 	}
 	input = append(input, seedMessage("developer", "Handle the latest thing Lemon asked for in the transcript above. Reply with what to say to him now."))
-	text, err := s.backend.Answer(s.ctx, input)
+	reply, err := s.backend.Answer(s.ctx, input)
 	if err != nil {
-		text = "Something went wrong on the box: " + err.Error()
+		s.append("session.commentary.append", id, "Something went wrong on the box: "+err.Error())
+		return
 	}
-	s.append("session.commentary.append", id, truncate(text, updateLimit))
+	s.recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Said: reply.Say, Details: reply.Details})
+	if strings.TrimSpace(reply.Details) != "" {
+		s.append("session.thinking.append", "", "Facts behind your next answer, as of "+now.Format("15:04")+", for follow-ups; not to read out: "+reply.Details)
+	}
+	s.append("session.commentary.append", id, reply.Say)
 }
 
 // Emit sends an update into the conversation.

@@ -22,6 +22,19 @@ type Backend struct {
 	Tools        func(ctx context.Context, name, arguments string) (any, error)
 }
 
+// Reply is the backend's answer: what to say now, the facts behind it for follow-ups, and what its
+// tools returned.
+type Reply struct {
+	Say     string    `json:"say"`
+	Details string    `json:"details"`
+	Fetched []Fetched `json:"-"`
+}
+
+var replyFormat = json.RawMessage(`{"type":"json_schema","name":"reply","strict":true,"schema":{"type":"object","properties":{
+"say":{"type":"string","description":"What Carla says to Lemon now: one short spoken-style paragraph, no IDs."},
+"details":{"type":"string","description":"The facts behind it that Lemon may follow up on, as compact notes: session task names, states, counts, times, findings. Not read aloud. Under 1000 characters; empty when there are none."}},
+"required":["say","details"],"additionalProperties":false}}`)
+
 type responseOutput struct {
 	Type      string          `json:"type"`
 	CallID    string          `json:"call_id"`
@@ -36,17 +49,18 @@ type responsePart struct {
 	Text string `json:"text"`
 }
 
-// Answer runs the loop and returns the spoken-style result.
-func (b *Backend) Answer(ctx context.Context, input []map[string]any) (string, error) {
+// Answer runs the loop and returns the reply with every tool call it made.
+func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, error) {
 	items := make([]json.RawMessage, 0, len(input)+8)
 	for _, item := range input {
 		data, _ := json.Marshal(item)
 		items = append(items, data)
 	}
+	var fetched []Fetched
 	for round := 0; round < 8; round++ {
 		outputs, err := b.request(ctx, items)
 		if err != nil {
-			return "", err
+			return Reply{}, err
 		}
 		var text []string
 		calls := 0
@@ -68,18 +82,21 @@ func (b *Backend) Answer(ctx context.Context, input []map[string]any) (string, e
 				} else {
 					payload, _ = json.Marshal(result)
 				}
+				fetched = append(fetched, Fetched{output.Name, output.Arguments, string(payload)})
 				item, _ := json.Marshal(map[string]any{"type": "function_call_output", "call_id": output.CallID, "output": string(payload)})
 				items = append(items, item)
 			}
 		}
 		if calls == 0 {
-			if len(text) == 0 {
-				return "", fmt.Errorf("the backend produced no answer")
+			var reply Reply
+			if json.Unmarshal([]byte(strings.Join(text, "")), &reply) != nil || strings.TrimSpace(reply.Say) == "" {
+				return Reply{}, fmt.Errorf("the backend produced no answer")
 			}
-			return strings.Join(text, "\n"), nil
+			reply.Fetched = fetched
+			return reply, nil
 		}
 	}
-	return "", fmt.Errorf("the backend kept calling tools without answering")
+	return Reply{}, fmt.Errorf("the backend kept calling tools without answering")
 }
 
 func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]responseOutput, error) {
@@ -88,6 +105,7 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]respo
 		"instructions":        b.Instructions,
 		"input":               input,
 		"tools":               Schema,
+		"text":                map[string]any{"format": replyFormat},
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,
 		"reasoning":           map[string]string{"effort": "low"},
