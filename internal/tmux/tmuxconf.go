@@ -196,7 +196,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 		" '#{?#{>:#{session_windows},1},,-}⇠  Swap Left' 'l' { swap-window -t :-1 }"+
 		" '#{?#{>:#{session_windows},1},,-}⇢  Swap Right' 'R' { swap-window -t :+1 }"+
 		" '#{?%s,,☁  Send to Sky}' 's' { confirm-before -p 'Send #W to the sky? (y/n)' { run-shell -b \"%s send-to-sky '#{client_name}' '#{window_id}'\" } }"+
-		" '#[fg=#f38ba8,bold]×  #{?%s,Destroy,Kill}#[default]' 'X' { if -F '%s' { confirm-before -p 'Destroy every remote agent in #W? (y/n)' { run-shell -b \"%s cloud-act kill-window '#{window_name}'\" } } { confirm-before -p 'Kill window #W? (y/n)' kill-window } }"+
+		" '#[fg=#f38ba8,bold]×  #{?%s,Destroy,Kill}#[default]' 'X' { if -F '%s' { run-shell -b \"%s cloud-act kill-window '#{window_name}'\" } { kill-window } }"+
 		" '' %s\n", newWindow, rename, inRemote, agencyBin, inRemote, inRemote, agencyBin, worldItem)
 	b.WriteString("\n")
 
