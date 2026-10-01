@@ -1,4 +1,4 @@
-// Package clipboard reads an image off the local system clipboard.
+// Package clipboard reads images and file lists from the local system clipboard.
 package clipboard
 
 import (

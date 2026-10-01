@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/clipboard"
@@ -342,7 +344,7 @@ func runSyncCloud(quiet bool) {
 //	cloud-act kill <window>                            kill the remote agent
 //	cloud-act kill-window <name>                       kill every remote agent in that group
 //	cloud-act approve <window>                         approve its pending promotion
-//	cloud-act paste-image <window>                     upload the clipboard image and type its path
+//	cloud-act paste-image <window> [local-pane]        upload clipboard files or an image without Enter
 func runCloudAct(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: agency cloud-act spawn|new-window|kill|kill-window|approve|paste-image <window-id> ...")
@@ -351,13 +353,46 @@ func runCloudAct(args []string) {
 	cfg := loadConfig()
 	remote := &cloud.Client{Host: cfg.Cloud.Host}
 	ctx := context.Background()
+	localPane := os.Getenv("TMUX_PANE")
+	if args[0] == "paste-image" && len(args) > 2 {
+		localPane = args[2]
+	}
+	tc := tmux.NewClient(cfg.Session.Name, "")
+	uploadStatus := func(text, color, detail string) {
+		if args[0] != "paste-image" || localPane == "" {
+			return
+		}
+		uiCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		clean := func(s string) string {
+			return strings.Map(func(r rune) rune {
+				if unicode.IsControl(r) {
+					return ' '
+				}
+				return r
+			}, s)
+		}
+		label := []rune(clean(text))
+		if len(label) > 80 {
+			label = append(label[:77], '.', '.', '.')
+		}
+		_ = tc.SetPaneOption(uiCtx, localPane, "@agency_upload_color", color)
+		_ = tc.SetPaneOption(uiCtx, localPane, "@agency_upload", strings.ReplaceAll(string(label), "#", "##"))
+		if detail != "" {
+			_ = tc.DisplayMessage(uiCtx, localPane, strings.ReplaceAll(clean(detail), "#", "##"))
+		}
+	}
+	fail := func(err error) {
+		uploadStatus("✗ "+err.Error(), "#f38ba8", err.Error())
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	var target cloud.Window
 	found := false
 	if args[0] != "new-window" && args[0] != "kill-window" {
 		windows, err := remote.Windows(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			fail(err)
 		}
 		for i := range windows {
 			if windows[i].ID == args[1] {
@@ -367,8 +402,7 @@ func runCloudAct(args []string) {
 	}
 	// The placeholder has no remote agent; spawns from it start in the remote home.
 	if !found && args[0] != "new-window" && args[0] != "kill-window" && args[0] != "spawn" {
-		fmt.Fprintf(os.Stderr, "Error: remote window %s not found\n", args[1])
-		os.Exit(1)
+		fail(fmt.Errorf("remote window %s not found", args[1]))
 	}
 	var remoteArgs []string
 	switch args[0] {
@@ -390,21 +424,35 @@ func runCloudAct(args []string) {
 	case "approve":
 		remoteArgs = []string{"approve-promotion", target.Pane.ID}
 	case "paste-image":
-		localPath, err := clipboard.ReadImage(ctx)
+		ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		uploadStatus("↑ Reading clipboard", "#fab387", "")
+		var image string
+		paths, err := clipboard.ReadFiles(ctx)
+		if errors.Is(err, clipboard.ErrNoFiles) {
+			image, err = clipboard.ReadImage(ctx)
+			if errors.Is(err, clipboard.ErrNoImage) {
+				err = fmt.Errorf("clipboard has no copied files or image; Ctrl+Shift+V pastes text")
+			}
+			if err == nil {
+				paths = []string{image}
+			}
+		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			fail(err)
 		}
-		defer os.Remove(localPath)
-		remotePath := "/tmp/" + filepath.Base(localPath)
-		if err := remote.Copy(ctx, 30*time.Second, localPath, remotePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		err = remote.UploadAttachments(ctx, target.Pane.ID, paths, func(p cloud.AttachmentProgress) {
+			text := fmt.Sprintf("↑ Uploading %d/%d (%.1f MiB)", p.Index, p.Total, float64(p.Size)/(1024*1024))
+			uploadStatus(text, "#fab387", text+" "+p.Name)
+		})
+		if image != "" {
+			_ = os.Remove(image)
 		}
-		if _, err := remote.Run(ctx, 20*time.Second, "send", "--no-enter", target.Pane.ID, remotePath+" "); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		if err != nil {
+			fail(err)
 		}
+		text := fmt.Sprintf("✓ Uploaded %d", len(paths))
+		uploadStatus(text, "#a6e3a1", text+"; paths inserted without submitting")
 		return
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown cloud action %s\n", args[0])

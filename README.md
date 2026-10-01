@@ -254,6 +254,10 @@ The cloud pane's right-click menu has **Destroy** to terminate the remote agent 
 
 From a viewer, the spawn keys and palette create the agent on the host in that pane's directory, `Prefix+x` kills the remote agent, `Prefix+r` reconnects the view, and `Prefix+P` approves the remote worker. The pane menu has a separate Close View. On the host, requests from outside every pane carry human authority: only your SSH key reaches it, and agents live in panes.
 
+In Sky, `Ctrl+V` uploads files copied in the local file manager or an image from the clipboard. Select files, copy them, then press `Ctrl+V` in the target pane. Agency inserts their remote paths into the current prompt without pressing Enter. `Ctrl+Shift+V` remains the terminal's text paste; dragging files still pastes local paths. The pane menu has **Paste Files / Image** for the same action.
+
+Uploads use a unique `/tmp/agency-attachments.*` directory on Sky, with directory mode 0700 and file mode 0600. Agency accepts regular files and rejects directories, symlinks, and nonlocal file URIs. Spaces and punctuation become underscores in remote filenames. A cut selection is copied without changing the source files or clipboard. Agency inserts paths only after the whole batch uploads. The local pane border keeps upload progress, completion, or failure visible. Failed batches get cleaned up; completed attachments remain until Sky cleans `/tmp`.
+
 ## Reminders
 
 `agency remind <when> <text>` files a one-off reminder on the sky host, from earth (over the SSH link) or from sky. `<when>` is `+20m` (a Go duration from now) or `YYYY-MM-DDTHH:MM` in Lemon's zone; the zone is the one the phone last reported, since the host runs UTC. With no arguments it prints the time there. Carla's voice `remind` tool writes to the same store.

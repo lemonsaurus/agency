@@ -37,7 +37,7 @@ const PaneContextMenu = `display-menu -t = -x M -y M -T '#[align=centre,fg=#{@ag
 	` '' '' ''` +
 	` '#[fg=#f38ba8,bold]×  #{?@agency_cloud,Destroy,Kill}#[default]' 'X' {if -F '#{@agency_cloud}' {run-shell "agency cloud-act kill #{@agency_cloud}"} {kill-pane}}` +
 	` '#{?@agency_cloud,⨯  Close View,}' 'V' {kill-pane}` +
-	` '#{?@agency_cloud,📋  Paste Image,}' 'p' {run-shell "agency cloud-act paste-image #{@agency_cloud}"}` +
+	` '#{?@agency_cloud,📋  Paste Files / Image,}' 'p' {run-shell -b "agency cloud-act paste-image #{@agency_cloud} #{pane_id}"}` +
 	` '#[fg=#f9e2af]↻  Respawn#[default]' 'R' {respawn-pane -k}` +
 	` '#{?pane_marked,◇  Unmark,◆  Mark}' 'm' {select-pane -m}` +
 	` '#{?#{>:#{window_panes},1},,-}□  #{?window_zoomed_flag,Unzoom,Zoom}' 'z' {resize-pane -Z}`
@@ -165,9 +165,9 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
 	b.WriteString("unbind -n Home\n")
 	b.WriteString("unbind -n End\n")
-	// Ctrl+V on a cloud viewer uploads the local clipboard image to the box; the
-	// remote agent cannot see this machine's clipboard. Elsewhere it passes through.
-	fmt.Fprintf(&b, "bind -n C-v if -F '#{@agency_cloud}' { run-shell \"%s cloud-act paste-image #{@agency_cloud}\" } { send-keys C-v }\n\n", agencyBin)
+	// Ctrl+V uploads clipboard files or an image from Earth. Text paste stays
+	// with the terminal's Ctrl+Shift+V binding.
+	fmt.Fprintf(&b, "bind -n C-v if -F '#{@agency_cloud}' { run-shell -b \"%s cloud-act paste-image #{@agency_cloud} #{pane_id}\" } { send-keys C-v }\n\n", agencyBin)
 
 	// Keep the pane menu available when a fullscreen application captures mouse input.
 	fmt.Fprintf(&b, "bind -T root MouseDown3Pane %s\n", PaneContextMenu)
@@ -228,7 +228,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// Label format: show @agency_label with colored badge for agency panes,
 	// fall back to the live folder for plain terminal panes.
 	// Note: #, is tmux's escape for a literal comma inside format strings.
-	fmt.Fprintf(&b, "set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{b:pane_current_path} }#{?#{@agency_promotion},#[fg=#f9e2af#,bold] promotion pending: Prefix+%s #[default],}\"\n\n", cfg.Keys.ApprovePromotion)
+	fmt.Fprintf(&b, "set -g pane-border-format \"#{?#{@agency_label},#[bg=#{@agent_color}#,fg=#1e1e2e#,bold] #{@agency_label} #[default] ,#[fg=#585b70] #{b:pane_current_path} }#{?#{@agency_promotion},#[fg=#f9e2af#,bold] promotion pending: Prefix+%s #[default],}#{?#{@agency_upload},#[fg=#{@agency_upload_color}#,bold] #{@agency_upload} #[default],}\"\n\n", cfg.Keys.ApprovePromotion)
 
 	// Status bar.
 	b.WriteString("# Status bar\n")
