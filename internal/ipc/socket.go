@@ -166,7 +166,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if strings.HasPrefix(line, "live:") {
 		requester, err := s.requester(peerPIDForConn(conn))
-		if err != nil || !requester.Human {
+		if (err != nil || !requester.Human) && !reminder(strings.TrimPrefix(line, "live:")) {
 			fmt.Fprintln(conn, "error: voice requests come from Lemon only")
 			return
 		}
@@ -473,4 +473,12 @@ func SendMessageContext(ctx context.Context, socketPath, message string) (string
 		return scanner.Text(), nil
 	}
 	return "", ctx.Err()
+}
+
+// reminder is whether a live request only files a reminder, which agents may do.
+func reminder(payload string) bool {
+	var request struct {
+		Op string `json:"op"`
+	}
+	return json.Unmarshal([]byte(payload), &request) == nil && request.Op == "remind"
 }
