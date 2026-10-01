@@ -140,18 +140,26 @@ func TestMemoryLogAndSeed(t *testing.T) {
 		t.Fatalf("roles=%v", roles)
 	}
 	note := seed[0]["content"].([]map[string]any)[0]["text"].(string)
-	if !strings.Contains(note, "1 minutes ago") || !strings.Contains(note, "carry straight on") {
+	if !strings.Contains(note, "1 minutes ago") || !strings.Contains(note, "carry straight on") || strings.Contains(note, "out of date") {
 		t.Fatalf("note=%q", note)
 	}
 	note = OpenMemory(path).Seed(base.Add(3 * time.Hour))[0]["content"].([]map[string]any)[0]["text"].(string)
-	if !strings.Contains(note, "2 hours ago") || !strings.Contains(note, "Time has passed") {
+	if !strings.Contains(note, "2 hours ago") || !strings.Contains(note, "out of date") || !strings.Contains(note, "Delegate a check of the live state") || strings.Contains(note, "carry straight on") {
 		t.Fatalf("note=%q", note)
 	}
 	if got := seed[1]["content"].([]map[string]any)[0]["text"]; got != "pick a ticket" {
 		t.Fatalf("merged=%q", got)
 	}
-	if old := OpenMemory(path).Seed(base.Add(memoryWindow + time.Hour)); len(old) != 0 {
+	old := OpenMemory(path).Seed(base.Add(memoryWindow + time.Hour))
+	if len(old) != 1 {
 		t.Fatalf("seeded stale history: %v", old)
+	}
+	if note := old[0]["content"].([]map[string]any)[0]["text"].(string); !strings.Contains(note, "3 hours ago") || !strings.Contains(note, "out of date") || strings.Contains(note, "follows") {
+		t.Fatalf("note=%q", note)
+	}
+	empty := OpenMemory("").Seed(base)
+	if note := empty[0]["content"].([]map[string]any)[0]["text"].(string); len(empty) != 1 || !strings.Contains(note, "no earlier voice conversation") || !strings.Contains(note, "out of date") {
+		t.Fatalf("empty=%v", empty)
 	}
 }
 
@@ -296,17 +304,28 @@ func (c *fakeConn) Close() error { return nil }
 func TestSessionDelegatesAndRemembers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Input []map[string]any `json:"input"`
+			Input []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"input"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		if len(body.Input) < 3 || fmt.Sprint(body.Input[1]["role"]) != "user" {
-			t.Errorf("input=%v", body.Input)
+		texts := []string{}
+		for _, item := range body.Input {
+			texts = append(texts, item.Role+": "+item.Content[0].Text)
+		}
+		if len(texts) != 5 || !strings.Contains(texts[0], "You and Lemon last spoke 30 minutes ago.") || !strings.Contains(texts[0], "Check the live state") || !strings.HasSuffix(texts[0], "Dispatcher state.") ||
+			texts[1] != "user: (30 minutes ago) how is quill" || texts[2] != "developer: (This call starts here.)" || texts[3] != "user: ask quill for status" {
+			t.Errorf("input=%q", texts)
 		}
 		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"Quill is queued."}]}]}`)
 	}))
 	defer server.Close()
 	conn := &fakeConn{events: make(chan []byte, 8)}
 	memory := OpenMemory("")
+	memory.Add("user", "how is quill", time.Now().Add(-30*time.Minute))
 	backend := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(context.Context, string, string) (any, error) { return nil, nil }}
 	session := NewSession("ls_1", conn, memory, backend, func() string { return "Dispatcher state." })
 	go session.Run()
@@ -329,7 +348,7 @@ func TestSessionDelegatesAndRemembers(t *testing.T) {
 	if len(conn.wrote) != 1 || conn.wrote[0]["type"] != "session.commentary.append" || conn.wrote[0]["delegation_id"] != "item_1" || conn.wrote[0]["content"] != "Quill is queued." {
 		t.Fatalf("wrote=%v", conn.wrote)
 	}
-	if recent := memory.Recent(time.Now(), 5); len(recent) != 1 || recent[0].Text != "ask quill for status" {
+	if recent := memory.Recent(time.Now(), 5); len(recent) != 2 || recent[1].Text != "ask quill for status" {
 		t.Fatalf("memory=%v", recent)
 	}
 }
@@ -374,7 +393,7 @@ func TestManagerStartAttachesSideband(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, data, err := conn.Read(ctx)
-	if err != nil || !strings.Contains(string(data), "session.commentary.append") || !strings.Contains(string(data), "while you were away") {
+	if err != nil || !strings.Contains(string(data), "session.commentary.append") || !strings.Contains(string(data), ", while the call was off) Quill finished while you were away.") {
 		t.Fatalf("pending update not flushed: %s %v", data, err)
 	}
 	status, _ := m.Handle(context.Background(), `{"op":"status"}`)

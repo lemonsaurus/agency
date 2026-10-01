@@ -149,6 +149,7 @@ func (m *Manager) Emit(update Update) {
 	m.mu.Lock()
 	session := m.session
 	if session == nil && update.Spoken {
+		update.Content = "(From " + time.Now().Format("15:04") + ", while the call was off) " + update.Content
 		m.pending = append(m.pending, update)
 		if len(m.pending) > 20 {
 			m.pending = m.pending[1:]

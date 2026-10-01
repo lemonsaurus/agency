@@ -24,6 +24,8 @@ type Session struct {
 	memory  *Memory
 	backend *Backend
 	state   func() string
+	started time.Time
+	last    time.Time // when Lemon last spoke before this call
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -36,7 +38,7 @@ type Session struct {
 
 func NewSession(id string, conn Conn, memory *Memory, backend *Backend, state func() string) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{ID: id, conn: conn, memory: memory, backend: backend, state: state, ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
+	return &Session{ID: id, conn: conn, memory: memory, backend: backend, state: state, started: time.Now(), last: memory.Last(), ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
 }
 
 // Run reads sideband events until the session closes.
@@ -98,8 +100,17 @@ func (s *Session) delegate(id string) {
 	// The delegation can arrive before the last transcript fragments; let them land.
 	time.Sleep(400 * time.Millisecond)
 	now := time.Now()
-	input := []map[string]any{seedMessage("developer", "It is "+now.Format("Monday 15:04")+". "+s.state())}
+	note := "It is " + now.Format("Monday 15:04") + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
+	if !fresh(s.started, s.last) {
+		note += " Check the live state with your tools before reporting progress or what a session is doing."
+	}
+	input := []map[string]any{seedMessage("developer", note+" "+s.state())}
+	marked := false
 	for _, message := range s.memory.Recent(now, 24) {
+		if !marked && message.At >= s.started.UnixMilli() {
+			input = append(input, seedMessage("developer", "(This call starts here.)"))
+			marked = true
+		}
 		text := message.Text
 		if since := now.Sub(time.UnixMilli(message.At)); since >= pauseGap {
 			text = "(" + ago(since) + ") " + text

@@ -119,8 +119,41 @@ func (m *Memory) Recent(now time.Time, limit int) []memoryMessage {
 	return recent
 }
 
-// Seed is the startup history for GPT-Live: the previous conversation behind a developer note.
+// Last is when anything was last said, zero when nothing was.
+func (m *Memory) Last() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.messages) == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(m.messages[len(m.messages)-1].At)
+}
+
+// fresh is whether a call starting at started continues the conversation that ended at last.
+func fresh(started, last time.Time) bool {
+	return !last.IsZero() && started.Sub(last) < resumeGap
+}
+
+// away says how long Lemon was gone before a call starting at started, and how far to trust older context.
+func away(started, last time.Time) string {
+	if fresh(started, last) {
+		return "You and Lemon last spoke " + ago(started.Sub(last)) + ", so carry straight on."
+	}
+	gap := "You have no earlier voice conversation with Lemon on record."
+	if !last.IsZero() {
+		gap = "You and Lemon last spoke " + ago(started.Sub(last)) + "."
+	}
+	return gap + " Treat everything from before this call as possibly out of date: the earlier conversation, dispatcher tickets, and session updates queued while the call was off. Work may have finished, failed or moved on since."
+}
+
+// Seed is the startup history for GPT-Live: the previous conversation behind a developer note that
+// says how long Lemon was away.
 func (m *Memory) Seed(now time.Time) []map[string]any {
+	last := m.Last()
+	note := "It is " + now.Format("Monday 15:04") + ". " + away(now, last)
+	if !fresh(now, last) {
+		note += " Delegate a check of the live state before telling him anything about progress or what a session is doing. Open the way a coworker does after a break, pick the old thread back up only if he does, and never recap it unprompted."
+	}
 	recent := m.Recent(now, memoryMaxSeed)
 	budget := memorySeedMax
 	start := len(recent)
@@ -129,17 +162,13 @@ func (m *Memory) Seed(now time.Time) []map[string]any {
 		start--
 	}
 	kept := recent[start:]
-	if len(kept) == 0 {
-		return nil
-	}
-	last := time.UnixMilli(kept[len(kept)-1].At)
-	note := "It is " + now.Format("Monday 15:04") + ". This is what you and Lemon said in your previous voice conversation; the last thing was " + ago(now.Sub(last)) + ". "
-	if now.Sub(last) < resumeGap {
-		note += "You were just talking, so carry straight on."
-	} else {
-		note += "Time has passed since then: he may be somewhere else doing something else, so open the way a coworker does after a break and do not continue the old thread as though it were seconds ago. Pick it back up only if he does, and never recap it unprompted."
+	if len(kept) > 0 {
+		note += " Your previous voice conversation follows."
 	}
 	seed := []map[string]any{seedMessage("developer", note)}
+	if len(kept) == 0 {
+		return seed
+	}
 	previous := time.UnixMilli(kept[0].At)
 	for _, message := range kept {
 		at := time.UnixMilli(message.At)
