@@ -589,6 +589,10 @@ func TestRemindersInLemonsZone(t *testing.T) {
 	if got := r.Pending(now); len(got) != 1 || got[0].Text != "stretch" || len(said) != 1 || !said[0].Spoken || !strings.Contains(said[0].Content, "Notifications are off") {
 		t.Fatalf("pending=%v said=%+v", got, said)
 	}
+	// A reinstalled phone gets armed reminders back; past ones stay behind.
+	if got := r.Upcoming(now); len(got) != 2 || len(r.Upcoming(now.Add(30*time.Minute))) != 1 {
+		t.Fatalf("upcoming=%+v", got)
+	}
 	// The phone's ack keeps the reminder for desktops; a restart keeps it too.
 	due := DueReminders(path, now.Add(59*time.Minute), now.Add(61*time.Minute))
 	if len(due) != 1 || due[0].Text != "call Lara" || len(DueReminders(path, now.Add(61*time.Minute), now.Add(2*time.Hour))) != 0 {

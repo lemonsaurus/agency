@@ -159,6 +159,19 @@ func (r *Reminders) Pending(now time.Time) []Reminder {
 	return pending
 }
 
+// Upcoming is every reminder still ahead, armed or not, so a reinstalled phone can arm them again.
+func (r *Reminders) Upcoming(now time.Time) []Reminder {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	upcoming := []Reminder{}
+	for _, reminder := range r.data.Reminders {
+		if reminder.At > now.UnixMilli() {
+			upcoming = append(upcoming, reminder)
+		}
+	}
+	return upcoming
+}
+
 // Done records the phone's outcome; a failure is said out loud.
 func (r *Reminders) Done(id int, errText string) {
 	r.mu.Lock()

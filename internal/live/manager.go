@@ -298,7 +298,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		m.reminders.Done(request.ID, request.Error)
 		return "ok", nil
 	case "reminders":
-		data, _ := json.Marshal(m.reminders.Pending(time.Now()))
+		data, _ := json.Marshal(m.reminders.Upcoming(time.Now()))
 		return string(data), nil
 	case "push-token":
 		// The phone reports in on every app start: its push address and the zone it is in.
