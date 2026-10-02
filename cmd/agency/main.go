@@ -1298,12 +1298,15 @@ func runList(args []string) {
 		os.Exit(1)
 	}
 	// On the headless server a pane's window is its group, as the sky harness
-	// shows it, and viewer sessions repeat every pane.
-	if os.Getenv("AGENCY_TMUX_SOCKET") != "" {
+	// shows it, and viewer sessions repeat every pane. Each pane's own tmux
+	// window is an implementation detail, so its id and index stay unlisted.
+	headless := os.Getenv("AGENCY_TMUX_SOCKET") != ""
+	if headless {
 		own := panes[:0]
 		for _, pane := range panes {
 			if pane.Session == cfg.Session.Name {
 				pane.WindowName = cloud.Group(pane)
+				pane.WindowID = ""
 				own = append(own, pane)
 			}
 		}
@@ -1313,11 +1316,16 @@ func runList(args []string) {
 	if listAsJSON(args) {
 		type bridgedPane struct {
 			tmux.PaneInfo
-			Bridge bool `json:"bridge"`
+			WindowIndex *int `json:"windowIndex,omitempty"`
+			Bridge      bool `json:"bridge"`
 		}
 		listed := make([]bridgedPane, 0, len(panes))
 		for _, pane := range panes {
-			listed = append(listed, bridgedPane{pane, bridgeListening(socketPath(cfg.Session.Name), pane.ID)})
+			entry := bridgedPane{PaneInfo: pane, Bridge: bridgeListening(socketPath(cfg.Session.Name), pane.ID)}
+			if !headless {
+				entry.WindowIndex = &pane.WindowIndex
+			}
+			listed = append(listed, entry)
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(listed); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)

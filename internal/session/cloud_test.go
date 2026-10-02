@@ -216,6 +216,27 @@ func TestBoxSpawnJoinsRequesterGroup(t *testing.T) {
 	t.Fatalf("set-option calls = %v", mock.findCalls("set-option"))
 }
 
+func TestBoxRejectsTmuxIdsAsWindowNames(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{listOutput: "1\tπ pi@a\t%0\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud"}
+	mgr := newTestManager(mock)
+	mgr.WindowPerPane = true
+	for _, name := range []string{"@1073", "%12", "$3"} {
+		if err := mgr.MovePane(ctx, "%0", name); err == nil {
+			t.Fatalf("moved into %q", name)
+		}
+		if err := mgr.SpawnCommandWindow(ctx, testController, control.RoleManager, name, "pi", "/tmp", "Task"); err == nil {
+			t.Fatalf("spawned into %q", name)
+		}
+	}
+	if calls := mock.findCalls("set-option"); len(calls) != 0 {
+		t.Fatalf("set-option calls = %v", calls)
+	}
+	if err := mgr.MovePane(ctx, "%0", "@reviews"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBoxKillWindowKillsGroup(t *testing.T) {
 	ctx := context.Background()
 	mock := &testMock{listOutput: "1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud\n" +

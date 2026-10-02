@@ -137,6 +137,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	if err := control.ValidateTaskLabel(label, !requester.Human); err != nil {
 		return err
 	}
+	if err := validateWindowName(windowName); err != nil {
+		return err
+	}
 	if err := m.checkSpawnLimit(requester, role); err != nil {
 		return err
 	}
@@ -649,6 +652,9 @@ func (m *Manager) SendText(ctx context.Context, requester control.Requester, pan
 
 // MovePane moves a pane into the named window.
 func (m *Manager) MovePane(ctx context.Context, paneID, windowName string) error {
+	if err := validateWindowName(windowName); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -701,6 +707,20 @@ func (m *Manager) MoveWindow(ctx context.Context, target string, index int) erro
 
 // paneGroup is a pane's group, so a spawn without a window joins the
 // requester's window as it does on earth.
+// validateWindowName rejects tmux ids such as @3 or %12, which would become a
+// new window or group literally named after the id.
+func validateWindowName(name string) error {
+	if len(name) < 2 || !strings.ContainsRune("@%$", rune(name[0])) {
+		return nil
+	}
+	for _, r := range name[1:] {
+		if r < '0' || r > '9' {
+			return nil
+		}
+	}
+	return fmt.Errorf("window %q is a tmux id; use the window's name", name)
+}
+
 func (m *Manager) paneGroup(ctx context.Context, paneID string) string {
 	if paneID == "" {
 		return ""
