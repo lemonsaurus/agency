@@ -133,6 +133,9 @@ agency serve                        Headless daemon on its own tmux server (the 
 agency cloud <command> ...          Run a CLI command against the headless server (over SSH)
 agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's final reply
 agency cloud projects --json         List directories under ~/git/*/*
+agency cloud models                  Every bridged pane's model and the models Pi offers
+agency cloud model <pane> [model]    Read or switch a pane's model: provider/id[:thinking]
+agency cloud spend                   GPT-Live dollars this month (needs OPENAI_ADMIN_KEY)
 agency cloud live start <json>       Create a GPT-Live session the box drives: {voice, accent, sdp}
 agency cloud live status|said|discord|discord-done|close
 agency sync-cloud                   Mirror the cloud host's panes into the sky harness
@@ -302,6 +305,9 @@ agency cloud spawn --role manager --label 'Mobile task' pi ~/git/owner/repo
 agency cloud ask %310 'say hi'
 agency cloud ask --timeout 2m %310 'Explain the current task'
 agency cloud transcript %310 --limit 200
+agency cloud models
+agency cloud model %310 openai-codex/gpt-6.1-sol:high
+agency cloud spend
 agency cloud file /home/lemon/git/owner/repo/README.md
 agency cloud live status
 agency cloud capture %310 200
@@ -309,6 +315,10 @@ agency cloud kill %310
 ```
 
 `list --json` adds `bridge: true` for panes whose Pi bridge socket exists; other panes need `/reload` before `ask` works.
+
+`ask --detach` to a busy pane returns `accepted` at once; the bridge holds it until the turn ends, and `transcript` lists it under `queued`.
+
+The voice backend runs on the ChatGPT plan: `~/.agents/bin/codex-token.mjs` asks Pi for the openai-codex token. Only GPT-Live uses `OPENAI_API_KEY`.
 
 `projects --json` returns `[{"name":"owner/repo","path":"/home/lemon/git/owner/repo"}]`, sorted by owner and directory. It skips hidden directories and symlinks. External human cloud spawns default to managers under an existing controller. Spawns are silent on success; refresh `list --json` to find the new pane. Requests from agent panes keep their existing child-role restrictions.
 
