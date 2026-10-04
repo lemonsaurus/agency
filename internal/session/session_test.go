@@ -402,6 +402,26 @@ func TestReplaceWorkerPreservesAuthorityAtCapacity(t *testing.T) {
 	}
 }
 
+func TestReplaceKeepsGroup(t *testing.T) {
+	mock := &testMock{listOutput: "0\t>_ pi@efficient.tools\t%4\t0\tpi\t/tmp/tools\t1\t104\tcontroller\t\t%4\t\t\t@4\t\tPromo Video\tefficient.tools\tcloud"}
+	mgr := newTestManager(mock)
+	mgr.WindowPerPane = true
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	id, err := mgr.ReplacePane(context.Background(), control.Requester{PaneID: "%4", Role: control.RoleController, RootID: "%4"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "set-option -p -t " + id + " @agency_group efficient.tools"
+	for _, call := range mock.calls {
+		if strings.Join(call, " ") == want {
+			return
+		}
+	}
+	t.Fatalf("successor group not set, calls = %v", mock.calls)
+}
+
 func TestReplaceControllerUpdatesDescendantRoots(t *testing.T) {
 	mock := &testMock{listOutput: "1\tmain\t%0\t0\tpi\t/tmp/root\t1\t100\tcontroller\t\t%0\t\n1\tmain\t%5\t1\tpi\t/tmp/manager\t0\t105\tmanager\t%0\t%0\t"}
 	mgr := newTestManager(mock)

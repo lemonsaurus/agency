@@ -451,6 +451,9 @@ func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, 
 		m.Deaths.Record(deaths.Event{Kind: deaths.KindKilled, Pane: paneID, Label: old.TaskLabel, Role: string(old.Role), Dir: replacementDir, Note: "handoff successor rolled back"})
 		return "", fmt.Errorf("storing replacement task label: %w", err)
 	}
+	if paneInfo.Group != "" {
+		_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_group", paneInfo.Group)
+	}
 	m.Deaths.Record(deaths.Event{Kind: deaths.KindHandoff, Pane: old.PaneID, PID: paneInfo.PID, Label: old.TaskLabel, Role: string(old.Role), Group: paneInfo.Group, Dir: paneInfo.CWD, Successor: paneID})
 	if old.Role == control.RoleController {
 		rootID = paneID
