@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -279,16 +280,16 @@ func TestBackendToolLoop(t *testing.T) {
 		}
 		rounds++
 		if rounds == 1 {
-			fmt.Fprint(w, `{"output":[{"type":"reasoning","id":"rs_1","summary":[]},{"type":"function_call","call_id":"c1","name":"tickets","arguments":"{}"}]}`)
+			respond(w, `[{"type":"reasoning","id":"rs_1","summary":[]},{"type":"function_call","call_id":"c1","name":"tickets","arguments":"{}"}]`)
 			return
 		}
 		if len(body.Input) < 4 || !strings.Contains(string(body.Input[len(body.Input)-1]), "function_call_output") {
 			t.Errorf("continuation input=%s", body.Input)
 		}
-		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Nothing running.\",\"details\":\"No tickets.\"}"}]}]}`)
+		respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Nothing running.\",\"details\":\"No tickets.\"}"}]}]`)
 	}))
 	defer server.Close()
-	b := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(_ context.Context, name, _ string) (any, error) {
+	b := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Tools: func(_ context.Context, name, _ string) (any, error) {
 		calls = append(calls, name)
 		return map[string]any{"tickets": []Ticket{}}, nil
 	}}
@@ -348,13 +349,13 @@ func TestSessionDelegatesAndRemembers(t *testing.T) {
 			texts[1] != "user: (30 minutes ago) how is quill" || texts[2] != "developer: (This call starts here.)" || texts[3] != "user: ask quill for status" {
 			t.Errorf("input=%q", texts)
 		}
-		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill is queued.\",\"details\":\"\"}"}]}]}`)
+		respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill is queued.\",\"details\":\"\"}"}]}]`)
 	}))
 	defer server.Close()
 	conn := &fakeConn{events: make(chan []byte, 8)}
 	memory := OpenMemory("")
 	memory.Add("user", "how is quill", time.Now().Add(-30*time.Minute))
-	backend := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(context.Context, string, string) (any, error) { return nil, nil }}
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Tools: func(context.Context, string, string) (any, error) { return nil, nil }}
 	session := NewSession("ls_1", conn, memory, &Recall{}, backend, func() string { return "Dispatcher state." })
 	go session.Run()
 	conn.events <- []byte(`{"type":"session.input_transcript.delta","delta":"ask quill for status"}`)
@@ -392,11 +393,11 @@ func TestSessionRecallsFollowUps(t *testing.T) {
 		inputs = append(inputs, string(body.Input[0])+"\n"+string(body.Input[1]))
 		switch {
 		case len(inputs) == 1:
-			fmt.Fprint(w, `{"output":[{"type":"function_call","call_id":"c1","name":"activity","arguments":"{}"}]}`)
+			respond(w, `[{"type":"function_call","call_id":"c1","name":"activity","arguments":"{}"}]`)
 		case strings.Contains(last, "function_call_output"):
-			fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Two sessions are moving.\",\"details\":\"Quill: working on the dark theme. Brood: idle.\"}"}]}]}`)
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Two sessions are moving.\",\"details\":\"Quill: working on the dark theme. Brood: idle.\"}"}]}]`)
 		default:
-			fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill's on the dark theme.\",\"details\":\"\"}"}]}]}`)
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Quill's on the dark theme.\",\"details\":\"\"}"}]}]`)
 		}
 	}))
 	defer server.Close()
@@ -404,7 +405,7 @@ func TestSessionRecallsFollowUps(t *testing.T) {
 	memory := OpenMemory("")
 	memory.Add("user", "morning", time.Now().Add(-30*time.Minute))
 	recall := &Recall{}
-	backend := &Backend{Client: server.Client(), URL: server.URL, Key: "k", Model: "m", Tools: func(context.Context, string, string) (any, error) {
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Tools: func(context.Context, string, string) (any, error) {
 		return map[string]any{"sessions": "Quill working, Brood idle"}, nil
 	}}
 	session := NewSession("ls_1", conn, memory, recall, backend, func() string { return "Dispatcher state." })
@@ -714,5 +715,89 @@ func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
 	}
 	if quiet.State != "idle" || quiet.LastAnswer != "all done" || quiet.Project != "q/r" {
 		t.Fatalf("quiet=%+v", quiet)
+	}
+}
+
+func testAuth(context.Context) (string, string, error) { return "tok-123", "acct", nil }
+
+// respond streams output items the way the ChatGPT Responses endpoint does.
+func respond(w http.ResponseWriter, items string) {
+	var parsed []json.RawMessage
+	json.Unmarshal([]byte(items), &parsed)
+	for _, item := range parsed {
+		fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":%s}\n\n", item)
+	}
+	fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n")
+}
+
+func TestBackendStreamsOnTheChatGPTPlan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Stream bool `json:"stream"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if !body.Stream || r.Header.Get("Authorization") != "Bearer tok-123" || r.Header.Get("chatgpt-account-id") != "acct" {
+			t.Errorf("stream=%v headers=%v", body.Stream, r.Header)
+		}
+		switch r.URL.Path {
+		case "/failed":
+			fmt.Fprint(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"usage limit\"}}}\n\n")
+		case "/cut":
+			fmt.Fprint(w, "data: {\"type\":\"response.created\"}\n\n")
+		case "/denied":
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"detail":"bad token tok-123"}`)
+		}
+	}))
+	defer server.Close()
+	for path, want := range map[string]string{"/failed": "backend failed: usage limit", "/cut": "backend stream ended before the response completed",
+		"/denied": "backend returned HTTP 401: bad token [token]"} {
+		b := &Backend{Client: server.Client(), URL: server.URL + path, Auth: testAuth, Model: "m"}
+		if _, err := b.Answer(context.Background(), []map[string]any{seedMessage("user", "hi")}); err == nil || err.Error() != want {
+			t.Errorf("%s: err=%v", path, err)
+		}
+	}
+	b := &Backend{Client: server.Client(), URL: server.URL, Auth: func(context.Context) (string, string, error) { return "", "", fmt.Errorf("no ChatGPT login") }}
+	if _, err := b.Answer(context.Background(), nil); err == nil || err.Error() != "no ChatGPT login" {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexTokenCachesUntilNearExpiry(t *testing.T) {
+	jwt := func(exp time.Time) string {
+		claims, _ := json.Marshal(map[string]any{"exp": exp.Unix(), "https://api.openai.com/auth": map[string]string{"chatgpt_account_id": "acct"}})
+		return "h." + base64.RawURLEncoding.EncodeToString(claims) + ".s"
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "token")
+	calls := filepath.Join(dir, "calls")
+	write := func(token string) {
+		os.WriteFile(script, []byte("#!/bin/sh\necho x >> "+calls+"\nprintf '%s' '"+token+"'\n"), 0o700)
+	}
+	count := func() int { data, _ := os.ReadFile(calls); return strings.Count(string(data), "x") }
+	write(jwt(time.Now().Add(time.Hour)))
+	c := &CodexToken{Command: []string{script}}
+	for range 2 {
+		if token, account, err := c.Get(context.Background()); err != nil || account != "acct" || !strings.HasPrefix(token, "h.") {
+			t.Fatal(token, account, err)
+		}
+	}
+	if count() != 1 {
+		t.Fatalf("ran %d times", count())
+	}
+	write(jwt(time.Now().Add(2 * time.Minute)))
+	c = &CodexToken{Command: []string{script}}
+	c.Get(context.Background())
+	c.Get(context.Background())
+	if count() != 3 {
+		t.Fatalf("a nearly expired token was cached: ran %d times", count())
+	}
+	os.WriteFile(script, []byte("#!/bin/sh\necho 'No ChatGPT login for openai-codex in Pi. Run /login in Pi.' >&2\nexit 1\n"), 0o700)
+	if _, _, err := (&CodexToken{Command: []string{script}}).Get(context.Background()); err == nil || !strings.Contains(err.Error(), "Run /login in Pi") {
+		t.Fatal(err)
+	}
+	write("not-a-jwt")
+	if _, _, err := (&CodexToken{Command: []string{script}}).Get(context.Background()); err == nil || err.Error() != "the ChatGPT token is not a JWT" {
+		t.Fatal(err)
 	}
 }

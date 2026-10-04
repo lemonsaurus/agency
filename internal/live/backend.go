@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,12 +12,13 @@ import (
 	"time"
 )
 
-// Backend answers one delegation with the Responses API, running tools through the dispatcher
-// until the model produces text. Stateless: every round resends the input plus the model's output.
+// Backend answers one delegation with the Responses API on the ChatGPT plan, running tools through
+// the dispatcher until the model produces text. Stateless: every round resends the input plus the
+// model's output.
 type Backend struct {
 	Client       *http.Client
 	URL          string
-	Key          string
+	Auth         func(ctx context.Context) (token, account string, err error)
 	Model        string
 	Instructions string
 	Tools        func(ctx context.Context, name, arguments string) (any, error)
@@ -100,6 +102,10 @@ func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, er
 }
 
 func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]responseOutput, error) {
+	token, account, err := b.Auth(ctx)
+	if err != nil {
+		return nil, err
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model":               b.Model,
 		"instructions":        b.Instructions,
@@ -110,6 +116,7 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]respo
 		"parallel_tool_calls": false,
 		"reasoning":           map[string]string{"effort": "low"},
 		"store":               false,
+		"stream":              true,
 		"include":             []string{"reasoning.encrypted_content"},
 	})
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -118,40 +125,62 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]respo
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+b.Key)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("chatgpt-account-id", account)
+	request.Header.Set("originator", "agency")
+	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("Content-Type", "application/json")
 	response, err := b.Client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("backend request failed")
 	}
 	defer response.Body.Close()
-	reply, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("backend reply unreadable")
-	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
+		reply, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 		var failure struct {
-			Error struct {
+			Detail string `json:"detail"`
+			Error  struct {
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		json.Unmarshal(reply, &failure)
-		return nil, fmt.Errorf("backend returned HTTP %d: %s", response.StatusCode, truncate(strings.ReplaceAll(failure.Error.Message, b.Key, "[key]"), 300))
+		message := failure.Error.Message + failure.Detail
+		return nil, fmt.Errorf("backend returned HTTP %d: %s", response.StatusCode, truncate(strings.ReplaceAll(message, token, "[token]"), 300))
 	}
-	var parsed struct {
-		Output []json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal(reply, &parsed); err != nil {
-		return nil, fmt.Errorf("invalid backend reply")
-	}
-	outputs := make([]responseOutput, 0, len(parsed.Output))
-	for _, raw := range parsed.Output {
-		var output responseOutput
-		if err := json.Unmarshal(raw, &output); err != nil {
+	// The stream's completed event carries no output; the items arrive one by one as output_item.done.
+	var outputs []responseOutput
+	events := bufio.NewScanner(response.Body)
+	events.Buffer(make([]byte, 64<<10), 8<<20)
+	for events.Scan() {
+		data, found := strings.CutPrefix(events.Text(), "data: ")
+		if !found {
 			continue
 		}
-		output.Raw = raw
-		outputs = append(outputs, output)
+		var event struct {
+			Type     string          `json:"type"`
+			Item     json.RawMessage `json:"item"`
+			Message  string          `json:"message"`
+			Response struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		if json.Unmarshal([]byte(data), &event) != nil {
+			continue
+		}
+		switch event.Type {
+		case "response.output_item.done":
+			var output responseOutput
+			if json.Unmarshal(event.Item, &output) == nil {
+				output.Raw = event.Item
+				outputs = append(outputs, output)
+			}
+		case "response.completed":
+			return outputs, nil
+		case "response.failed", "response.incomplete", "error":
+			return nil, fmt.Errorf("backend failed: %s", truncate(event.Message+event.Response.Error.Message, 300))
+		}
 	}
-	return outputs, nil
+	return nil, fmt.Errorf("backend stream ended before the response completed")
 }

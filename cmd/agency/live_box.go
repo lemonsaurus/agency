@@ -125,6 +125,7 @@ func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.
 	manager := live.NewManager(&liveBox{tc: tc, mgr: mgr, socket: socket, home: home}, key,
 		func() (string, error) { return persona(agentsDir) },
 		filepath.Join(agentsDir, "voice"), filepath.Join(agentsDir, "run", "agency", "voice-memory.jsonl"))
+	manager.Codex = &live.CodexToken{Command: []string{filepath.Join(agentsDir, "bin", "codex-token.mjs")}}
 	if pusher, err := live.NewPusher(filepath.Join(home, ".config", "agency", "fcm-service-account.json")); err == nil {
 		manager.SetPush(pusher)
 	} else if !os.IsNotExist(err) {

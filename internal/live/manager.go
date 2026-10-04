@@ -29,6 +29,8 @@ type Manager struct {
 	reminders  *Reminders
 	client     *http.Client
 	API        string
+	// Codex signs the voice backend's requests with Lemon's ChatGPT login.
+	Codex *CodexToken
 
 	mu      sync.Mutex
 	session *Session
@@ -132,7 +134,7 @@ func (m *Manager) attach(id string, instructions string, zone *time.Location) er
 		return fmt.Errorf("sideband attach failed: %v", err)
 	}
 	conn.SetReadLimit(8 << 20)
-	backend := &Backend{Client: m.client, URL: m.API + "/v1/responses", Key: m.key, Model: "gpt-5.6-terra", Instructions: instructions, Tools: m.call}
+	backend := &Backend{Client: m.client, URL: CodexURL, Auth: m.Codex.Get, Model: "gpt-6.1-sol", Instructions: instructions, Tools: m.call}
 	session := NewSession(id, wsConn{conn}, m.memory, m.recall, backend, m.state)
 	session.Zone = zone
 	m.mu.Lock()
