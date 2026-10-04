@@ -67,7 +67,7 @@ func (b *liveBox) Spawn(ctx context.Context, dir, label string) error {
 }
 
 func (b *liveBox) Kill(ctx context.Context, paneID string) error {
-	return b.mgr.KillPane(ctx, paneID)
+	return b.mgr.KillPane(ctx, control.Requester{Role: control.RoleController, Human: true}, paneID)
 }
 
 func (b *liveBox) Send(ctx context.Context, paneID, text string) error {

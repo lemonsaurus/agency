@@ -138,6 +138,7 @@ agency cloud live status|said|discord|discord-done|close
 agency sync-cloud                   Mirror the cloud host's panes into the sky harness
 agency config                       Print resolved config
 agency logs                         Print path to the log file (tail -f it)
+agency log deaths [--since 7d] [--pane %N] [--json] [-f]  Why panes ended
 agency help                         Show help
 ```
 
@@ -475,6 +476,12 @@ This means agency isn't running (`AGENCY_SOCKET` isn't set or the socket server 
 ```bash
 tail -f $(agency logs)
 ```
+
+**A pane disappeared**
+```bash
+agency log deaths --since 24h
+```
+Every pane exit, kill, handoff, and vanish lands in `~/.agents/run/agency/pane-deaths.jsonl` with the pid, exit status or signal, who asked for a kill, and systemd's OOM evidence. [docs/pane-deaths.md](docs/pane-deaths.md) covers the October 2026 overnight deaths and the OOM guard.
 
 ---
 

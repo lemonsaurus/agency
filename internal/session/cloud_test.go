@@ -244,7 +244,7 @@ func TestBoxKillWindowKillsGroup(t *testing.T) {
 		"1\tπ pi@a\t%1\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tview-7"}
 	mgr := newTestManager(mock)
 	mgr.WindowPerPane = true
-	if err := mgr.KillWindow(ctx, "journalia"); err != nil {
+	if err := mgr.KillWindow(ctx, testController, "journalia"); err != nil {
 		t.Fatal(err)
 	}
 	if calls := mock.findCalls("kill-pane"); len(calls) != 1 || calls[0][2] != "%1" {

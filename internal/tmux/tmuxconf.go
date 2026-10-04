@@ -70,8 +70,8 @@ func GenerateConfig(cfg *config.Config, agencyBin string) (string, error) {
 }
 
 // GenerateCloudConfig writes the headless server's tmux.conf and returns its path.
-func GenerateCloudConfig() (string, error) {
-	return writeConf("cloud.conf", buildCloudConf())
+func GenerateCloudConfig(agencyBin string) (string, error) {
+	return writeConf("cloud.conf", buildCloudConf(agencyBin))
 }
 
 func writeConf(name, content string) (string, error) {
@@ -93,7 +93,7 @@ func writeConf(name, content string) (string, error) {
 // buildCloudConf configures the headless server that viewer panes attach to
 // over SSH. The local Agency owns keybindings, borders, and layout, so this
 // server has no prefix and no chrome; each window holds exactly one agent.
-func buildCloudConf() string {
+func buildCloudConf(agencyBin string) string {
 	var b strings.Builder
 	b.WriteString("# Agency cloud.conf — auto-generated, do not edit\n\n")
 	b.WriteString("set -g prefix None\n")
@@ -116,7 +116,18 @@ func buildCloudConf() string {
 	b.WriteString("set -as terminal-features 'tmux*:clipboard'\n")
 	b.WriteString("set -ga terminal-features 'tmux*:hyperlinks'\n")
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
+	b.WriteString(deathHooks(agencyBin))
 	return b.String()
+}
+
+// deathHooks records every pane exit in the death log. Failed panes stay
+// dead until the pane-died hook has read their pid and exit status or signal;
+// the hook then kills them. Clean exits close at once, and tmux reports only
+// their pane id.
+func deathHooks(agencyBin string) string {
+	return "set -g remain-on-exit failed\n" +
+		fmt.Sprintf("set-hook -g pane-died 'run-shell -b \"%s pane-exit died #{q:socket_path} #{hook_pane}\"'\n", agencyBin) +
+		fmt.Sprintf("set-hook -g pane-exited 'run-shell -b \"%s pane-exit exited #{q:socket_path} #{hook_pane}\"'\n", agencyBin)
 }
 
 func buildTmuxConf(cfg *config.Config, agencyBin string) string {
@@ -165,6 +176,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("bind -n C-Enter send-keys -l '\\033[13;5u'\n")
 	b.WriteString("unbind -n Home\n")
 	b.WriteString("unbind -n End\n")
+	b.WriteString(deathHooks(agencyBin))
 	// Ctrl+V uploads clipboard files or an image from Earth. Text paste stays
 	// with the terminal's Ctrl+Shift+V binding.
 	fmt.Fprintf(&b, "bind -n C-v if -F '#{@agency_cloud}' { run-shell -b \"%s cloud-act paste-image #{@agency_cloud} #{pane_id}\" } { send-keys C-v }\n\n", agencyBin)

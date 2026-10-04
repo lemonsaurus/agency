@@ -24,8 +24,8 @@ type Handler interface {
 	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error
 	TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error)
 	InitTaskLabel(ctx context.Context, requester control.Requester, label string) (string, error)
-	KillPane(ctx context.Context, paneID string) error
-	KillWindow(ctx context.Context, windowName string) error
+	KillPane(ctx context.Context, requester control.Requester, paneID string) error
+	KillWindow(ctx context.Context, requester control.Requester, windowName string) error
 	RenameWindow(ctx context.Context, target, name string) error
 	MoveWindow(ctx context.Context, target string, index int) error
 	MovePane(ctx context.Context, paneID, windowName string) error
@@ -335,7 +335,7 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		if !requester.CanKillPane(arg) {
 			return "", fmt.Errorf("worker panes may only kill their own pane")
 		}
-		return "", s.handler.KillPane(s.ctx, arg)
+		return "", s.handler.KillPane(s.ctx, requester, arg)
 	case "kill-window":
 		requester, err := s.requester(pid)
 		if err != nil {
@@ -344,7 +344,7 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		if !requester.CanKillWindow() {
 			return "", fmt.Errorf("worker panes cannot kill windows")
 		}
-		return "", s.handler.KillWindow(s.ctx, arg)
+		return "", s.handler.KillWindow(s.ctx, requester, arg)
 	case "rename-window":
 		var payload renameWindowPayload
 		if err := json.Unmarshal([]byte(arg), &payload); err != nil {

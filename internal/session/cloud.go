@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/cloud"
+	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
@@ -98,6 +99,7 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 			continue
 		}
 		m.dropViewer(ctx, viewer.ID)
+		m.recordKill(control.Requester{}, viewer.ID, viewer, "viewer of a closed sky window")
 		_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, viewer.WindowID)
 		removed++
 	}
@@ -187,7 +189,7 @@ func (m *Manager) renameRemoteWindow(ctx context.Context, target, name string) (
 }
 
 // killGroup kills every agent in group name.
-func (m *Manager) killGroup(ctx context.Context, name string) error {
+func (m *Manager) killGroup(ctx context.Context, requester control.Requester, name string) error {
 	panes, err := m.tmux.ListPanes(ctx)
 	if err != nil {
 		return err
@@ -200,6 +202,7 @@ func (m *Manager) killGroup(ctx context.Context, name string) error {
 		if err := m.tmux.KillPane(ctx, pane.ID); err != nil {
 			return err
 		}
+		m.recordKill(requester, pane.ID, pane, "kill --window "+name)
 		if m.poller != nil {
 			m.poller.Untrack(pane.ID)
 		}

@@ -140,14 +140,14 @@ func (m *mockHandler) InitTaskLabel(_ context.Context, requester control.Request
 	return m.labelValue, nil
 }
 
-func (m *mockHandler) KillPane(_ context.Context, paneID string) error {
+func (m *mockHandler) KillPane(_ context.Context, _ control.Requester, paneID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.kills = append(m.kills, paneID)
 	return nil
 }
 
-func (m *mockHandler) KillWindow(_ context.Context, windowName string) error {
+func (m *mockHandler) KillWindow(_ context.Context, _ control.Requester, windowName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.windowKills = append(m.windowKills, windowName)

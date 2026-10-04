@@ -14,6 +14,7 @@ import (
 	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
+	"github.com/lemonsaurus/agency/internal/deaths"
 	"github.com/lemonsaurus/agency/internal/layout"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
@@ -79,6 +80,8 @@ type Manager struct {
 	// belong to no pane. On the cloud box every agent lives in a pane and only
 	// Lemon's SSH key reaches the host, so outside means Lemon.
 	OutsideIsHuman bool
+	// Deaths records kills, handoffs, and vanished panes; nil records nothing.
+	Deaths *deaths.Log
 }
 
 // NewManager creates a session manager.
@@ -183,6 +186,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	}
 	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", label); err != nil {
 		_ = m.tmux.KillPane(ctx, paneID)
+		m.Deaths.Record(deaths.Event{Kind: deaths.KindKilled, Pane: paneID, Label: label, Role: string(role), Dir: dir, Command: command, Note: "spawn rolled back"})
 		return fmt.Errorf("storing task label: %w", err)
 	}
 	if group != "" {
@@ -392,7 +396,7 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 		if tracked == nil || tracked.Role == "" {
 			return control.Requester{}, fmt.Errorf("pane %s has no agency role", pane.ID)
 		}
-		return control.Requester{PaneID: pane.ID, Role: tracked.Role, RootID: tracked.RootID}, nil
+		return control.Requester{PaneID: pane.ID, Role: tracked.Role, RootID: tracked.RootID, PID: pid}, nil
 	}
 	// Keybindings, hooks, and popups run as children of the tmux server
 	// rather than of any pane. They act for the human: controller authority,
@@ -402,10 +406,10 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 		for _, pane := range panes {
 			tracked := m.panes[pane.ID]
 			if tracked != nil && tracked.Role == control.RoleController {
-				return control.Requester{PaneID: pane.ID, Role: control.RoleController, RootID: tracked.RootID, Human: true}, nil
+				return control.Requester{PaneID: pane.ID, Role: control.RoleController, RootID: tracked.RootID, Human: true, PID: pid}, nil
 			}
 		}
-		return control.Requester{Role: control.RoleController, Human: true}, nil
+		return control.Requester{Role: control.RoleController, Human: true, PID: pid}, nil
 	}
 	return control.Requester{}, fmt.Errorf("requester process %d does not belong to an agency pane", pid)
 }
@@ -444,8 +448,10 @@ func (m *Manager) ReplacePane(ctx context.Context, requester control.Requester, 
 	}
 	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", old.TaskLabel); err != nil {
 		_ = m.tmux.KillPane(ctx, paneID)
+		m.Deaths.Record(deaths.Event{Kind: deaths.KindKilled, Pane: paneID, Label: old.TaskLabel, Role: string(old.Role), Dir: replacementDir, Note: "handoff successor rolled back"})
 		return "", fmt.Errorf("storing replacement task label: %w", err)
 	}
+	m.Deaths.Record(deaths.Event{Kind: deaths.KindHandoff, Pane: old.PaneID, PID: paneInfo.PID, Label: old.TaskLabel, Role: string(old.Role), Group: paneInfo.Group, Dir: paneInfo.CWD, Successor: paneID})
 	if old.Role == control.RoleController {
 		rootID = paneID
 	}
@@ -601,14 +607,16 @@ func (m *Manager) ApprovePromotion(ctx context.Context, requester control.Reques
 	return nil
 }
 
-// KillPane kills a specific pane.
-func (m *Manager) KillPane(ctx context.Context, paneID string) error {
+// KillPane kills a specific pane on requester's behalf.
+func (m *Manager) KillPane(ctx context.Context, requester control.Requester, paneID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	info, _ := m.paneInfo(ctx, paneID)
 	if err := m.tmux.KillPane(ctx, paneID); err != nil {
 		return err
 	}
+	m.recordKill(requester, paneID, info, "")
 	if m.poller != nil {
 		m.poller.Untrack(paneID)
 	}
@@ -616,15 +624,21 @@ func (m *Manager) KillPane(ctx context.Context, paneID string) error {
 	return nil
 }
 
-func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
+func (m *Manager) KillWindow(ctx context.Context, requester control.Requester, windowName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.WindowPerPane {
-		return m.killGroup(ctx, windowName)
+		return m.killGroup(ctx, requester, windowName)
 	}
+	panes, _ := m.tmux.ListPanes(ctx)
 	if err := m.tmux.KillWindow(ctx, windowName); err != nil {
 		return err
+	}
+	for _, pane := range panes {
+		if pane.WindowName == windowName {
+			m.recordKill(requester, pane.ID, pane, "kill --window "+windowName)
+		}
 	}
 	for id, pane := range m.panes {
 		if pane.WindowName != windowName {
@@ -636,6 +650,38 @@ func (m *Manager) KillWindow(ctx context.Context, windowName string) error {
 		delete(m.panes, id)
 	}
 	return nil
+}
+
+// recordKill logs a kill with the target's last known identity and the
+// process that asked for it. Callers hold m.mu.
+func (m *Manager) recordKill(requester control.Requester, paneID string, info tmux.PaneInfo, note string) {
+	event := deaths.Event{
+		Kind:    deaths.KindKilled,
+		Pane:    paneID,
+		PID:     info.PID,
+		Label:   info.TaskLabel,
+		Role:    info.Role,
+		Group:   info.Group,
+		Dir:     info.CWD,
+		Command: info.Command,
+		Note:    note,
+		By: &deaths.Actor{
+			Pane:    requester.PaneID,
+			Role:    string(requester.Role),
+			Human:   requester.Human,
+			PID:     requester.PID,
+			Command: deaths.Caller(requester.PID),
+		},
+	}
+	if requester == (control.Requester{}) {
+		event.By = nil
+	}
+	if tracked := m.panes[paneID]; tracked != nil {
+		event.Label = tracked.TaskLabel
+		event.Role = string(tracked.Role)
+		event.Command = tracked.Command
+	}
+	m.Deaths.Record(event)
 }
 
 // SendText delivers text to a pane, prefixed with the sender's pane id
@@ -738,7 +784,7 @@ func (m *Manager) paneGroup(ctx context.Context, paneID string) string {
 }
 
 // KillAll kills all tracked agent panes.
-func (m *Manager) KillAll(ctx context.Context) error {
+func (m *Manager) KillAll(ctx context.Context, requester control.Requester) error {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.panes))
 	for id := range m.panes {
@@ -747,7 +793,7 @@ func (m *Manager) KillAll(ctx context.Context) error {
 	m.mu.Unlock()
 
 	for _, id := range ids {
-		if err := m.KillPane(ctx, id); err != nil {
+		if err := m.KillPane(ctx, requester, id); err != nil {
 			return err
 		}
 	}
@@ -770,10 +816,11 @@ func (m *Manager) PruneDead(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var removed []string
-	for id := range m.panes {
+	for id, pane := range m.panes {
 		if alive[id] {
 			continue
 		}
+		m.Deaths.Record(deaths.Event{Kind: deaths.KindGone, Pane: id, Label: pane.TaskLabel, Role: string(pane.Role), Command: pane.Command})
 		if m.poller != nil {
 			m.poller.Untrack(id)
 		}

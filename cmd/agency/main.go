@@ -113,6 +113,10 @@ func main() {
 		runPalette()
 	case "logs":
 		runLogs()
+	case "log":
+		runLog(os.Args[2:])
+	case "pane-exit":
+		runPaneExit(os.Args[2:])
 	case "debug-mouse":
 		runDebugMouse(os.Args[2:])
 	case "help", "--help", "-h":
@@ -174,6 +178,9 @@ Usage:
   agency config                     Print resolved config
   agency palette                    Open command palette (used by tmux keybinding)
   agency logs                       Print path to log file (tail -f it)
+  agency log deaths [--since 48h|7d|all] [--pane %N] [--json] [-f]
+                                    Why panes ended: kills and who asked, exit status or signal, OOM kills, handoffs
+  agency pane-exit died|exited <socket> <pane>  Record a pane's exit (tmux pane-died and pane-exited hooks)
   agency debug-mouse [off]          Log mouse click events to a file (diagnose dropped clicks)
   agency help                       Show this help`)
 }
@@ -574,7 +581,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	// Generate tmux config.
 	var confPath string
 	if cloud {
-		confPath, err = tmux.GenerateCloudConfig()
+		confPath, err = tmux.GenerateCloudConfig(agencyBinPath())
 	} else {
 		confPath, err = tmux.GenerateConfig(cfg, agencyBinPath())
 	}
@@ -629,6 +636,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 		log.Printf("Existing tmux session found, adopting orphan panes...")
 	} else {
 		if err := tc.NewSession(ctx); err != nil {
+	startDeathLog(mgr, cloud)
 			log.Fatalf("Creating tmux session: %v", err)
 		}
 	}

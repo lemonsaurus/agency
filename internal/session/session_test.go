@@ -595,7 +595,7 @@ func TestKillPane(t *testing.T) {
 	}
 
 	paneID := panes[0].PaneID
-	if err := mgr.KillPane(context.Background(), paneID); err != nil {
+	if err := mgr.KillPane(context.Background(), testController, paneID); err != nil {
 		t.Fatalf("KillPane failed: %v", err)
 	}
 
@@ -613,7 +613,7 @@ func TestKillWindow(t *testing.T) {
 		t.Fatalf("expected 1 pane, got %d", mgr.PaneCount())
 	}
 
-	if err := mgr.KillWindow(context.Background(), "casts-review"); err != nil {
+	if err := mgr.KillWindow(context.Background(), testController, "casts-review"); err != nil {
 		t.Fatalf("KillWindow failed: %v", err)
 	}
 	if mgr.PaneCount() != 0 {
@@ -668,7 +668,7 @@ func TestKillAll(t *testing.T) {
 		t.Fatalf("expected 2 panes, got %d", mgr.PaneCount())
 	}
 
-	if err := mgr.KillAll(context.Background()); err != nil {
+	if err := mgr.KillAll(context.Background(), testController); err != nil {
 		t.Fatalf("KillAll failed: %v", err)
 	}
 	if mgr.PaneCount() != 0 {

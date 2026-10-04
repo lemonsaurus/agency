@@ -27,6 +27,7 @@ type Requester struct {
 	Role   Role   `json:"role"`
 	RootID string `json:"rootId"`
 	Human  bool   `json:"human"`
+	PID    int    `json:"-"` // the process that asked, when resolved from a socket peer
 }
 
 func ParseRole(value string) (Role, error) {
