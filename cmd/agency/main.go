@@ -627,6 +627,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	mgr := session.NewManager(tc, registry, cfg, poller)
 	mgr.WindowPerPane = cloud
 	mgr.OutsideIsHuman = cloud
+	startDeathLog(mgr, cloud)
 
 	// Check if tmux session already exists (crash recovery).
 	if tc.SessionExists(ctx) {
@@ -636,7 +637,6 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 		log.Printf("Existing tmux session found, adopting orphan panes...")
 	} else {
 		if err := tc.NewSession(ctx); err != nil {
-	startDeathLog(mgr, cloud)
 			log.Fatalf("Creating tmux session: %v", err)
 		}
 	}
