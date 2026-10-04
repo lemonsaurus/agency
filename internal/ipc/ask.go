@@ -144,6 +144,7 @@ type TranscriptRequest struct {
 type TranscriptReply struct {
 	ID      string            `json:"id"`
 	Entries []json.RawMessage `json:"entries"`
+	Queued  []string          `json:"queued,omitempty"`
 	Error   *AskError         `json:"error,omitempty"`
 }
 
@@ -179,6 +180,54 @@ func Transcript(ctx context.Context, socket string, request TranscriptRequest) (
 	var reply TranscriptReply
 	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || (reply.Entries == nil) == (reply.Error == nil) {
 		return TranscriptReply{}, fmt.Errorf("invalid bridge reply")
+	}
+	return reply, nil
+}
+
+type ModelRequest struct {
+	ID  string `json:"id"`
+	Set string `json:"set,omitempty"`
+}
+
+type ModelReply struct {
+	ID       string    `json:"id"`
+	Model    string    `json:"model,omitempty"`
+	Thinking string    `json:"thinking,omitempty"`
+	Models   []string  `json:"models,omitempty"`
+	Error    *AskError `json:"error,omitempty"`
+}
+
+var modelPattern = regexp.MustCompile(`^[\w.-]+/[\w.:-]+$`)
+
+// Model reads a Pi pane's model and the models it can switch to. Set (provider/id[:thinking]) switches first.
+func Model(ctx context.Context, socket string, request ModelRequest) (ModelReply, error) {
+	if !requestIDPattern.MatchString(request.ID) || (request.Set != "" && !modelPattern.MatchString(request.Set)) {
+		return ModelReply{}, fmt.Errorf("invalid model request")
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	if err != nil {
+		return ModelReply{}, fmt.Errorf("bridge unavailable; update Agency and /reload Pi in the target pane")
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	data, err := json.Marshal(request)
+	if err != nil {
+		return ModelReply{}, err
+	}
+	if _, err := fmt.Fprintf(conn, "model:%s\n", data); err != nil {
+		return ModelReply{}, err
+	}
+	reader := bufio.NewScanner(conn)
+	if !reader.Scan() {
+		if ctx.Err() != nil {
+			return ModelReply{}, ctx.Err()
+		}
+		return ModelReply{}, fmt.Errorf("bridge disconnected before replying")
+	}
+	var reply ModelReply
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || (reply.Model == "") == (reply.Error == nil) {
+		return ModelReply{}, fmt.Errorf("invalid bridge reply")
 	}
 	return reply, nil
 }

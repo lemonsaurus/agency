@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -118,6 +119,88 @@ func runTranscript(args []string) {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// runModel prints a pane's model and the models it can use, switching it first when a model is given.
+func runModel(args []string) {
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud model <pane-id> [provider/model[:thinking]]")
+		os.Exit(1)
+	}
+	path, err := ipc.BridgePath(socketPath(loadConfig().Session.Name), args[0])
+	var reply ipc.ModelReply
+	if err == nil {
+		request := ipc.ModelRequest{ID: requestID()}
+		if len(args) == 2 {
+			request.Set = args[1]
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		reply, err = ipc.Model(ctx, path, request)
+	}
+	if err == nil && reply.Error != nil {
+		err = fmt.Errorf("[%s] %s", reply.Error.Code, reply.Error.Message)
+	}
+	if err == nil {
+		err = json.NewEncoder(os.Stdout).Encode(reply)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
+// runModels prints every bridged pane's model and the models Pi offers, asking the panes in parallel.
+func runModels(sessionName string) {
+	panes, err := tmux.NewClient(sessionName, "").ListPanes(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	type paneModel struct {
+		Model    string `json:"model"`
+		Thinking string `json:"thinking,omitempty"`
+	}
+	result := struct {
+		Panes  map[string]paneModel `json:"panes"`
+		Models []string             `json:"models"`
+	}{Panes: map[string]paneModel{}, Models: []string{}}
+	var mu sync.Mutex
+	var wait sync.WaitGroup
+	daemon := socketPath(sessionName)
+	for _, pane := range panes {
+		path, err := ipc.BridgePath(daemon, pane.ID)
+		if err != nil || !bridgeListening(daemon, pane.ID) {
+			continue
+		}
+		wait.Add(1)
+		go func(id string) {
+			defer wait.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			reply, err := ipc.Model(ctx, path, ipc.ModelRequest{ID: requestID()})
+			if err != nil || reply.Error != nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			result.Panes[id] = paneModel{reply.Model, reply.Thinking}
+			if len(reply.Models) > len(result.Models) {
+				result.Models = reply.Models
+			}
+		}(pane.ID)
+	}
+	wait.Wait()
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
+func requestID() string {
+	id := make([]byte, 16)
+	rand.Read(id)
+	return hex.EncodeToString(id)
 }
 
 // runSendToSky moves a window to the sky harness. Idle Pi panes run their own

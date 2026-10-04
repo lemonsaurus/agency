@@ -299,6 +299,15 @@ func runCloud(args []string) {
 	case "activity":
 		runActivity(cfg)
 		return
+	case "model":
+		runModel(args[1:])
+		return
+	case "models":
+		runModels(cfg.Session.Name)
+		return
+	case "spend":
+		runSpend()
+		return
 	case "live":
 		runLive(cfg.Session.Name, args[1:])
 		return

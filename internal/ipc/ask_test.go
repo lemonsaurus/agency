@@ -292,3 +292,61 @@ func TestAskDoesNotReturnUncorrelatedReply(t *testing.T) {
 		t.Fatal(reply, err)
 	}
 }
+
+func TestModel(t *testing.T) {
+	dir := t.TempDir()
+	request := ModelRequest{ID: strings.Repeat("c", 32), Set: "openai-codex/gpt-6.1-sol:high"}
+	for _, tt := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"switched", `{"id":"` + request.ID + `","model":"openai-codex/gpt-6.1-sol","thinking":"high","models":["jev/Auto"]}`, ""},
+		{"error", `{"id":"` + request.ID + `","error":{"code":"no_auth","message":"No credentials"}}`, ""},
+		{"neither", `{"id":"` + request.ID + `"}`, "invalid bridge reply"},
+		{"mismatched ID", `{"id":"wrong","model":"a/b"}`, "invalid bridge reply"},
+		{"disconnected", "", "bridge disconnected"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(dir, "pane.sock")
+			listener, err := net.Listen("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			input := make(chan string, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				line, _ := bufio.NewReader(conn).ReadString('\n')
+				input <- line
+				if tt.body != "" {
+					fmt.Fprintln(conn, tt.body)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			reply, err := Model(ctx, path, request)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err=%v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || reply.ID != request.ID {
+				t.Fatalf("reply=%+v err=%v", reply, err)
+			}
+			if line := <-input; line != `model:{"id":"`+request.ID+`","set":"openai-codex/gpt-6.1-sol:high"}`+"\n" {
+				t.Fatalf("sent %q", line)
+			}
+		})
+	}
+	for _, invalid := range []ModelRequest{{ID: "bad"}, {ID: request.ID, Set: "no slash"}, {ID: request.ID, Set: "a/b; rm -rf"}} {
+		if _, err := Model(context.Background(), "", invalid); err == nil || err.Error() != "invalid model request" {
+			t.Fatalf("%+v: %v", invalid, err)
+		}
+	}
+}

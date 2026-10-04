@@ -129,26 +129,26 @@ func TestFileRead(t *testing.T) {
 	}
 }
 
-func TestVoiceAPIKey(t *testing.T) {
+func TestPrivateKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private.env")
-	if got, err := voiceAPIKey("from-env", path); err != nil || got != "from-env" {
+	if got, err := privateKey("OPENAI_API_KEY", "from-env", path); err != nil || got != "from-env" {
 		t.Fatal(got, err)
 	}
-	if got, err := voiceAPIKey("", path); err != nil || got != "" {
+	if got, err := privateKey("OPENAI_API_KEY", "", path); err != nil || got != "" {
 		t.Fatal(got, err)
 	}
 	for _, line := range []string{"OPENAI_API_KEY=literal", "export OPENAI_API_KEY='literal'", `OPENAI_API_KEY="literal"`} {
 		os.WriteFile(path, []byte("IGNORED=$(exit 99)\n#OPENAI_API_KEY=ignored\n"+line+"\n"), 0o600)
-		if got, err := voiceAPIKey("", path); err != nil || got != "literal" {
+		if got, err := privateKey("OPENAI_API_KEY", "", path); err != nil || got != "literal" {
 			t.Fatal(got, err)
 		}
 	}
 	for _, line := range []string{`OPENAI_API_KEY="unclosed`, "OPENAI_API_KEY=$(touch /tmp/no)", "OPENAI_API_KEY=`anything`", "OPENAI_API_KEY=two words"} {
 		os.WriteFile(path, []byte(line), 0o600)
-		if _, err := voiceAPIKey("", path); err == nil {
+		if _, err := privateKey("OPENAI_API_KEY", "", path); err == nil {
 			t.Fatal("accepted nonliteral value")
 		}
-		if got, err := voiceAPIKey("env-wins", path); err != nil || got != "env-wins" {
+		if got, err := privateKey("OPENAI_API_KEY", "env-wins", path); err != nil || got != "env-wins" {
 			t.Fatal(got, err)
 		}
 	}
@@ -185,5 +185,29 @@ func TestPersona(t *testing.T) {
 	got, err := persona(dir)
 	if err != nil || got != "# Carla\n\n# Soul\n\n# Slop\n" {
 		t.Fatalf("persona=%q, %v", got, err)
+	}
+}
+
+func TestLiveSpend(t *testing.T) {
+	pages := map[string]string{
+		"":   `{"data":[{"results":[{"line_item":"gpt-live-1, input audio","amount":{"value":1.25}},{"line_item":"gpt-6.1, input","amount":{"value":9}}]}],"has_more":true,"next_page":"p2"}`,
+		"p2": `{"data":[{"results":[{"line_item":"GPT-Live-1, output audio","amount":{"value":"0.5"}}]}],"has_more":false}`,
+	}
+	since := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer admin" || r.URL.Path != "/v1/organization/costs" ||
+			r.URL.Query().Get("start_time") != "1790812800" || r.URL.Query().Get("group_by") != "line_item" {
+			t.Fatalf("request %s %v", r.URL, r.Header)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(pages[r.URL.Query().Get("page")]))}, nil
+	})}
+	if usd, err := liveSpend(context.Background(), client, "https://api.test", "admin", since); err != nil || usd != 1.75 {
+		t.Fatal(usd, err)
+	}
+	denied := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 403, Status: "403 Forbidden", Body: io.NopCloser(strings.NewReader(`{"error":"Missing scopes: api.usage.read"}`))}, nil
+	})}
+	if _, err := liveSpend(context.Background(), denied, "https://api.test", "admin", since); err == nil || !strings.Contains(err.Error(), "api.usage.read") {
+		t.Fatal(err)
 	}
 }

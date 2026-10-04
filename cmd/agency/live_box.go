@@ -117,7 +117,7 @@ func (b *liveBox) Screen(ctx context.Context, paneID string, lines int) (string,
 
 func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.Manager {
 	home, _ := os.UserHomeDir()
-	key, err := voiceAPIKey(os.Getenv("OPENAI_API_KEY"), filepath.Join(home, ".pi", "agent", "private.env"))
+	key, err := privateKey("OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY"), filepath.Join(home, ".pi", "agent", "private.env"))
 	if err != nil {
 		key = ""
 	}
