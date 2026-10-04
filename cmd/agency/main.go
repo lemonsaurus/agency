@@ -1315,15 +1315,14 @@ func runList(args []string) {
 		os.Exit(1)
 	}
 	// On the headless server a pane's window is its group, as the sky harness
-	// shows it, and viewer sessions repeat every pane. Each pane's own tmux
-	// window is an implementation detail, so its id and index stay unlisted.
+	// shows it, and viewer sessions repeat every pane. The window index stays
+	// unlisted; earth's sync attaches viewers by window id.
 	headless := os.Getenv("AGENCY_TMUX_SOCKET") != ""
 	if headless {
 		own := panes[:0]
 		for _, pane := range panes {
 			if pane.Session == cfg.Session.Name {
 				pane.WindowName = cloud.Group(pane)
-				pane.WindowID = ""
 				own = append(own, pane)
 			}
 		}
