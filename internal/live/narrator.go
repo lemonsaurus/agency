@@ -35,7 +35,8 @@ const (
 )
 
 // Narrator turns a pane's transcript into a walkthrough: the plan once, failures and answers at
-// once, otherwise one rolled-up progress line per quiet period. Background panes report only the finish.
+// once, otherwise at most one progress line per quiet period, and only when the work moved to a kind
+// of step it has not reported yet. Background panes report only the finish.
 type Narrator struct {
 	Session string
 	Asked   string
@@ -48,12 +49,13 @@ type Narrator struct {
 	lastSpokenAt time.Time
 	spokenPlan   bool
 	pendingTools []Turn
+	reported     map[string]bool
 	lastFinal    string
 	hadFinal     bool
 }
 
 func NewNarrator(session, asked string, mode Mode) *Narrator {
-	return &Narrator{Session: session, Asked: asked, Mode: mode, seen: map[string]bool{}}
+	return &Narrator{Session: session, Asked: asked, Mode: mode, seen: map[string]bool{}, reported: map[string]bool{}}
 }
 
 func (n *Narrator) Digest(turns []Turn, now time.Time) []Update {
@@ -120,19 +122,19 @@ func (n *Narrator) Digest(turns []Turn, now time.Time) []Update {
 			}
 		}
 		if len(n.pendingTools) > 0 && now.Sub(n.lastSpokenAt) >= quietPeriod {
-			var kinds []string
-			seen := map[string]bool{}
-			for _, tool := range n.pendingTools {
-				if !seen[tool.Name] {
-					seen[tool.Name] = true
-					kinds = append(kinds, tool.Name)
+			var latest *Turn
+			for i, tool := range n.pendingTools {
+				if kind := activity(tool); !n.reported[kind] {
+					n.reported[kind] = true
+					latest = &n.pendingTools[i]
 				}
 			}
-			latest := n.pendingTools[len(n.pendingTools)-1]
-			updates = append(updates, Update{true, strings.TrimSpace(fmt.Sprintf("%s, %s is still going: %d steps since last time (%s), now on %s %s",
-				elapsed, n.Session, len(n.pendingTools), strings.Join(kinds, ", "), latest.Name, truncate(latest.Summary, 80)))})
+			if latest != nil {
+				updates = append(updates, Update{true, strings.TrimSpace(fmt.Sprintf("%s, %s moved on to %s %s",
+					elapsed, n.Session, latest.Name, truncate(latest.Summary, 80)))})
+				n.lastSpokenAt = now
+			}
 			n.pendingTools = nil
-			n.lastSpokenAt = now
 		}
 	}
 	last := turns[len(turns)-1]
@@ -150,6 +152,21 @@ func (n *Narrator) Digest(turns []Turn, now time.Time) []Update {
 	}
 	n.lastFinal, n.hadFinal = final, isFinal
 	return updates
+}
+
+// activity is the kind of work a step does: the tool, or for bash the program run after any cd prefix.
+func activity(tool Turn) string {
+	if tool.Name != "bash" {
+		return tool.Name
+	}
+	command := tool.Summary
+	if i := strings.LastIndex(command, "&&"); i >= 0 {
+		command = command[i+2:]
+	}
+	if fields := strings.Fields(command); len(fields) > 0 {
+		return "bash:" + fields[0]
+	}
+	return "bash"
 }
 
 func (n *Narrator) key(turn Turn) string {

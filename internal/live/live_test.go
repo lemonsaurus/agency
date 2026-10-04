@@ -85,20 +85,31 @@ func TestNarratorWalkthrough(t *testing.T) {
 	}
 	again := Turn{Kind: "tool", At: 7, Name: "bash", Summary: "git status", Result: "clean"}
 	updates = n.Digest([]Turn{ask, plan, ran, more, failed, again}, base.Add(60*time.Second+quietPeriod))
-	if fmt.Sprint(updates) != fmt.Sprint([]Update{{true, "1 min in, Quill is still going: 3 steps since last time (linear_search_issues, read, bash), now on bash git status"}}) {
+	if fmt.Sprint(updates) != fmt.Sprint([]Update{{true, "1 min in, Quill moved on to bash git status"}}) {
 		t.Fatalf("updates=%v", updates)
 	}
-	answer := Turn{Kind: "carla", At: 8, Text: "JRN-12: fix the thing."}
-	all := []Turn{ask, plan, ran, more, failed, again, answer}
-	updates = n.Digest(all, base.Add(90*time.Second))
+	same := []Turn{{Kind: "tool", At: 8, Name: "bash", Summary: "git diff", Result: "ok"}, {Kind: "tool", At: 9, Name: "read", Summary: "/tmp/b", Result: "ok"}}
+	sofar := append([]Turn{ask, plan, ran, more, failed, again}, same...)
+	if updates := n.Digest(sofar, base.Add(120*time.Second+quietPeriod)); len(updates) != 0 {
+		t.Fatalf("spoke without new work: %v", updates)
+	}
+	gh := Turn{Kind: "tool", At: 10, Name: "bash", Summary: "cd /git/quill && gh issue list", Result: "3 issues"}
+	sofar = append(sofar, gh)
+	updates = n.Digest(sofar, base.Add(125*time.Second+quietPeriod))
+	if fmt.Sprint(updates) != fmt.Sprint([]Update{{true, "2 min in, Quill moved on to bash cd /git/quill && gh issue list"}}) {
+		t.Fatalf("updates=%v", updates)
+	}
+	answer := Turn{Kind: "carla", At: 11, Text: "JRN-12: fix the thing."}
+	all := append(sofar, answer)
+	updates = n.Digest(all, base.Add(150*time.Second+quietPeriod))
 	if fmt.Sprint(updates) != fmt.Sprint([]Update{{true, "Quill says: JRN-12: fix the thing."}}) || n.Done {
 		t.Fatalf("updates=%v done=%v", updates, n.Done)
 	}
-	updates = n.Digest(all, base.Add(93*time.Second))
+	updates = n.Digest(all, base.Add(153*time.Second+quietPeriod))
 	if fmt.Sprint(updates) != fmt.Sprint([]Update{{false, "Quill is idle now; that was its final answer."}}) || !n.Done {
 		t.Fatalf("updates=%v done=%v", updates, n.Done)
 	}
-	if updates := n.Digest(all, base.Add(100*time.Second)); len(updates) != 0 {
+	if updates := n.Digest(all, base.Add(160*time.Second+quietPeriod)); len(updates) != 0 {
 		t.Fatalf("spoke after done: %v", updates)
 	}
 }
