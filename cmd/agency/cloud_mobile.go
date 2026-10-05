@@ -166,7 +166,7 @@ func runFile(args []string) {
 	}
 }
 
-var personaFiles = []string{"IDENTITY.md", "SOUL.md", "SLOP.md"}
+var personaFiles = []string{"IDENTITY.md", "SOUL.md", "LANGUAGE.md"}
 
 func persona(dir string) (string, error) {
 	var parts []string
