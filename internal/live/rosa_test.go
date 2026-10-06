@@ -154,7 +154,7 @@ func TestClassRefereesTheFloor(t *testing.T) {
 		t.Fatal("dictionary not fed by resolved targets")
 	}
 	data, _ := os.ReadFile(logPath)
-	for _, kind := range []string{`"kind":"plan"`, `"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"intervene"`, `"kind":"resolved"`, `"kind":"exhausted"`, `"kind":"extended"`, `"kind":"closed"`} {
+	for _, kind := range []string{`"kind":"plan"`, `"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"hold"`, `"kind":"resolved"`, `"kind":"exhausted"`, `"kind":"extended"`, `"kind":"closed"`} {
 		if !strings.Contains(string(data), kind) {
 			t.Errorf("floor log lacks %s", kind)
 		}
@@ -570,5 +570,35 @@ func TestClassHearsClarificationsAndCorrections(t *testing.T) {
 	out("No, don't rush it. Again.", 9000)
 	if class.outcomes["1:t02-es/2"] != "helped" {
 		t.Fatalf("Rosa's correction ignored: %v", class.outcomes)
+	}
+}
+
+func TestClassFastLaneAndCheckIns(t *testing.T) {
+	if addressed("Quiero mejorarte, Rosa") || !addressed("Rosa?") || !addressed("are you there") || addressed("hola, quiero cancelarlo") {
+		t.Error("addressed")
+	}
+	if !easier("this is too easy, can we move on") || easier("es urgente") {
+		t.Error("easier")
+	}
+	if hints(words("Eso, no quiero. One more. I want more."), Sentence{EN: "I want more", ES: "quiero más"}, words("no quiero")) {
+		t.Error("her echo of his own answer counted as a hint")
+	}
+	class := newClass("ls_fast", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	plan := testPlan()
+	plan.Items[0].Targets = []Sentence{{EN: "it's normal", ES: "es normal"}, {EN: "it's legal", ES: "es legal"}, {EN: "it's total", ES: "es total"}, {EN: "it's ideal", ES: "es ideal"}}
+	class.SetPlan(plan)
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	out("How would you say it's normal?", 1000)
+	in("es normal", 3000)
+	out("Eso. How would you say it's legal?", 4000)
+	in("es legal", 6000)
+	out("Eso. How would you say it's total?", 7000)
+	in("es total", 9000)
+	if class.outcomes["1:t02-es/4"] != "owned" || !class.handed[1] {
+		t.Fatalf("fast lane: outcomes %v handed %v", class.outcomes, class.handed)
+	}
+	if len(class.Asked()) != 3 {
+		t.Fatalf("asked %v", class.Asked())
 	}
 }

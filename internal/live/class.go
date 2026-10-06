@@ -13,7 +13,7 @@ const (
 	// Rosa may speak over a partial answer only after this much silence from Lemon.
 	stallLimit = 45 * time.Second
 	// Late transcript fragments can still complete an answer when Rosa starts speaking.
-	settleDelay = 700 * time.Millisecond
+	settleDelay = 300 * time.Millisecond
 	// A code-switched turn is sent for gap help after this much silence.
 	switchPause = 1500 * time.Millisecond
 	// A target's English cue arms it when it ends within this many words of the end of Rosa's turn.
@@ -99,16 +99,21 @@ type Class struct {
 	holdTimer  *time.Timer
 	overlap    bool // he started this attempt while Rosa was still talking
 	tookOver   bool
-	tries      int    // attempts since the armed target was last cued
-	praised    string // a target just resolved alone, until Rosa's reply shows whether she agreed
-	called     bool   // he called her by name or checked she is there in this attempt
-	idleTimer  *time.Timer
-	rosaEnd    int64
-	lemonEnd   int64
-	lemonAt    time.Time
-	thinkMS    int64
-	stops      int
-	switchAt   *time.Timer
+	tries      int      // attempts since the armed target was last cued
+	praised    string   // a target just resolved alone, until Rosa's reply shows whether she agreed
+	called     bool     // he called her by name or checked she is there in this attempt
+	previous   []string // his words in the attempt before this one, which her echo doesn't count as a hint
+	prompts    []string // every target asked this call, so nothing is asked twice
+	harder     time.Time
+	// onHarder asks the planner to jump ahead when he says it's too easy.
+	onHarder  func()
+	idleTimer *time.Timer
+	rosaEnd   int64
+	lemonEnd  int64
+	lemonAt   time.Time
+	thinkMS   int64
+	stops     int
+	switchAt  *time.Timer
 }
 
 // holdLimit is the most silence from Lemon a hold on Rosa outlasts.
@@ -319,6 +324,9 @@ func (c *Class) handOver(i int) {
 	for _, note := range item.Notes(thought, fmt.Sprintf("%d of %d", i+1, len(c.plan.Items))) {
 		c.send("session.thinking.append", note)
 	}
+	if len(c.prompts) > 0 {
+		c.send("session.thinking.append", truncate("Already asked this call, never ask these again: "+strings.Join(c.prompts, "; ")+".", updateLimit))
+	}
 	c.handed[i] = true
 	c.record("item", map[string]any{"item": i, "thought": item.Thought, "kind": item.Kind})
 }
@@ -354,6 +362,7 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			}
 		}
 		c.tries++
+		c.previous = words(c.attempt)
 		c.attemptID++
 		c.attempt, c.verdict, c.intervened, c.tookOver, c.called = "", "", false, false, false
 		c.thinkMS = 0
@@ -382,12 +391,26 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			c.verdict = verdict
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
 		}
+		// The first hesitation after a prompt holds her before she can start anything else.
+		if c.fresh && verdict == verdictPartial && !c.holding && !c.intervened {
+			c.intervened, c.holding = true, true
+			c.stops++
+			c.holdUntilQuiet()
+			c.record("hold", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300)})
+			c.send("session.instructions.append", holdFloor)
+		}
+	}
+	if easier(c.attempt) && c.onHarder != nil && time.Since(c.harder) > 2*time.Minute {
+		c.harder = time.Now()
+		c.record("harder", map[string]any{"said": truncate(c.attempt, 300)})
+		c.send("session.thinking.append", "He wants harder material. New items from further on are being prepared; meanwhile go up a level yourself with longer, fresher sentences, and don't repeat anything already asked.")
+		go c.onHarder()
 	}
 	if c.verdict == verdictClarify {
 		id, said := c.attemptID, c.attempt
 		time.AfterFunc(settleDelay, func() { c.clarify(id, said) })
 	}
-	if addressed(text) && !c.holding && !c.called {
+	if addressed(c.attempt) && !c.holding && !c.called {
 		c.called = true
 		c.record("addressed", map[string]any{"said": truncate(c.attempt, 300)})
 		c.send("session.instructions.append", c.where(answerHim))
@@ -399,7 +422,7 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	}
 	if c.holding {
 		switch {
-		case addressed(text):
+		case addressed(c.attempt):
 			c.release(c.where(answerHim))
 		case c.armed == nil || c.verdict != verdictPartial:
 			c.release(c.where(releaseFloor))
@@ -554,7 +577,7 @@ func (c *Class) said(text string, startMS, endMS int64) {
 		return
 	}
 	target := c.target(*c.armed)
-	if hints(turn, target) {
+	if hints(turn, target, c.previous) {
 		c.hinted[c.key(c.armed)] = true
 	}
 	if c.verdict != verdictClarify && c.misses[c.key(c.armed)] > 0 && says(turn, target.ES) {
@@ -726,10 +749,13 @@ func (c *Class) cue(raw string) bool {
 		c.advance(best[0])
 	}
 	c.armed, c.verdict = best, ""
-	if hints(turn, c.target(*best)) {
+	if hints(turn, c.target(*best), c.previous) {
 		c.hinted[c.key(best)] = true
 	}
 	c.record("prompt", map[string]any{"target": c.key(best), "en": c.target(*best).EN, "es": c.target(*best).ES})
+	if prompt := c.target(*best); prompt.EN != "" {
+		c.prompts = append(c.prompts, prompt.EN)
+	}
 	if c.prompted != nil {
 		go c.prompted()
 		c.prompted = nil
@@ -790,6 +816,7 @@ func (c *Class) resolve(at [2]int, outcome string) {
 	c.armed, c.verdict, c.held = nil, "", false
 	if outcome == "alone" {
 		c.praised = key
+		c.fastLane(at[0])
 	}
 	target := c.target(at)
 	c.record("resolved", map[string]any{"target": key, "outcome": outcome, "think_ms": c.thinkMS})
@@ -800,6 +827,47 @@ func (c *Class) resolve(at [2]int, outcome string) {
 		l.Used = append(l.Used, target.ES)
 		l.Pacing = append(l.Pacing, Pace{At: time.Now(), Sentence: target.ES, ThinkMS: think, Outcome: outcome})
 	})
+}
+
+// fastLane lets go of the rest of an item once he has three clean, cold answers on it and nothing
+// wrong: he owns it, so Rosa moves straight on.
+func (c *Class) fastLane(item int) {
+	if item < 0 {
+		return
+	}
+	clean, open := 0, 0
+	for t := range c.plan.Items[item].Targets {
+		key := c.key(&[2]int{item, t})
+		switch c.outcomes[key] {
+		case "alone":
+			clean++
+		case "":
+			open++
+		default:
+			return
+		}
+		if c.misses[key] > 0 {
+			return
+		}
+	}
+	if clean < 3 || open == 0 {
+		return
+	}
+	for t := range c.plan.Items[item].Targets {
+		if key := c.key(&[2]int{item, t}); c.outcomes[key] == "" {
+			c.outcomes[key] = "owned"
+		}
+	}
+	c.record("owned", map[string]any{"item": item, "thought": c.plan.Items[item].Thought})
+	c.send("session.thinking.append", "He owns this one: three clean answers. Skip its remaining targets and go straight to the next item.")
+	c.lookAhead()
+}
+
+// Asked is every target asked so far this call.
+func (c *Class) Asked() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.prompts...)
 }
 
 // Position is where the call stands, for Rosa's backend.
@@ -908,10 +976,10 @@ func (c *Class) tally() (string, map[string]string, []string) {
 				continue
 			}
 			t.total++
-			if outcome == "alone" {
+			if outcome == "alone" || outcome == "owned" {
 				t.alone++
 			}
-			if outcome == "alone" || outcome == "helped" {
+			if outcome == "alone" || outcome == "owned" || outcome == "helped" {
 				t.found++
 			}
 			fmt.Fprintf(&report, " %s: %s;", target.ES, outcome)

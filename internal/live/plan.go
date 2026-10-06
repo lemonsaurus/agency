@@ -60,9 +60,10 @@ func loadPlan(path string) (Plan, bool) {
 }
 
 const (
-	composeNext  = "Compose the plan for Lemon's next call."
-	composeStart = "Compose the plan for the call that is starting now."
-	composeMore  = "This call's plan has run out and Lemon is still going. Compose more items for the rest of this call, picking up from where it is now; don't repeat targets already asked in it."
+	composeNext   = "Compose the plan for Lemon's next call."
+	composeStart  = "Compose the plan for the call that is starting now."
+	composeMore   = "This call's plan has run out and Lemon is still going. Compose more items for the rest of this call, picking up from where it is now; don't repeat targets already asked in it."
+	composeHarder = "Lemon says this is too easy. Jump ahead to where he really is: first a quick placement probe, one item of three or four fresh sentences drawn from later thoughts in curriculum order, each harder than the last, then new items from the furthest point he can likely handle. Nothing he has found alone, no review."
 )
 
 func savePlan(path string, plan Plan) error {

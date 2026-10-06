@@ -148,11 +148,38 @@ func prompted(rest string) string {
 	return rest
 }
 
-// addressed is whether Lemon is talking to Rosa rather than answering: checking she is there, or
-// asking her something.
+// addressed is whether Lemon is checking Rosa is there: a phrase that only means that, or a short
+// standalone "Rosa?" or "hello?". Her name at the end of a longer sentence or inside a Spanish answer
+// doesn't count.
 func addressed(text string) bool {
+	tokens := words(text)
+	padded := " " + strings.Join(tokens, " ") + " "
+	for _, phrase := range []string{" are you there ", " you there ", " dropped off ", " can you hear ", " me escuchas ", " me oyes ", " what happened ", " you still there ", " lost you "} {
+		if strings.Contains(padded, phrase) {
+			return true
+		}
+	}
+	var content []string
+	for _, token := range tokens {
+		if !fillers[token] {
+			content = append(content, token)
+		}
+	}
+	if len(content) == 0 || len(content) > 2 {
+		return false
+	}
+	for _, token := range content {
+		if token == "rosa" || token == "hello" || token == "hola" {
+			return true
+		}
+	}
+	return false
+}
+
+// easier is whether he says the material is too easy or asks to move on.
+func easier(text string) bool {
 	padded := " " + strings.Join(words(text), " ") + " "
-	for _, phrase := range []string{" hello ", " hola ", " rosa ", " are you there ", " you there ", " dropped off ", " can you hear ", " me escuchas ", " me oyes ", " what happened ", " you still there "} {
+	for _, phrase := range []string{" too easy ", " move on ", " something harder ", " harder ", " already know this ", " i know this ", " next level ", " more advanced ", " boring "} {
 		if strings.Contains(padded, phrase) {
 			return true
 		}
@@ -336,11 +363,11 @@ func distance(a, b []rune) int {
 	return previous[len(b)]
 }
 
-// hints is whether Rosa's turn gives away a Spanish word of the expected answer that the English cue
-// doesn't already contain.
-func hints(turn []string, sentence Sentence) bool {
+// hints is whether Rosa's turn gives away a Spanish word of the expected answer that neither the
+// English cue nor his own last answer already contains: echoing what he just said isn't a hint.
+func hints(turn []string, sentence Sentence, previous []string) bool {
 	cue := map[string]bool{}
-	for _, word := range words(sentence.EN) {
+	for _, word := range append(words(sentence.EN), previous...) {
 		cue[word] = true
 	}
 	said := map[string]bool{}

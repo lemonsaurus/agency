@@ -182,6 +182,9 @@ func (r *Rosa) Seed(now time.Time) []map[string]any {
 	default:
 		note += "Your last call with Lemon ended " + ago(now.Sub(last)) + ". This is a fresh call: open as usual and follow the plan. The conversation below is old; don't pick it up unless he does."
 	}
+	if !r.resuming(now) {
+		note += " Say nothing until you are told to open; then greet him once."
+	}
 	seed := []map[string]any{seedMessage("developer", note), seedMessage("developer", r.learner.Summary(now))}
 	recent := r.memory.Recent(now, memoryMaxSeed)
 	budget, start := memorySeedMax, len(recent)
@@ -233,6 +236,7 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 		class.prompted = func() { r.adjust(session, class) }
 	}
 	class.exhausted = func() { r.more(session, class) }
+	class.onHarder = func() { r.harder(session, class) }
 	planned := class.planned
 	class.mu.Unlock()
 	session.watch = class.watch
@@ -323,11 +327,35 @@ func (r *Rosa) adjust(session *Session, class *Class) {
 func (r *Rosa) more(session *Session, class *Class) {
 	ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
 	defer cancel()
-	plan, err := r.compose(ctx, session.backend, composeMore, r.transcript(class.started), time.Now())
+	plan, err := r.compose(ctx, session.backend, composeMore+asked(class), r.transcript(class.started), time.Now())
 	if err != nil {
 		log.Printf("rosa: more items failed: %v", err)
 	}
 	class.Extend(plan.Items)
+}
+
+// harder replaces the rest of the call's plan with a placement probe and material from further on.
+func (r *Rosa) harder(session *Session, class *Class) {
+	ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
+	defer cancel()
+	plan, err := r.compose(ctx, session.backend, composeHarder+asked(class), r.transcript(class.started), time.Now())
+	if err != nil {
+		log.Printf("rosa: harder items failed: %v", err)
+		return
+	}
+	from, current := class.Unhanded()
+	if from < len(current.Items) {
+		class.Replace(from, plan.Items, current.Mode, plan.Why)
+		return
+	}
+	class.Extend(plan.Items)
+}
+
+func asked(class *Class) string {
+	if prompts := class.Asked(); len(prompts) > 0 {
+		return " Already asked this call, never reuse: " + strings.Join(prompts, "; ") + "."
+	}
+	return ""
 }
 
 // gapPass works out a code-switched turn on the fast model and decides per chunk how Rosa handles
