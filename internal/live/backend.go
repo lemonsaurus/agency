@@ -54,7 +54,12 @@ type responsePart struct {
 
 // Answer runs the loop and returns the reply with every tool call it made.
 func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, error) {
-	text, fetched, err := b.Complete(ctx, input, replyFormat, 8)
+	return b.AnswerWithin(ctx, input, 8)
+}
+
+// AnswerWithin is Answer with room for more tool rounds, for work like a call review.
+func (b *Backend) AnswerWithin(ctx context.Context, input []map[string]any, rounds int) (Reply, error) {
+	text, fetched, err := b.Complete(ctx, input, replyFormat, rounds)
 	if err != nil {
 		return Reply{}, err
 	}

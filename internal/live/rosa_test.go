@@ -602,3 +602,72 @@ func TestClassFastLaneAndCheckIns(t *testing.T) {
 		t.Fatalf("asked %v", class.Asked())
 	}
 }
+
+func TestEnglishTurnsRepeatsAndListening(t *testing.T) {
+	cue := Sentence{EN: "I want to improve it more", ES: "quiero mejorarlo más"}
+	cases := map[string]string{
+		"No, no, we did that sentence already":      verdictMeta,
+		"You asked me to say something about Carla": verdictMeta,
+		"I want to improve it more?":                verdictClarify,
+		"sorry, say that again":                     verdictClarify,
+		"okay, wait, hang on":                       verdictPartial,
+		"[breath":                                   verdictPartial,
+		"what's probably":                           verdictUnsure,
+		"how do you say improve":                    verdictUnsure,
+	}
+	for said, want := range cases {
+		if got := judge(said, cue); got != want {
+			t.Errorf("judge(%q) = %s, want %s", said, got, want)
+		}
+	}
+	if addressed("Hola Rosa") || !addressed("Rosa?") {
+		t.Error("a greeting read as a check-in")
+	}
+
+	class := newClass("ls_modes", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	plan := testPlan()
+	plan.Items = append(plan.Items[:1],
+		PlanItem{Type: "listen", Kind: "new", Why: "ear", Passage: Passage{ES: "Toqué en un bar. Fue un desastre.", Gist: "I played in a bar. It was a disaster.",
+			Chunks: []Chunk{{ES: "toqué en un bar", EN: "I played in a bar"}, {ES: "fue un desastre", EN: "it was a disaster"}}}},
+		PlanItem{Type: "life", Kind: "new", Domain: "food", Question: "What did you eat today?", Why: "life"})
+	class.SetPlan(plan)
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	drained := func() string {
+		class.mu.Lock()
+		defer class.mu.Unlock()
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+	out("How would you say it's normal?", 1000)
+	in("es normal", 3000)
+	class.mu.Lock()
+	class.handOver(1)
+	class.mu.Unlock()
+	drained()
+	out("Escuchá. Toqué en un bar. Fue un desastre. What did you understand?", 4000)
+	if class.listen != 1 {
+		t.Fatalf("listen item not entered: current %d listen %d", class.current, class.listen)
+	}
+	in("you played in a bar?", 9000)
+	out("Sí. And the rest?", 10000)
+	in("it was a disaster", 13000)
+	if class.listen != -1 || len(class.understood) != 2 || !class.handed[2] {
+		t.Fatalf("passage not decoded: listen %d understood %v handed %v", class.listen, class.understood, class.handed)
+	}
+	out("Ha, it was. Now, what did you eat today?", 14000)
+	if class.current != 2 {
+		t.Fatalf("life item not entered: current %d", class.current)
+	}
+	drained()
+	in("pizza", 16000)
+	out("Okay, I want you to try this sentence with me now.", 17000)
+	in("sure", 19000)
+	out("Okay, I want you to try this sentence with me now.", 20000)
+	if text := drained(); !strings.Contains(text, repeated) {
+		t.Fatalf("repeat not caught: %s", text)
+	}
+}

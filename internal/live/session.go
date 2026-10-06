@@ -118,6 +118,9 @@ func (s *Session) Run() {
 			}
 		case "error":
 			log.Printf("live: %s %s", event.Error.Code, event.Error.Message)
+			if s.watch != nil {
+				s.watch("error", event.Error.Code+": "+event.Error.Message, 0, 0)
+			}
 		case "session.closed":
 			log.Printf("live: session %s closed (%s)", s.ID, event.Reason)
 			s.end("OpenAI closed it: " + event.Reason)

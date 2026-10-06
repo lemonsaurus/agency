@@ -179,6 +179,25 @@ func (g *Graph) Find(query string, limit int) []map[string]any {
 
 // Notes renders a plan item as quiet context for the live model, in appends that fit its limit.
 func (item PlanItem) Notes(thought Thought, position string) []string {
+	switch item.Type {
+	case "life":
+		return chunk([]string{
+			fmt.Sprintf("Plan item %s: a life question about %s. Why: %s", position, item.Domain, item.Why),
+			"Ask him in English: " + item.Question,
+			"He answers in English. Then build Spanish sentences from his answer with him, piece by piece, from what he already owns; ask each piece as \"how would you say ...\". Only what he said plainly is a fact about him.",
+		}, updateLimit)
+	case "listen":
+		lines := []string{
+			fmt.Sprintf("Plan item %s: listening. Why: %s", position, item.Why),
+			"In a dip, tell him this from your life in slow, clear Spanish, then ask him what he understood: " + item.Passage.ES,
+			"Gist: " + item.Passage.Gist,
+			"He decodes it aloud in English, and his English is the right answer here. Step forward chunk by chunk with the hints in order: a nudge, the Spanish again slower, the key word alone, a cognate. The English only as the last resort, until he has the whole thing.",
+		}
+		for i, piece := range item.Passage.Chunks {
+			lines = append(lines, fmt.Sprintf("%d. %q → %s (%s). Hints: %s", i+1, piece.ES, piece.EN, piece.Route, strings.Join(piece.Hints, " | ")))
+		}
+		return chunk(lines, updateLimit)
+	}
 	lines := []string{fmt.Sprintf("Plan item %s, %s: %s [%s]. Why: %s", position, item.Kind, thought.Title, thought.ID, item.Why)}
 	if item.Kind == "review" {
 		lines = append(lines, "He has met this before. Don't re-teach it; let the sentences bring it back, and explain only if he stumbles.")

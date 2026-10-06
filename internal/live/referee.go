@@ -1,6 +1,7 @@
 package live
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -18,6 +19,8 @@ const (
 	verdictClarify = "clarify"
 	// He is calling Rosa or checking she is there. Never an answer, never held.
 	verdictAddressed = "addressed"
+	// He is talking about the lesson or anything else in English: she answers him and adapts.
+	verdictMeta = "meta"
 )
 
 var accents = strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n", "à", "a", "è", "e", "ò", "o")
@@ -69,7 +72,7 @@ func setOf(text string) map[string]bool {
 // hooked on.
 func spanishEnding(word string) bool {
 	for _, ending := range []string{"cion", "mente", "arlo", "erlo", "irlo", "arla", "arme", "arte", "arse", "erse", "irse"} {
-		if strings.HasSuffix(word, ending) {
+		if strings.HasSuffix(word, ending) && len(word) >= len(ending)+3 {
 			return true
 		}
 	}
@@ -115,6 +118,56 @@ var unsure = []string{
 	"i do not know", "dunno", "no idea", "not sure", "no se", "ni idea", "no tengo idea", "no clue", "i forgot",
 	"i have forgotten", "can not remember", "do not remember", "i give up", "no me acuerdo",
 	"how do i say", "how do you say", "what is the word", "what was the word", "como se dice",
+	"what is", "what does", "what do you call", "in spanish",
+}
+
+// nonSpeech is a transcript tag for a sound that isn't speech: [breath], [laugh, [sniff].
+var nonSpeech = regexp.MustCompile(`\[[a-zA-Z ]*\]?`)
+
+// speech is a transcript fragment without its non-speech tags.
+func speech(text string) string {
+	return nonSpeech.ReplaceAllString(text, "")
+}
+
+var idleWords = setOf("okay ok wait hang on let me think so right alright hmm um uh one second sec moment yeah yes well hold")
+
+// englishTurn sorts an English turn with no Spanish in it. Thinking aloud ("okay, wait, um") is a wait.
+// Repeating or asking about the cue is a clarification: she says the phrase again. Anything else, a
+// complaint, a comment on the lesson, a story, is a conversation turn: she answers it and adapts.
+// Vocabulary questions never get here; unsure catches them first.
+func englishTurn(tokens []string, sentence Sentence) string {
+	padded := " " + strings.Join(tokens, " ") + " "
+	idle := true
+	for _, token := range tokens {
+		if !idleWords[token] && !fillers[token] {
+			idle = false
+		}
+	}
+	if idle {
+		return verdictPartial
+	}
+	for _, phrase := range []string{" say again ", " say that again ", " what was it ", " what was that ", " repeat ", " did not catch ", " what did you say ", " pardon ", " come again ", " one more time ", " sorry what ", " which sentence ", " what sentence "} {
+		if strings.Contains(padded, phrase) {
+			return verdictClarify
+		}
+	}
+	cue, hit := 0, 0
+	said := map[string]bool{}
+	for _, token := range tokens {
+		said[token] = true
+	}
+	for _, word := range words(sentence.EN) {
+		if len(word) >= 3 {
+			cue++
+			if said[word] {
+				hit++
+			}
+		}
+	}
+	if cue > 0 && hit*2 >= cue && len(tokens) <= len(words(sentence.EN))+3 {
+		return verdictClarify
+	}
+	return verdictMeta
 }
 
 // improvised finds a translation prompt Rosa made up herself, "how would you say X?" or "say X", in
@@ -165,15 +218,7 @@ func addressed(text string) bool {
 			content = append(content, token)
 		}
 	}
-	if len(content) == 0 || len(content) > 2 {
-		return false
-	}
-	for _, token := range content {
-		if token == "rosa" || token == "hello" || token == "hola" {
-			return true
-		}
-	}
-	return false
+	return len(content) == 1 && (content[0] == "rosa" || content[0] == "hello")
 }
 
 // easier is whether he says the material is too easy or asks to move on.
@@ -220,7 +265,11 @@ func squash(tokens []string) []rune {
 // toward the length of an attempt and never end it. A trailing question mark ends an attempt, as a questioning inflection does; a
 // trailing hesitation keeps it open. Right allows one slip per twelve letters for transcription.
 func judge(attempt string, sentence Sentence) string {
+	attempt = speech(attempt)
 	tokens := words(attempt)
+	if len(squash(tokens)) == 0 {
+		return verdictPartial
+	}
 	padded := " " + strings.Join(tokens, " ") + " "
 	for _, phrase := range unsure {
 		if strings.Contains(padded, " "+phrase+" ") {
@@ -234,7 +283,7 @@ func judge(attempt string, sentence Sentence) string {
 		}
 	}
 	if english(tokens) {
-		return verdictClarify
+		return englishTurn(tokens, sentence)
 	}
 	trimmed := strings.TrimSpace(attempt)
 	trailing := strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]]

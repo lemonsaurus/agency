@@ -23,6 +23,8 @@ const (
 	answerHim    = "Lemon is calling you or checking you are there. Answer in one short phrase, no greeting, and carry on where you were."
 	takeAnswer   = "Lemon answered while you were still talking. Stop, and respond to his answer now."
 	moveOn       = "Nothing is pending. Go straight on to the next step now."
+	talkToHim    = "Lemon is talking to you about the lesson, not answering. Answer him, let the open sentence go, and adapt to what he said."
+	repeated     = "You already said that this call. Don't repeat yourself: say or ask something new."
 	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
 	// Dead air after Rosa's turn, with nothing asked of Lemon, before the box nudges her on.
 	idleLimit = 4 * time.Second
@@ -105,6 +107,12 @@ type Class struct {
 	previous   []string // his words in the attempt before this one, which her echo doesn't count as a hint
 	prompts    []string // every target asked this call, so nothing is asked twice
 	harder     time.Time
+	listen     int             // plan item being decoded by ear, or -1
+	understood map[int]bool    // chunks of that passage he has decoded
+	spoken     map[string]bool // every sentence Rosa has said this call, normalised
+	logged     map[int]bool    // items whose topics went into the topic log
+	turnDone   int             // sentences of her current turn already checked
+	warned     bool            // she was told about a repeat in this turn
 	// onHarder asks the planner to jump ahead when he says it's too easy.
 	onHarder  func()
 	idleTimer *time.Timer
@@ -123,7 +131,7 @@ type update struct{ kind, content string }
 
 func newClass(id string, graph *Graph, learner *LearnerStore, logPath string, now time.Time) *Class {
 	return &Class{id: id, graph: graph, learner: learner, logPath: logPath, started: now, outbox: make(chan update, 64),
-		handed: map[int]bool{}, recorded: map[string]string{}, outcomes: map[string]string{}, misses: map[string]int{}, hinted: map[string]bool{}, touched: map[string]bool{}}
+		handed: map[int]bool{}, recorded: map[string]string{}, listen: -1, understood: map[int]bool{}, spoken: map[string]bool{}, logged: map[int]bool{}, outcomes: map[string]string{}, misses: map[string]int{}, hinted: map[string]bool{}, touched: map[string]bool{}}
 }
 
 // run delivers queued appends to the session in order, outside the class lock.
@@ -214,7 +222,9 @@ func (c *Class) Resume(logPath string) {
 	if !c.planned {
 		return
 	}
-	c.send("session.thinking.append", c.plan.Overview(c.graph))
+	for _, note := range c.plan.Overview(c.graph) {
+		c.send("session.thinking.append", note)
+	}
 	for i := c.current; i < len(c.plan.Items); i++ {
 		if c.handed[i] || i == c.current {
 			c.handOver(i)
@@ -227,8 +237,13 @@ func (c *Class) SetPlan(plan Plan) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.plan, c.planned = plan, true
-	c.send("session.thinking.append", plan.Overview(c.graph))
-	c.record("plan", map[string]any{"mode": plan.Mode, "why": plan.Why, "items": plan.Items})
+	for _, note := range plan.Overview(c.graph) {
+		c.send("session.thinking.append", note)
+	}
+	c.record("plan", map[string]any{"mode": plan.Mode, "why": plan.Why, "items": plan.Items, "teasers": plan.Teasers})
+	if cautions := c.learner.Cautions(); len(cautions) > 0 {
+		c.send("session.thinking.append", truncate("Mistakes you made in earlier calls, never repeat them: "+strings.Join(cautions, " "), updateLimit))
+	}
 	if len(plan.Items) > 0 {
 		c.handOver(0)
 	}
@@ -346,10 +361,17 @@ func (c *Class) watch(kind, text string, startMS, endMS int64) {
 		c.said(text, startMS, endMS)
 	case "session.delegation.created":
 		c.record("delegation", map[string]any{"t": startMS})
+	case "error":
+		// A model error mid-call may be moderation cutting her off; logged so it can be reviewed.
+		c.record("error", map[string]any{"error": truncate(text, 300), "rosa": truncate(c.turn, 300)})
 	}
 }
 
 func (c *Class) heard(text string, startMS, endMS int64) {
+	text = speech(text)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
 	if c.floor != "lemon" && !c.held {
 		c.overlap = c.floor == "rosa" && startMS < c.rosaEnd+300
 		c.fresh = c.cue(c.turn)
@@ -372,9 +394,13 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		c.record("attempt", map[string]any{"t": startMS, "target": c.key(c.armed), "think_ms": c.thinkMS})
 	}
 	c.held = false
-	c.floor, c.turn = "lemon", ""
+	c.floor, c.turn, c.turnDone, c.warned = "lemon", "", 0, false
 	c.attempt += text
 	c.lemonEnd, c.lemonAt = endMS, time.Now()
+	if c.listen >= 0 && c.listen == c.current {
+		c.decode()
+		return
+	}
 	if switched(c.attempt) && c.onSwitch != nil {
 		if c.switchAt != nil {
 			c.switchAt.Stop()
@@ -390,6 +416,14 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		if verdict != c.verdict {
 			c.verdict = verdict
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
+		}
+		if verdict == verdictMeta {
+			// He is talking about the lesson, not answering: she answers him and the target goes.
+			c.armed = nil
+			if c.holding {
+				c.release(talkToHim)
+			}
+			return
 		}
 		// The first hesitation after a prompt holds her before she can start anything else.
 		if c.fresh && verdict == verdictPartial && !c.holding && !c.intervened {
@@ -537,6 +571,8 @@ func (c *Class) said(text string, startMS, endMS int64) {
 	c.turn += text
 	c.rosaEnd = endMS
 	turn := words(c.turn)
+	c.repeats()
+	c.enter(turn)
 	if c.idleTimer != nil {
 		c.idleTimer.Stop()
 	}
@@ -626,6 +662,100 @@ func corrects(turn []string) bool {
 		}
 	}
 	return false
+}
+
+// repeats checks each sentence Rosa finishes against everything she has said this call, and tells her
+// at once when she repeats one. Short stock lines and a re-ask of the target he is still working on
+// are fine.
+func (c *Class) repeats() {
+	sentences := strings.FieldsFunc(c.turn, func(r rune) bool { return r == '.' || r == '?' || r == '!' })
+	if !strings.ContainsAny(c.turn[max(len(c.turn)-1, 0):], ".?!") {
+		sentences = sentences[:max(len(sentences)-1, 0)]
+	}
+	open := ""
+	if c.armed != nil && c.outcomes[c.key(c.armed)] == "" {
+		open = strings.Join(words(c.target(*c.armed).EN), " ")
+	}
+	for ; c.turnDone < len(sentences); c.turnDone++ {
+		tokens := words(sentences[c.turnDone])
+		if len(tokens) < 5 {
+			continue
+		}
+		key := strings.Join(tokens, " ")
+		if c.spoken[key] && !c.warned && (open == "" || !strings.Contains(key, open)) {
+			c.warned = true
+			c.record("repeat", map[string]any{"rosa": truncate(sentences[c.turnDone], 300)})
+			c.send("session.instructions.append", repeated)
+		}
+		c.spoken[key] = true
+	}
+}
+
+// enter moves the call into a life or listen item once Rosa starts it: she asks its question, or tells
+// its story. The item after it is handed over at once so she always has the next step.
+func (c *Class) enter(turn []string) {
+	for i := c.current + 1; i < len(c.plan.Items); i++ {
+		item := c.plan.Items[i]
+		if !c.handed[i] {
+			continue
+		}
+		started := false
+		switch item.Type {
+		case "life":
+			started = overlaps(turn, item.Question)
+		case "listen":
+			started = len(item.Passage.Chunks) > 0 && says(turn, item.Passage.Chunks[0].ES)
+		}
+		if !started {
+			continue
+		}
+		c.advance(i)
+		c.touched[item.Thought] = true
+		if item.Type == "listen" {
+			c.listen, c.understood = i, map[int]bool{}
+		}
+		c.record("enter", map[string]any{"item": i, "type": item.Type})
+		c.lookAhead()
+		return
+	}
+}
+
+// decode marks the chunks of the passage whose meaning his English decoding carries, and moves on once
+// he has them all.
+func (c *Class) decode() {
+	item := c.plan.Items[c.listen]
+	for i, piece := range item.Passage.Chunks {
+		if !c.understood[i] && overlaps(words(c.attempt), piece.EN) {
+			c.understood[i] = true
+			c.record("understood", map[string]any{"chunk": piece.ES, "said": truncate(c.attempt, 200)})
+			es := piece.ES
+			c.learner.Update(func(l *Learner) { l.hear(es, time.Now()) })
+		}
+	}
+	if len(c.understood) == len(item.Passage.Chunks) {
+		c.record("decoded", map[string]any{"item": c.listen})
+		c.listen = -1
+		c.lookAhead()
+	}
+}
+
+// overlaps is whether turn carries at least half of the content words of text.
+func overlaps(turn []string, text string) bool {
+	have := map[string]bool{}
+	for _, word := range turn {
+		have[word] = true
+	}
+	total, hit := 0, 0
+	for _, word := range words(text) {
+		if len(word) < 3 || idleWords[word] {
+			continue
+		}
+		total++
+		if have[word] {
+			hit++
+		}
+	}
+	return total > 0 && hit*2 >= total
 }
 
 // idle nudges Rosa on when she has stopped after a turn that asked nothing of Lemon.
@@ -801,6 +931,9 @@ func (c *Class) advance(i int) {
 		}
 	}
 	c.current = i
+	if c.listen >= 0 && i > c.listen {
+		c.listen = -1
+	}
 }
 
 func (c *Class) resolve(at [2]int, outcome string) {
@@ -863,6 +996,19 @@ func (c *Class) fastLane(item int) {
 	c.lookAhead()
 }
 
+// Touches is how many items in this call worked on a thought.
+func (c *Class) Touches(thought string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for i, item := range c.plan.Items {
+		if item.Thought == thought && (c.handed[i] || c.touched[thought]) {
+			n++
+		}
+	}
+	return n
+}
+
 // Asked is every target asked so far this call.
 func (c *Class) Asked() []string {
 	c.mu.Lock()
@@ -911,6 +1057,13 @@ func (c *Class) Finish(now time.Time) string {
 	c.closeGap()
 	report, statuses, covered := c.tally()
 	c.record("closed", map[string]any{"statuses": statuses})
+	var topics []string
+	for i, item := range c.plan.Items {
+		if c.handed[i] && !c.logged[i] {
+			c.logged[i] = true
+			topics = append(topics, item.Topics...)
+		}
+	}
 	recorded := c.recorded
 	c.learner.Update(func(l *Learner) {
 		for id, status := range statuses {
@@ -929,6 +1082,9 @@ func (c *Class) Finish(now time.Time) string {
 			record.Status, record.At = status, now
 			l.Thoughts[id] = record
 			recorded[id] = status
+		}
+		for _, topic := range topics {
+			l.Topics = append(l.Topics, TopicUse{Topic: topic, At: now})
 		}
 		call := LessonCall{At: c.started, Session: c.id, Minutes: now.Sub(c.started).Minutes(), Thoughts: covered}
 		for i := range l.Calls {

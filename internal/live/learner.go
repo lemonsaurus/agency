@@ -20,8 +20,53 @@ type Learner struct {
 	Pacing   []Pace                   `json:"pacing"`
 	Gaps     []GapRecord              `json:"gaps"`
 	Words    map[string]Word          `json:"words"`
+	Heard    map[string]Word          `json:"heard"`
+	Facts    []Fact                   `json:"facts"`
+	Topics   []TopicUse               `json:"topics"`
+	Cautions []string                 `json:"cautions"`
 	Links    []string                 `json:"links"`
 	Calls    []LessonCall             `json:"calls"`
+}
+
+// Fact is something Lemon told Rosa about his life, filed under a domain. An unconfirmed fact is
+// asked about, never stated.
+type Fact struct {
+	Domain    string    `json:"domain"`
+	Text      string    `json:"text"`
+	Confirmed bool      `json:"confirmed"`
+	At        time.Time `json:"at"`
+}
+
+// TopicUse is a topic a call's sentences or stories were about.
+type TopicUse struct {
+	Topic string    `json:"topic"`
+	At    time.Time `json:"at"`
+}
+
+// Domains are the parts of his life Rosa asks about, fewest known facts first.
+var Domains = []string{"family", "Sofie", "work", "band and bass", "home", "food", "plans", "today", "travel", "childhood", "friends", "hobbies"}
+
+// hear records the words of a Spanish chunk he understood by ear.
+func (l *Learner) hear(chunk string, now time.Time) {
+	if l.Heard == nil {
+		l.Heard = map[string]Word{}
+	}
+	for _, word := range words(chunk) {
+		entry, ok := l.Heard[word]
+		if !ok {
+			entry = Word{Word: word, First: now, How: "understood"}
+		}
+		entry.Last, entry.Sentence = now, truncate(chunk, 200)
+		entry.Seen++
+		l.Heard[word] = entry
+	}
+}
+
+// Cautions are the latest mistakes Rosa made, for the next call's first note.
+func (s *LearnerStore) Cautions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return tail(append([]string(nil), s.data.Cautions...), 6)
 }
 
 // Word is one Spanish word Lemon has been exposed to, keyed by its accentless lowercase form. How is
@@ -181,6 +226,9 @@ func (s *LearnerStore) Update(change func(l *Learner)) error {
 	s.data.Calls = tail(s.data.Calls, learnerCalls)
 	s.data.Gaps = tail(s.data.Gaps, learnerGaps)
 	s.data.Links = tail(s.data.Links, learnerLinks)
+	s.data.Facts = tail(s.data.Facts, 300)
+	s.data.Topics = tail(s.data.Topics, 300)
+	s.data.Cautions = tail(s.data.Cautions, 40)
 	if s.path == "" {
 		return nil
 	}
@@ -212,6 +260,13 @@ func (s *LearnerStore) Summary(now time.Time) string {
 	b.WriteString("Learner memory.")
 	if len(s.data.Profile) > 0 {
 		b.WriteString(" About Lemon: " + strings.Join(s.data.Profile, " "))
+	}
+	for _, fact := range s.data.Facts {
+		if fact.Confirmed {
+			fmt.Fprintf(&b, " [%s] %s.", fact.Domain, fact.Text)
+		} else {
+			fmt.Fprintf(&b, " [%s, unconfirmed: ask him, never state it] %s.", fact.Domain, fact.Text)
+		}
 	}
 	if len(s.data.Thoughts) > 0 {
 		counts := map[string]int{}

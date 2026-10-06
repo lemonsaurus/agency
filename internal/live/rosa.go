@@ -29,6 +29,7 @@ type Rosa struct {
 	dir     string // ~/.agents/run/agency/rosa
 	memory  *Memory
 	learner *LearnerStore
+	canon   *Canon
 
 	mu      sync.Mutex
 	graph   *Graph
@@ -53,8 +54,11 @@ var RosaSchema = json.RawMessage(`[
 {"type":"function","name":"status","description":"Set Lemon's status for a thought the call covered when the referee report missed it, judged from the transcript.","parameters":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["introduced","found with help","found alone"]}},"required":["id","status"],"additionalProperties":false}},
 {"type":"function","name":"talk","description":"Switch the rest of this call to conversation when Lemon wants to just talk.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"learner","description":"Everything learner memory holds about Lemon: profile facts, thought statuses, errors by cause, habits, the word dictionary, gaps, links he reacted to, wording log, pacing and past calls.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
-{"type":"function","name":"remember","description":"Add to learner memory. profile: a durable fact about Lemon's life to build sentences from. error: a wrong answer filed under its diagnosed cause (text is the cause; give thought, said and expected). habit: a learning habit seen, such as reciting tables, guessing, or inventing mnemonics. link: a cross-language link and how he reacted to it. Never store anything Lemon asks you not to.","parameters":{"type":"object","properties":{"kind":{"type":"string","enum":["profile","error","habit","link"]},"text":{"type":"string"},"thought":{"type":"string"},"said":{"type":"string"},"expected":{"type":"string"}},"required":["kind","text","thought","said","expected"],"additionalProperties":false}},
+{"type":"function","name":"remember","description":"Add to learner memory. profile: a general note about him as a learner. fact: something he told you about his life, with domain (family, Sofie, work, band and bass, home, food, plans, today, travel, childhood, friends, hobbies) and confirmed true only if he said it plainly. error: a wrong answer filed under its diagnosed cause (text is the cause; give thought, said and expected). habit: a learning habit seen, such as reciting tables, guessing, or inventing mnemonics. link: a cross-language link and how he reacted to it. caution: a mistake Rosa made, like a false etymology, to warn her next call. Never store anything Lemon asks you not to.","parameters":{"type":"object","properties":{"kind":{"type":"string","enum":["profile","fact","error","habit","link","caution"]},"text":{"type":"string"},"domain":{"type":"string"},"confirmed":{"type":"boolean"},"thought":{"type":"string"},"said":{"type":"string"},"expected":{"type":"string"}},"required":["kind","text","domain","confirmed","thought","said","expected"],"additionalProperties":false}},
 {"type":"function","name":"words","description":"Add Spanish words Lemon was exposed to into his dictionary, with how he got them and the sentence they came in, and what he has memorised: a noun's gender, a set of conjugation endings, an irregular form. Links only when true.","parameters":{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"word":{"type":"string"},"kind":{"type":"string","enum":["word","gender","endings","form"],"description":"word, or what he has memorised: a noun's gender, a set of conjugation endings, an irregular form."},"gender":{"type":"string","enum":["","el","la"]},"how":{"type":"string","enum":["told","found with help","found alone"]},"sentence":{"type":"string"},"links":{"type":"array","items":{"type":"string"}}},"required":["word","kind","gender","how","sentence","links"],"additionalProperties":false}}},"required":["entries"],"additionalProperties":false}},
+{"type":"function","name":"canon","description":"Rosa's canon in full: facts, people, places, stories, teasers and open serials, with what she has told.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
+{"type":"function","name":"canon_add","description":"Author a new canon entry, true to her persona and consistent with the canon. kind fact, person, place, story, teaser or open (a serial with a hook for next time).","parameters":{"type":"object","properties":{"id":{"type":"string"},"kind":{"type":"string","enum":["fact","person","place","story","teaser","open"]},"title":{"type":"string"},"text":{"type":"string"},"spanish":{"type":"array","items":{"type":"string"}},"next":{"type":"string"},"rating":{"type":"string","enum":["clean","spicy","x"]}},"required":["id","kind","title","text","spanish","next","rating"],"additionalProperties":false}},
+{"type":"function","name":"canon_told","description":"Mark a canon entry as told in this call; for an open serial, give the hook for next time.","parameters":{"type":"object","properties":{"id":{"type":"string"},"next":{"type":"string"}},"required":["id","next"],"additionalProperties":false}},
 {"type":"function","name":"conversation","description":"End the call when Lemon is done or asks to stop. The phone hangs up after your next sentence, so say a short goodbye.","parameters":{"type":"object","properties":{"state":{"type":"string","enum":["off"]}},"required":["state"],"additionalProperties":false}}
 ]`)
 
@@ -77,7 +81,8 @@ var gapFormat = json.RawMessage(`{"type":"json_schema","name":"gap","strict":tru
 
 func NewRosa(prompts, dir string) *Rosa {
 	os.MkdirAll(filepath.Join(dir, "floor"), 0o700)
-	return &Rosa{prompts: prompts, dir: dir, memory: OpenMemory(filepath.Join(dir, "transcript.jsonl")), learner: OpenLearner(filepath.Join(dir, "learner.json"))}
+	return &Rosa{prompts: prompts, dir: dir, memory: OpenMemory(filepath.Join(dir, "transcript.jsonl")), learner: OpenLearner(filepath.Join(dir, "learner.json")),
+		canon: OpenCanon(filepath.Join(dir, "canon.jsonl"), filepath.Join(prompts, "canon.jsonl"))}
 }
 
 func (r *Rosa) threadPath() string { return filepath.Join(r.dir, "thread.json") }
@@ -331,7 +336,54 @@ func (r *Rosa) more(session *Session, class *Class) {
 	if err != nil {
 		log.Printf("rosa: more items failed: %v", err)
 	}
-	class.Extend(plan.Items)
+	var items []PlanItem
+	for _, item := range plan.Items {
+		if item.Type == "thought" && class.Touches(item.Thought) >= 2 {
+			continue
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		items = r.fallback(class)
+	}
+	class.Extend(items)
+}
+
+// fallback is the next step when the planner has nothing: the next frontier thought with its own
+// examples, or a question about the part of his life Rosa knows least.
+func (r *Rosa) fallback(class *Class) []PlanItem {
+	r.learner.mu.Lock()
+	statuses := map[string]ThoughtStatus{}
+	for id, status := range r.learner.data.Thoughts {
+		statuses[id] = status
+	}
+	known := map[string]int{}
+	for _, fact := range r.learner.data.Facts {
+		known[fact.Domain]++
+	}
+	r.learner.mu.Unlock()
+	if graph, err := r.Graph(); err == nil {
+		for _, thought := range Frontier(graph, statuses, 20) {
+			if len(thought.Examples) > 0 && class.Touches(thought.ID) == 0 {
+				return []PlanItem{{Type: "thought", Thought: thought.ID, Kind: "new", Why: "next in the curriculum", Targets: thought.Examples}}
+			}
+		}
+	}
+	domain := Domains[0]
+	for _, d := range Domains {
+		if known[d] < known[domain] {
+			domain = d
+		}
+	}
+	return []PlanItem{{Type: "life", Kind: "new", Domain: domain, Question: lifeQuestions[domain], Why: "the part of his life you know least"}}
+}
+
+var lifeQuestions = map[string]string{
+	"family": "Tell me about your family: who's in it?", "Sofie": "Tell me about Sofie: how did you two meet?",
+	"work": "What are you working on these days?", "band and bass": "Tell me about your band: what do you play?",
+	"home": "Where do you live, and what's it like?", "food": "What did you eat today?", "plans": "What are you doing this weekend?",
+	"today": "What did you do today?", "travel": "Where was the last place you travelled?", "childhood": "Where did you grow up?",
+	"friends": "Who's your oldest friend?", "hobbies": "What do you do when you're not working?",
 }
 
 // harder replaces the rest of the call's plan with a placement probe and material from further on.
@@ -447,9 +499,9 @@ func (r *Rosa) debrief(class *Class, ended time.Time) {
 		seedMessage("developer", "The call just ended. "+report),
 		seedMessage("developer", r.learner.Summary(now)),
 		seedMessage("developer", "Transcript of the call:\n"+truncate(transcript, 60000)),
-		seedMessage("developer", "Review: with status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
+		seedMessage("developer", "Review: with canon_told, mark every canon entry she told (story, teaser, fact), with the hook for next time on open serials. Scan every etymology or cross-language claim she made: if it isn't true, file a caution saying what she claimed and what is true. With remember kind fact, file what he told about his life by domain, confirmed only if he said it plainly. With status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
 	}
-	reply, err := backend.Answer(ctx, input)
+	reply, err := backend.AnswerWithin(ctx, input, 40)
 	if err != nil {
 		log.Printf("rosa: review failed: %v", err)
 	} else {
@@ -475,18 +527,21 @@ func (r *Rosa) debrief(class *Class, ended time.Time) {
 // Call runs one of Rosa's backend tools.
 func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 	var args struct {
-		ID       string     `json:"id"`
-		Query    string     `json:"query"`
-		Why      string     `json:"why"`
-		Targets  []Sentence `json:"targets"`
-		Kind     string     `json:"kind"`
-		Text     string     `json:"text"`
-		Thought  string     `json:"thought"`
-		Said     string     `json:"said"`
-		Expected string     `json:"expected"`
-		State    string     `json:"state"`
-		Entries  []Word     `json:"entries"`
-		Status   string     `json:"status"`
+		ID        string     `json:"id"`
+		Query     string     `json:"query"`
+		Why       string     `json:"why"`
+		Targets   []Sentence `json:"targets"`
+		Kind      string     `json:"kind"`
+		Text      string     `json:"text"`
+		Thought   string     `json:"thought"`
+		Said      string     `json:"said"`
+		Expected  string     `json:"expected"`
+		State     string     `json:"state"`
+		Entries   []Word     `json:"entries"`
+		Status    string     `json:"status"`
+		Domain    string     `json:"domain"`
+		Confirmed bool       `json:"confirmed"`
+		Next      string     `json:"next"`
 	}
 	if arguments != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -533,6 +588,10 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 				l.Habits = append(l.Habits, text)
 			case "link":
 				l.Links = append(l.Links, text)
+			case "fact":
+				l.Facts = append(l.Facts, Fact{Domain: args.Domain, Text: text, Confirmed: args.Confirmed, At: time.Now()})
+			case "caution":
+				l.Cautions = append(l.Cautions, text)
 			default:
 				l.Errors = append(l.Errors, LearnerError{At: time.Now(), Thought: args.Thought, Said: truncate(args.Said, 300), Expected: truncate(args.Expected, 300), Cause: text})
 			}
@@ -584,6 +643,22 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"result": args.ID + " is " + args.Status + "."}, nil
+	case "canon":
+		return map[string]any{"canon": r.canon.All()}, nil
+	case "canon_add":
+		var entry CanonEntry
+		if err := json.Unmarshal([]byte(arguments), &entry); err != nil {
+			return nil, fmt.Errorf("invalid canon entry")
+		}
+		if err := r.canon.Add(entry); err != nil {
+			return nil, err
+		}
+		return map[string]any{"result": "Canon entry " + entry.ID + " added."}, nil
+	case "canon_told":
+		if err := r.canon.Tell(args.ID, args.Next, time.Now()); err != nil {
+			return nil, err
+		}
+		return map[string]any{"result": "Marked told."}, nil
 	case "conversation":
 		if args.State != "off" || turnOff == nil {
 			return nil, fmt.Errorf("state must be off")
