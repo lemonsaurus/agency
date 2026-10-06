@@ -72,11 +72,11 @@ func spanishEnding(word string) bool {
 	return false
 }
 
-// switched is whether a Spanish turn carries English content words: a quiet request for the
-// Spanish he is missing. It takes two Spanish words, so an English chat with a che or a dale in it
-// doesn't count; fillers and listening sounds count as neither.
+// switched is whether a mainly Spanish turn carries English content words: a quiet request for the
+// Spanish he is missing. It takes two Spanish words and no more English words than the rest, so an
+// English question quoting "el mundo" doesn't count; fillers and listening sounds count as neither.
 func switched(text string) bool {
-	es, en := 0, 0
+	es, en, other := 0, 0, 0
 	for _, word := range words(text) {
 		switch {
 		case fillers[word] || backchannels[word]:
@@ -84,9 +84,11 @@ func switched(text string) bool {
 			es++
 		case english[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
 			en++
+		default:
+			other++
 		}
 	}
-	return es > 1 && en > 0
+	return es > 1 && en > 0 && es+other >= en
 }
 
 var unsure = []string{
@@ -180,8 +182,7 @@ func judge(attempt string, sentence Sentence) string {
 	}
 	said := squash(tokens)
 	for _, answer := range append([]string{sentence.ES}, sentence.Also...) {
-		expected := squash(words(answer))
-		if len(expected) > 0 && within(expected, said) <= len(expected)/12 {
+		if contains(tokens, answer) {
 			return verdictRight
 		}
 	}
@@ -199,26 +200,48 @@ func judge(attempt string, sentence Sentence) string {
 	return verdictPartial
 }
 
-// within is the smallest edit distance between pattern and any substring of text.
-func within(pattern, text []rune) int {
-	previous := make([]int, len(text)+1)
-	current := make([]int, len(text)+1)
-	for i := 1; i <= len(pattern); i++ {
-		current[0] = i
-		for j := 1; j <= len(text); j++ {
-			cost := 1
-			if pattern[i-1] == text[j-1] {
-				cost = 0
-			}
-			current[j] = min(previous[j-1]+cost, previous[j]+1, current[j-1]+1)
+// contains is whether some run of whole words in tokens, fillers aside, spells answer exactly,
+// accents aside, so "cancelar lo" counts for "cancelarlo" but "diferentes" never for "diferente".
+func contains(tokens []string, answer string) bool {
+	expected := string(squash(words(answer)))
+	if expected == "" {
+		return false
+	}
+	var content []string
+	for _, token := range tokens {
+		if !fillers[token] {
+			content = append(content, token)
 		}
-		previous, current = current, previous
 	}
-	best := len(pattern)
-	for _, distance := range previous {
-		best = min(best, distance)
+	for i := range content {
+		run := ""
+		for j := i; j < len(content) && len(run) < len(expected); j++ {
+			run += content[j]
+			if run == expected {
+				return true
+			}
+		}
 	}
-	return best
+	return false
+}
+
+// hints is whether Rosa's turn gives away a Spanish word of the expected answer that the English cue
+// doesn't already contain.
+func hints(turn []string, sentence Sentence) bool {
+	cue := map[string]bool{}
+	for _, word := range words(sentence.EN) {
+		cue[word] = true
+	}
+	said := map[string]bool{}
+	for _, word := range turn {
+		said[word] = true
+	}
+	for _, word := range words(sentence.ES) {
+		if len(word) >= 4 && !cue[word] && said[word] {
+			return true
+		}
+	}
+	return false
 }
 
 // cued reports where the English cue ends inside Rosa's turn, or -1. The cue's words must appear in
@@ -261,6 +284,5 @@ func backchannel(turn []string) bool {
 
 // says reports whether Rosa's turn contains the Spanish answer itself.
 func says(turn []string, answer string) bool {
-	expected := squash(words(answer))
-	return len(expected) > 0 && within(expected, squash(turn)) <= len(expected)/12
+	return contains(turn, answer)
 }

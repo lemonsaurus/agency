@@ -239,10 +239,33 @@ func (r *Rosa) gapPass(session *Session, backend *Backend, class *Class, said, a
 		return
 	}
 	gap.Said = said
+	if !echoes(gap.Sentence, said) {
+		log.Printf("rosa: gap pass ignored: %q is not what he said", gap.Sentence)
+		return
+	}
 	for i, chunk := range gap.Chunks {
 		gap.Chunks[i].Known = r.learner.Known(chunk.Spanish)
 	}
 	class.SetGap(gap)
+}
+
+// echoes is whether the gap pass's sentence keeps the Spanish he actually said: at least half of his
+// Spanish words.
+func echoes(sentence, said string) bool {
+	in := map[string]bool{}
+	for _, word := range words(sentence) {
+		in[word] = true
+	}
+	total, kept := 0, 0
+	for _, word := range words(said) {
+		if spanish[word] || spanishEnding(word) {
+			total++
+			if in[word] {
+				kept++
+			}
+		}
+	}
+	return total > 0 && kept*2 >= total
 }
 
 func (r *Rosa) gapInstructions() string {
@@ -271,7 +294,7 @@ func (r *Rosa) debrief(session *Session, class *Class) {
 		seedMessage("developer", "The call just ended. "+report),
 		seedMessage("developer", r.learner.Summary(now)),
 		seedMessage("developer", "Transcript of the call:\n"+truncate(transcript, 60000)),
-		seedMessage("developer", "Review: with status, set the status of each thought the call covered that the referee report doesn't list. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
+		seedMessage("developer", "Review: with status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
 	}
 	reply, err := session.backend.Answer(ctx, input)
 	if err != nil {

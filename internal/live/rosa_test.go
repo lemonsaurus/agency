@@ -20,7 +20,8 @@ func TestJudge(t *testing.T) {
 	cases := map[string]string{
 		"No quiero cancelarlo ahora.":       verdictRight,
 		"uh, no quiero cancelar lo, ahora":  verdictRight,
-		"no quiero cancelarlo aora":         verdictRight,
+		"no quiero cancelarlo aora":         verdictAttempt,
+		"no quiero cancelarlos ahora":       verdictAttempt,
 		"No quiero…":                        verdictPartial,
 		"uhmm... maybe..":                   verdictPartial,
 		"no quiero cancelarlo... uhh":       verdictPartial,
@@ -36,6 +37,12 @@ func TestJudge(t *testing.T) {
 		if got := judge(said, sentence); got != want {
 			t.Errorf("judge(%q) = %s, want %s", said, got, want)
 		}
+	}
+	if judge("mi vida es diferentes", Sentence{ES: "mi vida es diferente"}) != verdictAttempt || judge("naturalmennte", Sentence{ES: "naturalmente"}) != verdictAttempt {
+		t.Error("a near miss judged right")
+	}
+	if switched("why is el mundo at the end of the sentence when we say el mundo") || !switched("quiero hablar más rápido, yyy.. about many different topics") {
+		t.Error("code switch detection")
 	}
 	if judge("Yo no quiero", Sentence{ES: "Yo no quiero"}) != verdictRight || judge("No yo quiero", Sentence{ES: "Yo no quiero"}) != verdictAttempt {
 		t.Error("word order slip not caught")
@@ -409,7 +416,7 @@ func TestComposeAndGapPass(t *testing.T) {
 			if body.Model != gapModel || body.Tools != nil {
 				t.Errorf("gap pass model=%s tools=%s", body.Model, body.Tools)
 			}
-			gap := `{"sentence":"sobre muchos temas diferentes","chunks":[{"english":"different","spanish":"diferentes","also":[],"route":"convert","thought":"t03-ant-ent","guessable":true,"hint":"think of the -ent words","ask":"how do you say different?","link":"","misses":[]},{"english":"about","spanish":"sobre","also":[],"route":"new","thought":"","guessable":false,"hint":"","ask":"how do you say about?","link":"","misses":[]}],"aside":"tópico means cliché"}`
+			gap := `{"sentence":"quiero hablar sobre muchos temas diferentes","chunks":[{"english":"different","spanish":"diferentes","also":[],"route":"convert","thought":"t03-ant-ent","guessable":true,"hint":"think of the -ent words","ask":"how do you say different?","link":"","misses":[]},{"english":"about","spanish":"sobre","also":[],"route":"new","thought":"","guessable":false,"hint":"","ask":"how do you say about?","link":"","misses":[]}],"aside":"tópico means cliché"}`
 			data, _ := json.Marshal(gap)
 			respond(w, `[{"type":"message","content":[{"type":"output_text","text":`+string(data)+`}]}]`)
 		default:
@@ -437,4 +444,54 @@ func TestComposeAndGapPass(t *testing.T) {
 		t.Fatalf("gap %+v", class.gap)
 	}
 	session.Close()
+}
+
+func TestClassKeepsTheCallMoving(t *testing.T) {
+	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	sent := func() string {
+		class.mu.Lock()
+		defer class.mu.Unlock()
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+	sent()
+
+	// The answer's own Spanish in her prompt makes a right answer found with help, not alone.
+	class.mu.Lock()
+	class.handOver(1)
+	class.mu.Unlock()
+	sent()
+	out("How would you say I want to cancel it? Start with quiero.", 1000)
+	in("quiero cancelarlo", 4000)
+	if class.outcomes["2:t04-quiero/1"] != "helped" {
+		t.Fatalf("outcomes %v", class.outcomes)
+	}
+
+	// Feedback with nothing asked, then silence: the box nudges her on.
+	idle := idleLimit
+	out("Perfect.", 13000)
+	time.Sleep(idle + 300*time.Millisecond)
+	if text := sent(); !strings.Contains(text, moveOn) {
+		t.Fatalf("no nudge after dead air: %s", text)
+	}
+
+	// A complete answer over her still-running turn makes her stop and take it.
+	out("How would you say it's not normal? And remember where", 20000)
+	in("no es normal", 20200)
+	if text := sent(); !strings.Contains(text, takeAnswer) {
+		t.Fatalf("no take-over: %s", text)
+	}
+
+	// An uncued attempt lets go of a target that has no correction under way.
+	out("Tell me about your day.", 30000)
+	in("I coded all day", 33000)
+	if class.armed != nil {
+		t.Fatalf("still armed: %v", class.armed)
+	}
 }

@@ -21,6 +21,12 @@ const (
 	holdFloor    = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
 	releaseFloor = "Lemon has finished his answer. The floor is yours again: respond to what he said now."
 	answerHim    = "Lemon is talking to you directly. Answer him now."
+	takeAnswer   = "Lemon answered while you were still talking. Stop, and respond to his answer now."
+	moveOn       = "Nothing is pending. Go straight on to the next step now."
+	// Dead air after Rosa's turn, with nothing asked of Lemon, before the box nudges her on.
+	idleLimit = 2500 * time.Millisecond
+	// A target he keeps not getting, with no new cue, is let go after this many attempts.
+	armedLimit = 3
 )
 
 // Gap is one code-switched turn worked out: what he meant, and each English chunk with its Spanish
@@ -70,6 +76,7 @@ type Class struct {
 	extending bool         // more items are being composed for this call
 	outcomes  map[string]string
 	misses    map[string]int
+	hinted    map[string]bool // Rosa gave part of the answer, or he lacked a word
 	touched   map[string]bool
 	gap       *Gap
 	gapID     int
@@ -87,6 +94,10 @@ type Class struct {
 	intervened bool
 	holding    bool // Rosa was told to wait; released when his attempt completes or he goes quiet
 	holdTimer  *time.Timer
+	overlap    bool // he started this attempt while Rosa was still talking
+	tookOver   bool
+	tries      int // attempts since the armed target was last cued
+	idleTimer  *time.Timer
 	rosaEnd    int64
 	lemonEnd   int64
 	lemonAt    time.Time
@@ -102,7 +113,7 @@ type update struct{ kind, content string }
 
 func newClass(graph *Graph, learner *LearnerStore, logPath string, now time.Time) *Class {
 	return &Class{graph: graph, learner: learner, logPath: logPath, started: now, outbox: make(chan update, 64),
-		handed: map[int]bool{}, outcomes: map[string]string{}, misses: map[string]int{}, touched: map[string]bool{}}
+		handed: map[int]bool{}, outcomes: map[string]string{}, misses: map[string]int{}, hinted: map[string]bool{}, touched: map[string]bool{}}
 }
 
 // run delivers queued appends to the session in order, outside the class lock.
@@ -254,9 +265,19 @@ func (c *Class) watch(kind, text string, startMS, endMS int64) {
 
 func (c *Class) heard(text string, startMS, endMS int64) {
 	if c.floor != "lemon" && !c.held {
+		c.overlap = c.floor == "rosa" && startMS < c.rosaEnd+300
 		c.fresh = c.cue(c.turn)
+		if c.fresh {
+			c.tries = 0
+		} else if c.armed != nil {
+			// An uncued attempt keeps a target only while a correction is under way.
+			if key := c.key(c.armed); c.armed[0] < 0 || c.misses[key] == 0 && !c.hinted[key] || c.tries >= armedLimit {
+				c.armed = nil
+			}
+		}
+		c.tries++
 		c.attemptID++
-		c.attempt, c.verdict, c.intervened = "", "", false
+		c.attempt, c.verdict, c.intervened, c.tookOver = "", "", false, false
 		c.thinkMS = 0
 		if c.rosaEnd > 0 {
 			c.thinkMS = startMS - c.rosaEnd
@@ -281,6 +302,11 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
 		}
 	}
+	if c.overlap && c.fresh && !c.tookOver && c.armed != nil && c.verdict != verdictPartial {
+		c.tookOver = true
+		c.record("take", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300)})
+		c.send("session.instructions.append", takeAnswer)
+	}
 	if c.holding {
 		switch {
 		case addressed(text):
@@ -297,7 +323,7 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	verdict := c.verdict
 	if verdict == verdictRight {
 		outcome := "alone"
-		if c.misses[c.key(c.armed)] > 0 {
+		if key := c.key(c.armed); c.misses[key] > 0 || c.hinted[key] {
 			outcome = "helped"
 		}
 		c.resolve(*c.armed, outcome)
@@ -398,6 +424,11 @@ func (c *Class) said(text string, startMS, endMS int64) {
 	c.turn += text
 	c.rosaEnd = endMS
 	turn := words(c.turn)
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
+	said := c.turn
+	c.idleTimer = time.AfterFunc(idleLimit, func() { c.idle(said) })
 	if c.floor == "lemon" && backchannel(turn) {
 		return
 	}
@@ -417,12 +448,32 @@ func (c *Class) said(text string, startMS, endMS int64) {
 				}
 			case verdictAttempt, verdictUnsure:
 				c.misses[c.key(c.armed)]++
+			case verdictGap:
+				c.hinted[c.key(c.armed)] = true
 			}
 		}
 	}
-	if c.armed != nil && c.misses[c.key(c.armed)] > 0 && says(turn, c.target(*c.armed).ES) {
+	if c.armed == nil || c.floor != "rosa" {
+		return
+	}
+	target := c.target(*c.armed)
+	if hints(turn, target) {
+		c.hinted[c.key(c.armed)] = true
+	}
+	if c.misses[c.key(c.armed)] > 0 && says(turn, target.ES) {
 		c.resolve(*c.armed, "shown")
 	}
+}
+
+// idle nudges Rosa on when she has stopped after a turn that asked nothing of Lemon.
+func (c *Class) idle(said string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || strings.HasSuffix(strings.TrimSpace(said), "?") {
+		return
+	}
+	c.record("nudge", map[string]any{"rosa": truncate(said, 300)})
+	c.send("session.instructions.append", moveOn)
 }
 
 // settle stops Rosa if Lemon's answer is still partial once late fragments have arrived.
@@ -524,6 +575,9 @@ func (c *Class) cue(raw string) bool {
 		c.advance(best[0])
 	}
 	c.armed, c.verdict = best, ""
+	if hints(turn, c.target(*best)) {
+		c.hinted[c.key(best)] = true
+	}
 	c.record("prompt", map[string]any{"target": c.key(best), "en": c.target(*best).EN, "es": c.target(*best).ES})
 	if c.prompted != nil {
 		go c.prompted()
