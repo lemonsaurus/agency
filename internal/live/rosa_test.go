@@ -94,7 +94,7 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	dir := t.TempDir()
 	learner := OpenLearner(filepath.Join(dir, "learner.json"))
 	logPath := filepath.Join(dir, "floor.jsonl")
-	class := newClass(testGraph(t, dir), learner, logPath, time.Now())
+	class := newClass("ls_test", testGraph(t, dir), learner, logPath, time.Now())
 	prompted := make(chan bool, 1)
 	class.prompted = func() { prompted <- true }
 	exhausted := make(chan bool, 1)
@@ -146,7 +146,7 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	if class.extending || !class.handed[2] {
 		t.Fatal("extension not handed over")
 	}
-	report := class.Finish("ls_1", time.Now())
+	report := class.Finish(time.Now())
 	if !strings.Contains(report, "interventions: 1") || learner.Status("t02-es") != "found alone" || learner.Status("t04-quiero") != "found with help" {
 		t.Fatalf("report=%s statuses=%s %s", report, learner.Status("t02-es"), learner.Status("t04-quiero"))
 	}
@@ -162,7 +162,7 @@ func TestClassRefereesTheFloor(t *testing.T) {
 }
 
 func TestClassRefereesAnImprovisedPrompt(t *testing.T) {
-	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
 	class.watch("session.output_transcript.delta", "Okay, digital, like your software. How would you say it?", 1000, 1100)
 	class.watch("session.input_transcript.delta", "di...", 3000, 3100)
@@ -186,7 +186,7 @@ func TestClassRefereesAnImprovisedPrompt(t *testing.T) {
 }
 
 func TestClassReleasesAHold(t *testing.T) {
-	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
 	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
 	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
@@ -235,7 +235,7 @@ func TestClassReleasesAHold(t *testing.T) {
 }
 
 func TestClassLetsRosaAnswerAWrongAttempt(t *testing.T) {
-	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
 	class.watch("session.output_transcript.delta", "How would you say it's not normal?", 1000, 1100)
 	class.watch("session.input_transcript.delta", "es no normal", 3000, 3500)
@@ -249,7 +249,7 @@ func TestClassLetsRosaAnswerAWrongAttempt(t *testing.T) {
 func TestClassWorksOutACodeSwitch(t *testing.T) {
 	learner := OpenLearner("")
 	learner.Update(func(l *Learner) { l.expose("es muy diferente", "found alone", time.Now()) })
-	class := newClass(testGraph(t, t.TempDir()), learner, "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), learner, "", time.Now())
 	asked := make(chan string, 1)
 	class.onSwitch = func(said, about string) { asked <- said }
 	class.watch("session.output_transcript.delta", "Contame, che.", 1000, 1100)
@@ -289,7 +289,7 @@ func TestClassWorksOutACodeSwitch(t *testing.T) {
 	if class.outcomes["gap1/2"] != "alone" || class.outcomes["gap1/3"] != "alone" || class.outcomes["gap1/4"] != "alone" {
 		t.Fatalf("outcomes %v", class.outcomes)
 	}
-	class.Finish("ls_2", time.Now())
+	class.Finish(time.Now())
 	if !learner.Known("temas") || len(learner.data.Gaps) != 3 || learner.data.Gaps[0].Found {
 		t.Fatalf("gaps %+v", learner.data.Gaps)
 	}
@@ -397,6 +397,23 @@ func TestManagerStartsRosa(t *testing.T) {
 	if _, err := m.Handle(context.Background(), `{"op":"start","agent":"bob","voice":"quartz","sdp":"v=0 offer"}`); err == nil {
 		t.Fatal("unknown agent accepted")
 	}
+	m.rosa.memory.Add("assistant", "So listen again: my opinion.", time.Now())
+	m.Handle(context.Background(), `{"op":"close"}`)
+	for deadline := time.Now().Add(2 * time.Second); !m.rosa.resuming(time.Now()) && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := m.Handle(context.Background(), `{"op":"start","agent":"rosa","voice":"quartz","sdp":"v=0 offer"}`); err != nil {
+		t.Fatal(err)
+	}
+	seed, _ := json.Marshal(created["session"].(map[string]any)["input"])
+	if !strings.Contains(string(seed), "Carry straight on") || !strings.Contains(string(seed), "my opinion") {
+		t.Fatalf("resumed call not seeded with the thread: %s", seed)
+	}
+	conn = <-attached
+	_, data, err = conn.Read(ctx)
+	if err != nil || !strings.Contains(string(data), "This call's plan") {
+		t.Fatalf("plan not handed over again on resume: %s %v", data, err)
+	}
 	m.Handle(context.Background(), `{"op":"close"}`)
 }
 
@@ -442,7 +459,7 @@ func TestComposeAndGapPass(t *testing.T) {
 		t.Fatalf("plan %+v", plan)
 	}
 	session := NewSession("ls_gap", &fakeConn{events: make(chan []byte)}, r.memory, &Recall{}, backend, func() string { return "" })
-	class := newClass(r.graph, r.learner, "", time.Now())
+	class := newClass("ls_gap", r.graph, r.learner, "", time.Now())
 	gaps := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: gapModel}
 	r.gapPass(session, gaps, class, "quiero hablar about many different topics", "free conversation")
 	if class.gap == nil || len(class.gap.Chunks) != 2 || class.gap.Chunks[0].Known || !class.gap.Chunks[0].Guessable {
@@ -452,7 +469,7 @@ func TestComposeAndGapPass(t *testing.T) {
 }
 
 func TestClassKeepsTheCallMoving(t *testing.T) {
-	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
 	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
 	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
@@ -513,7 +530,7 @@ func TestClassHearsClarificationsAndCorrections(t *testing.T) {
 	if finished("Eso, constante. And then") || finished("Eso, so.") || !finished("Eso, constante.") {
 		t.Error("finished")
 	}
-	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
 	for len(class.outbox) > 0 {
 		<-class.outbox

@@ -59,6 +59,7 @@ type GapChunk struct {
 // records the outcome.
 type Class struct {
 	mu      sync.Mutex
+	id      string // the thread's first session; resumed calls keep it
 	graph   *Graph
 	learner *LearnerStore
 	logPath string
@@ -76,6 +77,7 @@ type Class struct {
 	handed    map[int]bool // items whose notes reached the call
 	extending bool         // more items are being composed for this call
 	outcomes  map[string]string
+	recorded  map[string]string // statuses already written to learner memory in this thread
 	misses    map[string]int
 	hinted    map[string]bool // Rosa gave part of the answer, or he lacked a word
 	touched   map[string]bool
@@ -113,9 +115,9 @@ var holdLimit = 8 * time.Second
 
 type update struct{ kind, content string }
 
-func newClass(graph *Graph, learner *LearnerStore, logPath string, now time.Time) *Class {
-	return &Class{graph: graph, learner: learner, logPath: logPath, started: now, outbox: make(chan update, 64),
-		handed: map[int]bool{}, outcomes: map[string]string{}, misses: map[string]int{}, hinted: map[string]bool{}, touched: map[string]bool{}}
+func newClass(id string, graph *Graph, learner *LearnerStore, logPath string, now time.Time) *Class {
+	return &Class{id: id, graph: graph, learner: learner, logPath: logPath, started: now, outbox: make(chan update, 64),
+		handed: map[int]bool{}, recorded: map[string]string{}, outcomes: map[string]string{}, misses: map[string]int{}, hinted: map[string]bool{}, touched: map[string]bool{}}
 }
 
 // run delivers queued appends to the session in order, outside the class lock.
@@ -138,6 +140,32 @@ func (c *Class) send(kind, content string) {
 	select {
 	case c.outbox <- update{kind, content}:
 	default:
+	}
+}
+
+// Resume carries the thread into a new call after a drop: fresh floor state, and the plan overview
+// and the items in play handed over again, since the new session has never seen them.
+func (c *Class) Resume(logPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logPath = logPath
+	c.floor, c.turn, c.attempt, c.verdict = "", "", "", ""
+	c.armed, c.held, c.holding, c.overlap, c.fresh = nil, false, false, false, false
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
+	c.record("resumed", map[string]any{"thread": c.id})
+	if !c.planned {
+		return
+	}
+	c.send("session.thinking.append", c.plan.Overview(c.graph))
+	for i := c.current; i < len(c.plan.Items); i++ {
+		if c.handed[i] || i == c.current {
+			c.handOver(i)
+		}
 	}
 }
 
@@ -740,8 +768,9 @@ func (c *Class) Position() string {
 }
 
 // Finish records each touched thought's status and the call in learner memory, and returns what the
-// referee saw, for the debrief.
-func (c *Class) Finish(session string, now time.Time) string {
+// referee saw, for the debrief. It runs at the end of every call in a thread and only writes what
+// changed; a thought touched without any resolved target never loses the status it had.
+func (c *Class) Finish(now time.Time) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closeGap()
@@ -783,22 +812,39 @@ func (c *Class) Finish(session string, now time.Time) string {
 			statuses[id] = "found alone"
 		case t.found > 0:
 			statuses[id] = "found with help"
-		default:
+		case t.total > 0 || c.learner.Status(id) == "not introduced":
 			statuses[id] = "introduced"
 		}
 	}
 	c.record("closed", map[string]any{"statuses": statuses})
+	recorded := c.recorded
 	c.learner.Update(func(l *Learner) {
 		for id, status := range statuses {
+			if recorded[id] == status {
+				continue
+			}
 			record := l.Thoughts[id]
-			record.Status, record.At = status, now
-			record.Seen++
+			if recorded[id] == "" {
+				record.Seen++
+			}
 			if status == "found alone" {
 				record.Alone++
+			} else if recorded[id] == "found alone" {
+				record.Alone--
 			}
+			record.Status, record.At = status, now
 			l.Thoughts[id] = record
+			recorded[id] = status
 		}
-		l.Calls = append(l.Calls, LessonCall{At: c.started, Session: session, Minutes: now.Sub(c.started).Minutes(), Thoughts: covered})
+		call := LessonCall{At: c.started, Session: c.id, Minutes: now.Sub(c.started).Minutes(), Thoughts: covered}
+		for i := range l.Calls {
+			if l.Calls[i].Session == c.id {
+				call.Summary = l.Calls[i].Summary
+				l.Calls[i] = call
+				return
+			}
+		}
+		l.Calls = append(l.Calls, call)
 	})
 	return report.String()
 }

@@ -13,8 +13,12 @@ import (
 )
 
 const (
-	// A call shorter than this leaves the waiting plan as it is.
+	// A thread of calls shorter than this leaves the waiting plan as it is.
 	debriefAfter = 3 * time.Minute
+	// A call starting within this of the last one ending carries on the same thread: same plan
+	// position, same outcomes, one debrief at the end. Within carryOn it picks up mid-thought.
+	resumeWindow = time.Hour
+	carryOn      = 2 * time.Minute
 	gapModel     = "gpt-6-luna"
 )
 
@@ -30,6 +34,11 @@ type Rosa struct {
 	graph   *Graph
 	class   *Class
 	turnOff func() string
+	// last is the thread whose call ended at ended; its debrief waits on settle until the resume
+	// window passes without a new call.
+	last   *Class
+	ended  time.Time
+	settle *time.Timer
 }
 
 // RosaSchema is the function list Rosa's backend sees.
@@ -112,9 +121,43 @@ func (r *Rosa) Graph() (*Graph, error) {
 
 func (r *Rosa) planPath() string { return filepath.Join(r.dir, "plan.json") }
 
-// Seed opens the call with the clock and what learner memory holds.
+// resuming is whether a call starting now carries on the last thread.
+func (r *Rosa) resuming(now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last != nil && now.Sub(r.ended) < resumeWindow
+}
+
+// Seed opens the call with the clock, how long ago the last call ended and what to do about it, the
+// previous conversation behind that note, and what learner memory holds.
 func (r *Rosa) Seed(now time.Time) []map[string]any {
-	return []map[string]any{seedMessage("developer", "It is "+clock(now)+". "+r.learner.Summary(now))}
+	last := r.memory.Last()
+	note := "It is " + clock(now) + ". "
+	switch {
+	case last.IsZero():
+		note += "You and Lemon have never spoken on a call before. Open fresh."
+	case r.resuming(now) && now.Sub(last) < carryOn:
+		note += "The call dropped " + ago(now.Sub(last)) + ", mid-lesson. Carry straight on from exactly where you were, as if there had been no break: no greeting, at most a quick \"sorry, lost you\". If you were in the middle of a target, ask it again."
+	case r.resuming(now):
+		note += "Your last call with Lemon ended " + ago(now.Sub(last)) + ", partway through. Pick the thread back up: no greeting as if new, say in a few words where you were, and carry on from there."
+	default:
+		note += "Your last call with Lemon ended " + ago(now.Sub(last)) + ". This is a fresh call: open as usual and follow the plan. The conversation below is old; don't pick it up unless he does."
+	}
+	seed := []map[string]any{seedMessage("developer", note), seedMessage("developer", r.learner.Summary(now))}
+	recent := r.memory.Recent(now, memoryMaxSeed)
+	budget, start := memorySeedMax, len(recent)
+	for start > 0 && budget-len(recent[start-1].Text) >= 0 {
+		budget -= len(recent[start-1].Text)
+		start--
+	}
+	if start < len(recent) {
+		seed = append(seed, seedMessage("developer", "Your previous conversation with Lemon follows."))
+		for _, message := range recent[start:] {
+			seed = append(seed, seedMessage(message.Role, message.Text))
+		}
+		seed = append(seed, seedMessage("developer", "(This call starts here.)"))
+	}
+	return seed
 }
 
 // Session follows one call: the class hands over the waiting plan, adjusts it to the opening chat,
@@ -130,11 +173,29 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 		log.Printf("rosa: %v", err)
 		return session
 	}
-	class := newClass(graph, r.learner, filepath.Join(r.dir, "floor", id+".jsonl"), time.Now())
+	logPath := filepath.Join(r.dir, "floor", id+".jsonl")
+	var class *Class
+	if r.resuming(time.Now()) {
+		r.mu.Lock()
+		class = r.last
+		if r.settle != nil {
+			r.settle.Stop()
+		}
+		r.last = nil
+		r.mu.Unlock()
+		class.Resume(logPath)
+	} else {
+		class = newClass(id, graph, r.learner, logPath, time.Now())
+	}
 	gaps := &Backend{Client: backend.Client, URL: backend.URL, Auth: backend.Auth, Model: gapModel, Instructions: r.gapInstructions(), Tools: backend.Tools}
+	class.mu.Lock()
 	class.onSwitch = func(said, about string) { r.gapPass(session, gaps, class, said, about) }
-	class.prompted = func() { r.adjust(session, class) }
+	if !class.planned || class.prompted != nil {
+		class.prompted = func() { r.adjust(session, class) }
+	}
 	class.exhausted = func() { r.more(session, class) }
+	planned := class.planned
+	class.mu.Unlock()
 	session.watch = class.watch
 	session.preamble = func(now time.Time) []map[string]any {
 		note := "It is " + clock(now) + ". This call started " + ago(now.Sub(session.started)) + ". " + class.Position()
@@ -144,9 +205,11 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 	r.class, r.turnOff = class, turnOff
 	r.mu.Unlock()
 	go class.run(session)
-	if plan, ok := loadPlan(r.planPath()); ok {
+	switch plan, ok := loadPlan(r.planPath()); {
+	case planned:
+	case ok:
 		class.SetPlan(plan)
-	} else {
+	default:
 		go func() {
 			ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
 			defer cancel()
@@ -162,16 +225,39 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 	}
 	go func() {
 		<-session.Closed
-		r.debrief(session, class)
+		r.closed(session, class)
 	}()
 	return session
 }
 
-// transcript is what was said on the call so far.
-func (r *Rosa) transcript(session *Session) string {
+// closed records the call at once and leaves its thread open for the resume window; the debrief runs
+// when the window passes with no new call.
+func (r *Rosa) closed(session *Session, class *Class) {
+	now := time.Now()
+	report := class.Finish(now)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.last, r.ended = class, now
+	if r.settle != nil {
+		r.settle.Stop()
+	}
+	r.settle = time.AfterFunc(resumeWindow, func() {
+		r.mu.Lock()
+		if r.last != class {
+			r.mu.Unlock()
+			return
+		}
+		r.last = nil
+		r.mu.Unlock()
+		r.debrief(session, class, report, now)
+	})
+}
+
+// transcript is what was said since since: the call, or the whole thread of calls.
+func (r *Rosa) transcript(since time.Time) string {
 	var b strings.Builder
 	for _, message := range r.memory.Recent(time.Now(), 400) {
-		if message.At >= session.started.UnixMilli() {
+		if message.At >= since.UnixMilli() {
 			who := "Lemon"
 			if message.Role == "assistant" {
 				who = "Rosa"
@@ -190,7 +276,7 @@ func (r *Rosa) adjust(session *Session, class *Class) {
 	}
 	ctx, cancel := context.WithTimeout(session.ctx, 3*time.Minute)
 	defer cancel()
-	adjusted, err := r.adjustPlan(ctx, session.backend, plan, from, r.transcript(session), time.Now())
+	adjusted, err := r.adjustPlan(ctx, session.backend, plan, from, r.transcript(class.started), time.Now())
 	if err != nil {
 		log.Printf("rosa: adjust failed: %v", err)
 		return
@@ -202,7 +288,7 @@ func (r *Rosa) adjust(session *Session, class *Class) {
 func (r *Rosa) more(session *Session, class *Class) {
 	ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
 	defer cancel()
-	plan, err := r.compose(ctx, session.backend, composeMore, r.transcript(session), time.Now())
+	plan, err := r.compose(ctx, session.backend, composeMore, r.transcript(class.started), time.Now())
 	if err != nil {
 		log.Printf("rosa: more items failed: %v", err)
 	}
@@ -276,15 +362,14 @@ func (r *Rosa) gapInstructions() string {
 	return text
 }
 
-// debrief records the call; a call of a few minutes is also reviewed into learner memory and leaves
-// the next call's plan waiting.
-func (r *Rosa) debrief(session *Session, class *Class) {
+// debrief reviews a finished thread of a few minutes or more into learner memory and leaves the next
+// call's plan waiting.
+func (r *Rosa) debrief(session *Session, class *Class, report string, ended time.Time) {
 	now := time.Now()
-	report := class.Finish(session.ID, now)
-	if now.Sub(session.started) < debriefAfter {
+	if ended.Sub(class.started) < debriefAfter {
 		return
 	}
-	transcript := r.transcript(session)
+	transcript := r.transcript(class.started)
 	if transcript == "" {
 		return
 	}
@@ -302,7 +387,7 @@ func (r *Rosa) debrief(session *Session, class *Class) {
 	} else {
 		r.learner.Update(func(l *Learner) {
 			for i := len(l.Calls) - 1; i >= 0; i-- {
-				if l.Calls[i].Session == session.ID {
+				if l.Calls[i].Session == class.id {
 					l.Calls[i].Summary = truncate(reply.Say, 1000)
 					break
 				}
