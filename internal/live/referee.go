@@ -14,6 +14,8 @@ const (
 	verdictPartial = "partial"
 	// A complete attempt with English where Spanish words are missing: a vocabulary gap, not a miss.
 	verdictGap = "gap"
+	// English with no Spanish in it: he is asking to hear the phrase again or checking it. Never an answer.
+	verdictClarify = "clarify"
 )
 
 var accents = strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n", "à", "a", "è", "e", "ò", "o")
@@ -35,9 +37,9 @@ var backchannels = map[string]bool{
 	"si": true, "dale": true, "ok": true, "okay": true, "yeah": true, "yes": true, "claro": true, "bien": true, "eso": true,
 }
 
-// english and spanish mark which language a word is in, for code-switch detection. Words both
+// englishWords and spanish mark which language a word is in, for code-switch detection. Words both
 // languages share (no, me, a, he, come, sea, red, real) are in neither.
-var english = setOf("the to of and in is it you that was for on are with as i his they be at one have this from or had by but what " +
+var englishWords = setOf("the to of and in is it you that was for on are with as i his they be at one have this from or had by but what " +
 	"some we can out other were all there when up use your how said an each she which do their time if will way about many then them " +
 	"would like these her long make thing see him two has look more day could go did number sound most people my over know water than " +
 	"call first who may down been now find any new work part take get place made live where after back little only man year came show " +
@@ -72,6 +74,22 @@ func spanishEnding(word string) bool {
 	return false
 }
 
+// english is whether a turn is English with no Spanish in it: at least one English word and nothing
+// that only Spanish says.
+func english(tokens []string) bool {
+	en := 0
+	for _, word := range tokens {
+		switch {
+		case fillers[word] || backchannels[word]:
+		case spanish[word] || spanishEnding(word):
+			return false
+		case englishWords[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
+			en++
+		}
+	}
+	return en > 0
+}
+
 // switched is whether a mainly Spanish turn carries English content words: a quiet request for the
 // Spanish he is missing. It takes two Spanish words and no more English words than the rest, so an
 // English question quoting "el mundo" doesn't count; fillers and listening sounds count as neither.
@@ -82,7 +100,7 @@ func switched(text string) bool {
 		case fillers[word] || backchannels[word]:
 		case spanish[word] || spanishEnding(word):
 			es++
-		case english[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
+		case englishWords[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
 			en++
 		default:
 			other++
@@ -186,6 +204,9 @@ func judge(attempt string, sentence Sentence) string {
 			return verdictRight
 		}
 	}
+	if english(tokens) {
+		return verdictClarify
+	}
 	trimmed := strings.TrimSpace(attempt)
 	trailing := strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]]
 	expected := squash(words(sentence.ES))
@@ -202,9 +223,10 @@ func judge(attempt string, sentence Sentence) string {
 
 // contains is whether some run of his words sounds like answer. The transcript is speech
 // recognition, so spelling slips (doubled letters, a stray letter, anglicised spelling) never count:
-// words are compared by sound, word for word with a slip per six letters, or joined up with one slip
-// when the recogniser split or merged words ("cancelar lo"). A difference counts only when it is
-// audible: a missing or extra word, a word out of place, an added plural ending, a swapped final vowel.
+// words are compared by sound, word for word with a slip per six letters, or joined up exactly when
+// the recogniser split or merged words ("cancelar lo"). A difference counts only when it is audible:
+// a missing or extra word or syllable, a word out of place, a plural ending, a swapped or dropped
+// final vowel.
 func contains(tokens []string, answer string) bool {
 	expected := words(answer)
 	if len(expected) == 0 {
@@ -232,7 +254,7 @@ func contains(tokens []string, answer string) bool {
 			if j-i+1 == len(want) {
 				continue
 			}
-			if gap := len(run) - len(joined); gap >= -1 && gap <= 1 && distance([]rune(run), []rune(joined)) <= 1 && !reformed(run, joined) {
+			if run == joined {
 				return true
 			}
 		}
@@ -255,7 +277,7 @@ func alike(said, want []string) bool {
 }
 
 // reformed is whether a differs from b by a real change of form: a plural ending added or dropped,
-// or the final vowel swapped (diferentes, diferenta for diferente).
+// or the final vowel swapped or dropped (diferentes, diferenta, diferent for diferente).
 func reformed(a, b string) bool {
 	if a == b || len(a) < 3 || len(b) < 3 {
 		return false
@@ -263,7 +285,14 @@ func reformed(a, b string) bool {
 	if a == b+"s" || b == a+"s" || a == b+"es" || b == a+"es" {
 		return true
 	}
+	if vowelEnd(b) && a == b[:len(b)-1] || vowelEnd(a) && b == a[:len(a)-1] {
+		return true
+	}
 	return len(a) == len(b) && a[:len(a)-1] == b[:len(b)-1] && strings.ContainsRune("aeo", rune(a[len(a)-1])) && strings.ContainsRune("aeo", rune(b[len(b)-1]))
+}
+
+func vowelEnd(word string) bool {
+	return len(word) > 0 && strings.ContainsRune("aeiou", rune(word[len(word)-1]))
 }
 
 // sound is a word as Spanish says it: silent h dropped, b and v merged, soft c and z as s, hard c

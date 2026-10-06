@@ -500,3 +500,43 @@ func TestClassKeepsTheCallMoving(t *testing.T) {
 		t.Fatalf("still armed: %v", class.armed)
 	}
 }
+
+func TestClassHearsClarificationsAndCorrections(t *testing.T) {
+	if judge("Uh constant mente", Sentence{EN: "constantly", ES: "constantemente"}) == verdictRight {
+		t.Error("a dropped vowel judged right")
+	}
+	for _, said := range []string{"Uma young It's really different", "sorry, what was it?", "it's really different?"} {
+		if v := judge(said, Sentence{EN: "it's really different", ES: "es realmente diferente"}); v != verdictClarify {
+			t.Errorf("judge(%q) = %s, want clarify", said, v)
+		}
+	}
+	if finished("Eso, constante. And then") || finished("Eso, so.") || !finished("Eso, constante.") {
+		t.Error("finished")
+	}
+	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	for len(class.outbox) > 0 {
+		<-class.outbox
+	}
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	out("How would you say it's not normal?", 1000)
+	in("Sorry, it's not normal?", 3000)
+	time.Sleep(settleDelay + 100*time.Millisecond)
+	class.mu.Lock()
+	notes := ""
+	for len(class.outbox) > 0 {
+		notes += (<-class.outbox).content
+	}
+	class.mu.Unlock()
+	out("It's not normal. No es normal is what I want from you.", 4000)
+	if !strings.Contains(notes, sayAgain) || class.outcomes["1:t02-es/2"] != "" || class.misses["1:t02-es/2"] != 0 {
+		t.Fatalf("clarification treated as an answer: notes %q outcomes %v misses %v", notes, class.outcomes, class.misses)
+	}
+	out(" So, how would you say it's not normal?", 5000)
+	in("no es normal", 8000)
+	out("No, don't rush it. Again.", 9000)
+	if class.outcomes["1:t02-es/2"] != "helped" {
+		t.Fatalf("Rosa's correction ignored: %v", class.outcomes)
+	}
+}

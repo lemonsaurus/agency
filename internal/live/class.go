@@ -23,8 +23,9 @@ const (
 	answerHim    = "Lemon is talking to you directly. Answer him now."
 	takeAnswer   = "Lemon answered while you were still talking. Stop, and respond to his answer now."
 	moveOn       = "Nothing is pending. Go straight on to the next step now."
+	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
 	// Dead air after Rosa's turn, with nothing asked of Lemon, before the box nudges her on.
-	idleLimit = 2500 * time.Millisecond
+	idleLimit = 4 * time.Second
 	// A target he keeps not getting, with no new cue, is let go after this many attempts.
 	armedLimit = 3
 )
@@ -96,7 +97,8 @@ type Class struct {
 	holdTimer  *time.Timer
 	overlap    bool // he started this attempt while Rosa was still talking
 	tookOver   bool
-	tries      int // attempts since the armed target was last cued
+	tries      int    // attempts since the armed target was last cued
+	praised    string // a target just resolved alone, until Rosa's reply shows whether she agreed
 	idleTimer  *time.Timer
 	rosaEnd    int64
 	lemonEnd   int64
@@ -302,7 +304,11 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
 		}
 	}
-	if c.overlap && c.fresh && !c.tookOver && c.armed != nil && c.verdict != verdictPartial {
+	if c.verdict == verdictClarify {
+		id, said := c.attemptID, c.attempt
+		time.AfterFunc(settleDelay, func() { c.clarify(id, said) })
+	}
+	if c.overlap && c.fresh && !c.tookOver && c.armed != nil && c.verdict != verdictPartial && c.verdict != verdictClarify {
 		c.tookOver = true
 		c.record("take", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300)})
 		c.send("session.instructions.append", takeAnswer)
@@ -453,6 +459,13 @@ func (c *Class) said(text string, startMS, endMS int64) {
 			}
 		}
 	}
+	if c.praised != "" && len(turn) >= 3 {
+		if corrects(turn) {
+			c.outcomes[c.praised] = "helped"
+			c.record("downgrade", map[string]any{"target": c.praised, "rosa": truncate(c.turn, 300)})
+		}
+		c.praised = ""
+	}
 	if c.armed == nil || c.floor != "rosa" {
 		return
 	}
@@ -460,16 +473,59 @@ func (c *Class) said(text string, startMS, endMS int64) {
 	if hints(turn, target) {
 		c.hinted[c.key(c.armed)] = true
 	}
-	if c.misses[c.key(c.armed)] > 0 && says(turn, target.ES) {
+	if c.verdict != verdictClarify && c.misses[c.key(c.armed)] > 0 && says(turn, target.ES) {
 		c.resolve(*c.armed, "shown")
 	}
+}
+
+// clarify tells Rosa to repeat the phrase when Lemon asked about it in English instead of answering.
+func (c *Class) clarify(id int, said string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id != c.attemptID || said != c.attempt || c.verdict != verdictClarify {
+		return
+	}
+	c.record("clarify", map[string]any{"target": c.key(c.armed), "said": truncate(said, 300)})
+	c.send("session.instructions.append", sayAgain)
+}
+
+// finished is whether Rosa's turn ended on a full stop: not a question, and not a lead-in like "and
+// then" or "so" that she is about to continue.
+func finished(turn string) bool {
+	trimmed := strings.TrimSpace(turn)
+	if !strings.HasSuffix(trimmed, ".") && !strings.HasSuffix(trimmed, "!") {
+		return false
+	}
+	last := words(trimmed)
+	if len(last) == 0 {
+		return false
+	}
+	switch last[len(last)-1] {
+	case "and", "so", "then", "but", "because", "which", "is", "like", "or", "now", "first", "next":
+		return false
+	}
+	return true
+}
+
+// corrects is whether Rosa's reply opens by correcting him rather than agreeing.
+func corrects(turn []string) bool {
+	if turn[0] == "no" && (len(turn) == 1 || !spanish[turn[1]] && !spanishEnding(turn[1])) {
+		return true
+	}
+	opening := " " + strings.Join(turn[:min(len(turn), 6)], " ") + " "
+	for _, phrase := range []string{" not quite ", " almost ", " close ", " careful ", " try again ", " nope ", " do not give up ", " hmm "} {
+		if strings.Contains(opening, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // idle nudges Rosa on when she has stopped after a turn that asked nothing of Lemon.
 func (c *Class) idle(said string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || strings.HasSuffix(strings.TrimSpace(said), "?") {
+	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || !finished(said) {
 		return
 	}
 	c.record("nudge", map[string]any{"rosa": truncate(said, 300)})
@@ -637,6 +693,9 @@ func (c *Class) resolve(at [2]int, outcome string) {
 		}
 	}
 	c.armed, c.verdict, c.held = nil, "", false
+	if outcome == "alone" {
+		c.praised = key
+	}
 	target := c.target(at)
 	c.record("resolved", map[string]any{"target": key, "outcome": outcome, "think_ms": c.thinkMS})
 	think := c.thinkMS
