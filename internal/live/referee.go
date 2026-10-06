@@ -92,6 +92,23 @@ func switched(text string) bool {
 var unsure = []string{
 	"i do not know", "dunno", "no idea", "not sure", "no se", "ni idea", "no tengo idea", "no clue", "i forgot",
 	"i have forgotten", "can not remember", "do not remember", "i give up", "no me acuerdo",
+	"how do i say", "how do you say", "what is the word", "what was the word", "como se dice",
+}
+
+// improvised finds a prompt Rosa made up herself, "how would you say X" or "say X" near the end of
+// her turn, and returns X. A pronoun like "that" or "it" points back at a word, so X is empty.
+func improvised(turn []string) (string, bool) {
+	for i := len(turn) - 1; i >= 0 && i >= len(turn)-1-cueWindow; i-- {
+		if turn[i] != "say" {
+			continue
+		}
+		rest := turn[i+1:]
+		if len(rest) == 0 || len(rest) == 1 && (rest[0] == "that" || rest[0] == "it" || rest[0] == "this") {
+			return "", true
+		}
+		return strings.Join(rest, " "), true
+	}
+	return "", false
 }
 
 // words lowercases text, drops accents and punctuation, and expands English contractions.
@@ -144,6 +161,13 @@ func judge(attempt string, sentence Sentence) string {
 	trimmed := strings.TrimSpace(attempt)
 	trailing := strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]]
 	expected := squash(words(sentence.ES))
+	if sentence.ES == "" {
+		// An improvised prompt has no expected Spanish; its English, capped, stands in for the length.
+		expected = expected[:0]
+		for range min(max(len(squash(words(sentence.EN))), 4), 12) {
+			expected = append(expected, 'x')
+		}
+	}
 	long := len(said) > 0 && len(said)*4 >= len(expected)*3
 	if strings.HasSuffix(trimmed, "?") || !trailing && long {
 		if switched(attempt) {

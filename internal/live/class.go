@@ -16,7 +16,9 @@ const (
 	settleDelay = 700 * time.Millisecond
 	// A code-switched turn is sent for gap help after this much silence.
 	switchPause = 1500 * time.Millisecond
-	holdFloor   = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
+	// A target's English cue arms it when it ends within this many words of the end of Rosa's turn.
+	cueWindow = 10
+	holdFloor = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
 )
 
 // Gap is one code-switched turn worked out: what he meant, and each English chunk with its Spanish
@@ -53,21 +55,24 @@ type Class struct {
 	logPath string
 	started time.Time
 	outbox  chan update
-	// onSwitch asks for gap help on a code-switched turn; prompted fires once, at the first target.
-	onSwitch func(said, context string)
-	prompted func()
+	// onSwitch asks for gap help on a code-switched turn; prompted fires once, at the first target;
+	// exhausted asks for more items when the last planned target is asked.
+	onSwitch  func(said, context string)
+	prompted  func()
+	exhausted func()
 
-	plan     Plan
-	planned  bool
-	current  int          // item being taught
-	handed   map[int]bool // items whose notes reached the call
-	closing  bool
-	outcomes map[string]string
-	misses   map[string]int
-	touched  map[string]bool
-	gap      *Gap
-	gapID    int
-	asked    string // the turn last sent for gap help
+	plan      Plan
+	planned   bool
+	current   int          // item being taught
+	handed    map[int]bool // items whose notes reached the call
+	extending bool         // more items are being composed for this call
+	outcomes  map[string]string
+	misses    map[string]int
+	touched   map[string]bool
+	gap       *Gap
+	gapID     int
+	adhoc     Sentence // a target Rosa improvised, refereed by length only
+	asked     string   // the turn last sent for gap help
 
 	floor      string  // who holds the floor: rosa or lemon
 	turn       string  // Rosa's words since Lemon last spoke
@@ -122,7 +127,7 @@ func (c *Class) SetPlan(plan Plan) {
 	defer c.mu.Unlock()
 	c.plan, c.planned = plan, true
 	c.send("session.thinking.append", plan.Overview(c.graph))
-	c.record("plan", map[string]any{"mode": plan.Mode, "items": len(plan.Items)})
+	c.record("plan", map[string]any{"mode": plan.Mode, "why": plan.Why, "items": plan.Items})
 	if len(plan.Items) > 0 {
 		c.handOver(0)
 	}
@@ -159,7 +164,7 @@ func (c *Class) Teach(item PlanItem) string {
 		}
 		handed[i] = true
 	}
-	c.handed, c.planned, c.closing = handed, true, false
+	c.handed, c.planned = handed, true
 	if c.armed != nil && c.armed[0] >= at {
 		c.armed = &[2]int{c.armed[0] + 1, c.armed[1]}
 	}
@@ -178,9 +183,23 @@ func (c *Class) Talk() string {
 	if last+1 < len(c.plan.Items) {
 		c.plan.Items = c.plan.Items[:last+1]
 	}
-	c.plan.Mode, c.closing = "talk", true
+	c.plan.Mode = "talk"
 	c.record("talk", nil)
 	return "The rest of the call is conversation. Teach only what his errors call for."
+}
+
+// Extend appends items composed during the call and hands over the first.
+func (c *Class) Extend(items []PlanItem) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extending = false
+	if len(items) == 0 {
+		return
+	}
+	at := len(c.plan.Items)
+	c.plan.Items = append(c.plan.Items, items...)
+	c.record("extended", map[string]any{"items": items})
+	c.handOver(at)
 }
 
 // Unhanded is the index of the first plan item that has not reached the call.
@@ -403,20 +422,16 @@ func (c *Class) settle(id int) {
 	c.send("session.instructions.append", holdFloor)
 }
 
-// cue arms the open target whose English cue ends Rosa's turn, and reports whether one did: gap
-// chunks first, then the full gap sentence once its chunks are done, then the plan items that
-// reached the call. A one-word cue must be the turn's last word; a longer one may trail two words.
+// cue arms the open target whose English cue Rosa said last, within the last words of her turn,
+// and reports whether one did: gap chunks first, then the plan items that reached the call, then the
+// whole gap sentence once Rosa has worked a chunk or given one, then a prompt she improvised.
 func (c *Class) cue(turn []string) bool {
 	best, at := (*[2]int)(nil), -1
 	consider := func(item, i int, en string) {
 		if c.outcomes[c.key(&[2]int{item, i})] != "" {
 			return
 		}
-		slack := 2
-		if len(words(en)) == 1 {
-			slack = 0
-		}
-		if end := cued(turn, en); end >= 0 && end >= len(turn)-1-slack && end >= at {
+		if end := cued(turn, en); end >= 0 && end >= len(turn)-1-cueWindow && end >= at {
 			best, at = &[2]int{item, i}, end
 		}
 	}
@@ -448,7 +463,13 @@ func (c *Class) cue(turn []string) bool {
 		}
 	}
 	if best == nil {
-		return false
+		prompt, ok := improvised(turn)
+		if !ok {
+			return false
+		}
+		c.adhoc = Sentence{EN: prompt}
+		delete(c.misses, "adhoc")
+		best = &[2]int{-2, 0}
 	}
 	if c.armed != nil && *c.armed == *best {
 		return true
@@ -457,22 +478,23 @@ func (c *Class) cue(turn []string) bool {
 		c.advance(best[0])
 	}
 	c.armed, c.verdict = best, ""
-	c.record("prompt", map[string]any{"target": c.key(best), "en": c.target(*best).EN})
-	if best[0] < 0 {
-		return true
-	}
-	c.touched[c.plan.Items[best[0]].Thought] = true
+	c.record("prompt", map[string]any{"target": c.key(best), "en": c.target(*best).EN, "es": c.target(*best).ES})
 	if c.prompted != nil {
 		go c.prompted()
 		c.prompted = nil
 	}
+	if best[0] < 0 {
+		return true
+	}
+	c.touched[c.plan.Items[best[0]].Thought] = true
 	if best[1] == len(c.plan.Items[best[0]].Targets)-1 {
 		c.lookAhead()
 	}
 	return true
 }
 
-// lookAhead hands over the next item, or the closing step, while the last target is answered.
+// lookAhead hands over the next item while the last target of the current one is asked; when the
+// plan runs out it asks for more, and the call never closes on its own.
 func (c *Class) lookAhead() {
 	if next := c.current + 1; next < len(c.plan.Items) {
 		if !c.handed[next] {
@@ -480,12 +502,13 @@ func (c *Class) lookAhead() {
 		}
 		return
 	}
-	if c.closing || c.plan.Mode == "talk" {
+	if c.extending || c.plan.Mode == "talk" || c.exhausted == nil {
 		return
 	}
-	c.closing = true
-	c.send("session.thinking.append", "The plan for this call is done after this target. Closing step next, unless he wants to keep talking: then just talk, and teach what his errors call for.")
-	c.record("close", nil)
+	c.extending = true
+	c.record("exhausted", nil)
+	c.send("session.thinking.append", "These are the last planned targets; more material is being prepared. Keep going with him meanwhile: talk, or build sentences from what he tells you. Never wrap up or end the call yourself.")
+	go c.exhausted()
 }
 
 // advance moves the call to item i; targets skipped on the way are marked skipped.
@@ -551,8 +574,8 @@ func (c *Class) Position() string {
 			}
 		}
 	}
-	if c.closing {
-		b.WriteString(" The plan is done or switched to talk.")
+	if c.extending {
+		b.WriteString(" More items are being composed for this call.")
 	}
 	return b.String()
 }
@@ -627,6 +650,9 @@ func (c *Class) target(at [2]int) Sentence {
 	if at[0] >= 0 {
 		return c.plan.Items[at[0]].Targets[at[1]]
 	}
+	if at[0] == -2 {
+		return c.adhoc
+	}
 	if c.gap == nil {
 		return Sentence{}
 	}
@@ -651,6 +677,9 @@ func (c *Class) target(at [2]int) Sentence {
 func (c *Class) key(at *[2]int) string {
 	if at == nil {
 		return ""
+	}
+	if at[0] == -2 {
+		return "adhoc"
 	}
 	if at[0] < 0 {
 		return fmt.Sprintf("gap%d/%d", c.gapID, at[1]+1)

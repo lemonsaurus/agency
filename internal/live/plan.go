@@ -59,6 +59,12 @@ func loadPlan(path string) (Plan, bool) {
 	return plan, true
 }
 
+const (
+	composeNext  = "Compose the plan for Lemon's next call."
+	composeStart = "Compose the plan for the call that is starting now."
+	composeMore  = "This call's plan has run out and Lemon is still going. Compose more items for the rest of this call, picking up from where it is now; don't repeat targets already asked in it."
+)
+
 func savePlan(path string, plan Plan) error {
 	data, _ := json.MarshalIndent(plan, "", "  ")
 	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
@@ -192,8 +198,9 @@ func Candidates(graph *Graph, learner *LearnerStore, now time.Time) string {
 	return b.String()
 }
 
-// compose asks the planner for a call plan. transcript is the call that just ended, or empty.
-func (r *Rosa) compose(ctx context.Context, backend *Backend, transcript string, now time.Time) (Plan, error) {
+// compose asks the planner for a plan: for the next call after one ends, for this call when no plan
+// is waiting, or more items when this call's plan runs out. transcript is the call so far, or empty.
+func (r *Rosa) compose(ctx context.Context, backend *Backend, task, transcript string, now time.Time) (Plan, error) {
 	graph, err := r.Graph()
 	if err != nil {
 		return Plan{}, err
@@ -203,9 +210,9 @@ func (r *Rosa) compose(ctx context.Context, backend *Backend, transcript string,
 		seedMessage("developer", Candidates(graph, r.learner, now)),
 	}
 	if transcript != "" {
-		input = append(input, seedMessage("developer", "The call that just ended:\n"+truncate(transcript, 40000)))
+		input = append(input, seedMessage("developer", "The call:\n"+truncate(transcript, 40000)))
 	}
-	input = append(input, seedMessage("developer", "Compose the plan for Lemon's next call, following the planning rules. Read each chosen thought with the thought tool before writing its targets. Author a thought first when the next thing he needs is not in the graph."))
+	input = append(input, seedMessage("developer", task+" Follow the planning rules. Read each chosen thought with the thought tool before writing its targets. Author a thought first when the next thing he needs is not in the graph."))
 	return r.plan(ctx, backend, input, now)
 }
 

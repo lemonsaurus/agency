@@ -39,6 +39,7 @@ var RosaSchema = json.RawMessage(`[
 {"type":"function","name":"thought","description":"One thought in full, with Lemon's status for it: explanations, reframes, Norwegian import, cross-language links, example targets and known near misses.","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"type":"function","name":"author","description":"Add a new thought to the graph, with source rosa: a vocabulary family, lunfardo, an idiom, a mood-tense feeling, dialect, or a structure his Spanish needs next. needs must be existing ids. links are true etymology or shared structure with Norwegian, English, Swedish, German, Greek, French or Latin; leave out any you are not sure of.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"kebab-case, prefixed r-"},"title":{"type":"string"},"kind":{"type":"string","enum":["structure","sound","convert","vocab","slang","idiom","mood","dialect","habit"]},"needs":{"type":"array","items":{"type":"string"}},"teach":{"type":"array","items":{"type":"string"}},"reframes":{"type":"array","items":{"type":"string"}},"import":{"type":"string"},"links":{"type":"array","items":{"type":"string"}},"examples":{"type":"array","items":{"type":"object","properties":{"en":{"type":"string"},"es":{"type":"string"}},"required":["en","es"],"additionalProperties":false}},"misses":{"type":"array","items":{"type":"object","properties":{"said":{"type":"string"},"cause":{"type":"string"},"ask":{"type":"string"}},"required":["said","cause","ask"],"additionalProperties":false}},"aside":{"type":"string"}},"required":["id","title","kind","needs","teach","reframes","import","links","examples","misses","aside"],"additionalProperties":false}},
 {"type":"function","name":"teach","description":"Teach a thought next in this call, with fresh targets you write from his life. Its notes reach the call at once.","parameters":{"type":"object","properties":{"id":{"type":"string"},"why":{"type":"string"},"targets":{"type":"array","items":{"type":"object","properties":{"en":{"type":"string"},"es":{"type":"string"},"also":{"type":"array","items":{"type":"string"}},"note":{"type":"string"}},"required":["en","es","also","note"],"additionalProperties":false}}},"required":["id","why","targets"],"additionalProperties":false}},
+{"type":"function","name":"status","description":"Set Lemon's status for a thought the call covered when the referee report missed it, judged from the transcript.","parameters":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["introduced","found with help","found alone"]}},"required":["id","status"],"additionalProperties":false}},
 {"type":"function","name":"talk","description":"Switch the rest of this call to conversation when Lemon wants to just talk.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"learner","description":"Everything learner memory holds about Lemon: profile facts, thought statuses, errors by cause, habits, the word dictionary, gaps, links he reacted to, wording log, pacing and past calls.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"remember","description":"Add to learner memory. profile: a durable fact about Lemon's life to build sentences from. error: a wrong answer filed under its diagnosed cause (text is the cause; give thought, said and expected). habit: a learning habit seen, such as reciting tables, guessing, or inventing mnemonics. link: a cross-language link and how he reacted to it. Never store anything Lemon asks you not to.","parameters":{"type":"object","properties":{"kind":{"type":"string","enum":["profile","error","habit","link"]},"text":{"type":"string"},"thought":{"type":"string"},"said":{"type":"string"},"expected":{"type":"string"}},"required":["kind","text","thought","said","expected"],"additionalProperties":false}},
@@ -133,6 +134,7 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 	gaps := &Backend{Client: backend.Client, URL: backend.URL, Auth: backend.Auth, Model: gapModel, Instructions: r.gapInstructions(), Tools: backend.Tools}
 	class.onSwitch = func(said, about string) { r.gapPass(session, gaps, class, said, about) }
 	class.prompted = func() { r.adjust(session, class) }
+	class.exhausted = func() { r.more(session, class) }
 	session.watch = class.watch
 	session.preamble = func(now time.Time) []map[string]any {
 		note := "It is " + clock(now) + ". This call started " + ago(now.Sub(session.started)) + ". " + class.Position()
@@ -148,7 +150,7 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 		go func() {
 			ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
 			defer cancel()
-			plan, err := r.compose(ctx, backend, "", time.Now())
+			plan, err := r.compose(ctx, backend, composeStart, "", time.Now())
 			if err != nil {
 				log.Printf("rosa: compose at start failed: %v", err)
 				plan = Plan{Mode: "talk", Why: "No plan could be composed; talk with him and teach what his errors call for."}
@@ -194,6 +196,17 @@ func (r *Rosa) adjust(session *Session, class *Class) {
 		return
 	}
 	class.Replace(from, adjusted.Items, adjusted.Mode, adjusted.Why)
+}
+
+// more composes further items when the call's plan runs out; the call only ends when Lemon ends it.
+func (r *Rosa) more(session *Session, class *Class) {
+	ctx, cancel := context.WithTimeout(session.ctx, 4*time.Minute)
+	defer cancel()
+	plan, err := r.compose(ctx, session.backend, composeMore, r.transcript(session), time.Now())
+	if err != nil {
+		log.Printf("rosa: more items failed: %v", err)
+	}
+	class.Extend(plan.Items)
 }
 
 // gapPass works out a code-switched turn on the fast model and decides per chunk how Rosa handles
@@ -258,7 +271,7 @@ func (r *Rosa) debrief(session *Session, class *Class) {
 		seedMessage("developer", "The call just ended. "+report),
 		seedMessage("developer", r.learner.Summary(now)),
 		seedMessage("developer", "Transcript of the call:\n"+truncate(transcript, 60000)),
-		seedMessage("developer", "Review: with remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
+		seedMessage("developer", "Review: with status, set the status of each thought the call covered that the referee report doesn't list. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
 	}
 	reply, err := session.backend.Answer(ctx, input)
 	if err != nil {
@@ -273,7 +286,7 @@ func (r *Rosa) debrief(session *Session, class *Class) {
 			}
 		})
 	}
-	plan, err := r.compose(ctx, session.backend, transcript, time.Now())
+	plan, err := r.compose(ctx, session.backend, composeNext, transcript, time.Now())
 	if err != nil {
 		log.Printf("rosa: compose failed: %v", err)
 		return
@@ -297,6 +310,7 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 		Expected string     `json:"expected"`
 		State    string     `json:"state"`
 		Entries  []Word     `json:"entries"`
+		Status   string     `json:"status"`
 	}
 	if arguments != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -374,6 +388,26 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"result": fmt.Sprintf("%d words in the dictionary.", len(args.Entries))}, nil
+	case "status":
+		if _, ok := graph.Get(args.ID); !ok {
+			return nil, fmt.Errorf("no thought %q", args.ID)
+		}
+		now := time.Now()
+		err := r.learner.Update(func(l *Learner) {
+			record := l.Thoughts[args.ID]
+			if record.At.IsZero() || now.Sub(record.At) > debriefAfter {
+				record.Seen++
+				if args.Status == "found alone" {
+					record.Alone++
+				}
+			}
+			record.Status, record.At = args.Status, now
+			l.Thoughts[args.ID] = record
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"result": args.ID + " is " + args.Status + "."}, nil
 	case "conversation":
 		if args.State != "off" || turnOff == nil {
 			return nil, fmt.Errorf("state must be off")

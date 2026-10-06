@@ -85,6 +85,8 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	class := newClass(testGraph(t, dir), learner, logPath, time.Now())
 	prompted := make(chan bool, 1)
 	class.prompted = func() { prompted <- true }
+	exhausted := make(chan bool, 1)
+	class.exhausted = func() { exhausted <- true }
 	class.SetPlan(testPlan())
 	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
 	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
@@ -96,7 +98,7 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("the first prompt did not trigger the adjust pass")
 	}
-	out("Good. And how would you say it's not normal?", 5000)
+	out("Good. And now it's not normal, che, how would you say that?", 5000)
 	in("no es", 9000)
 	out("Mm", 9500)
 	out("hm. Think about where", 10000)
@@ -120,8 +122,17 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	in("Quiero lo cancelar?", 35000)
 	out("Close. What does lo mean?", 36000)
 	in("quiero cancelarlo", 40000)
-	if class.outcomes["2:t04-quiero/1"] != "helped" || !class.closing {
-		t.Fatalf("outcomes %v closing=%v", class.outcomes, class.closing)
+	if class.outcomes["2:t04-quiero/1"] != "helped" || !class.extending {
+		t.Fatalf("outcomes %v extending=%v", class.outcomes, class.extending)
+	}
+	select {
+	case <-exhausted:
+	case <-time.After(time.Second):
+		t.Fatal("the plan ran out without asking for more")
+	}
+	class.Extend([]PlanItem{{Thought: "t05-yo", Kind: "new", Why: "more", Targets: []Sentence{{EN: "I want it", ES: "yo lo quiero"}}}})
+	if class.extending || !class.handed[2] {
+		t.Fatal("extension not handed over")
 	}
 	report := class.Finish("ls_1", time.Now())
 	if !strings.Contains(report, "interventions: 1") || learner.Status("t02-es") != "found alone" || learner.Status("t04-quiero") != "found with help" {
@@ -131,10 +142,34 @@ func TestClassRefereesTheFloor(t *testing.T) {
 		t.Fatal("dictionary not fed by resolved targets")
 	}
 	data, _ := os.ReadFile(logPath)
-	for _, kind := range []string{`"kind":"plan"`, `"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"intervene"`, `"kind":"resolved"`, `"kind":"close"`, `"kind":"closed"`} {
+	for _, kind := range []string{`"kind":"plan"`, `"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"intervene"`, `"kind":"resolved"`, `"kind":"exhausted"`, `"kind":"extended"`, `"kind":"closed"`} {
 		if !strings.Contains(string(data), kind) {
 			t.Errorf("floor log lacks %s", kind)
 		}
+	}
+}
+
+func TestClassRefereesAnImprovisedPrompt(t *testing.T) {
+	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	class.watch("session.output_transcript.delta", "Okay, digital, like your software. How would you say it?", 1000, 1100)
+	class.watch("session.input_transcript.delta", "di...", 3000, 3100)
+	if class.armed == nil || class.key(class.armed) != "adhoc" || class.verdict != verdictPartial {
+		t.Fatalf("armed %v verdict %s", class.armed, class.verdict)
+	}
+	class.watch("session.output_transcript.delta", "Come on, like your software.", 4000, 4100)
+	time.Sleep(settleDelay + 100*time.Millisecond)
+	class.mu.Lock()
+	stops := class.stops
+	class.mu.Unlock()
+	if stops != 1 {
+		t.Fatalf("stops=%d", stops)
+	}
+	class.watch("session.input_transcript.delta", "digital", 9000, 9100)
+	class.watch("session.output_transcript.delta", "Perfecto. Before we go on, how do you say life?", 10000, 10100)
+	class.watch("session.input_transcript.delta", "how do I say life", 12000, 12100)
+	if class.verdict != verdictUnsure {
+		t.Fatalf("a question to Rosa judged %s", class.verdict)
 	}
 }
 
@@ -338,7 +373,7 @@ func TestComposeAndGapPass(t *testing.T) {
 	r := NewRosa(dir, filepath.Join(dir, "run"))
 	r.learner.Update(func(l *Learner) { l.expose("quiero", "found alone", time.Now()) })
 	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Schema: RosaSchema, Tools: r.Call}
-	plan, err := r.compose(context.Background(), backend, "", time.Now())
+	plan, err := r.compose(context.Background(), backend, composeNext, "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
