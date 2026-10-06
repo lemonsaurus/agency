@@ -173,6 +173,55 @@ func TestClassRefereesAnImprovisedPrompt(t *testing.T) {
 	}
 }
 
+func TestClassReleasesAHold(t *testing.T) {
+	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	notes := func() string {
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+
+	// A question about Spanish is not a translation prompt: an English answer is not partial.
+	out("Let's start with what you own. In Norwegian you say normal. Where's the stress there?", 1000)
+	in("On the R", 3000)
+	out("Exactly, al final.", 3400)
+	time.Sleep(settleDelay + 100*time.Millisecond)
+	if class.stops != 0 {
+		t.Fatalf("stopped Rosa answering a question: armed %v verdict %s", class.armed, class.verdict)
+	}
+
+	out("Now, how would you say it's not normal?", 5000)
+	in("no es", 8000)
+	out("Hm, and", 8400)
+	time.Sleep(settleDelay + 100*time.Millisecond)
+	notes()
+	class.mu.Lock()
+	holding := class.holding
+	class.mu.Unlock()
+	if !holding {
+		t.Fatal("no hold")
+	}
+	in(" Sorry, you dropped off. Hello?", 12000)
+	if text := notes(); !strings.Contains(text, answerHim) || class.holding {
+		t.Fatalf("hold not released when he spoke to her: %s", text)
+	}
+
+	holdLimit = 300 * time.Millisecond
+	defer func() { holdLimit = 8 * time.Second }()
+	out("Okay. How would you say I want to cancel it?", 14000)
+	in("quiero", 16000)
+	out("Mm, and the", 16400)
+	time.Sleep(settleDelay + holdLimit + 200*time.Millisecond)
+	if text := notes(); !strings.Contains(text, holdFloor) || !strings.Contains(text, releaseFloor) {
+		t.Fatalf("hold did not expire after silence: %s", text)
+	}
+}
+
 func TestClassLetsRosaAnswerAWrongAttempt(t *testing.T) {
 	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())

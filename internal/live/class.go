@@ -17,8 +17,10 @@ const (
 	// A code-switched turn is sent for gap help after this much silence.
 	switchPause = 1500 * time.Millisecond
 	// A target's English cue arms it when it ends within this many words of the end of Rosa's turn.
-	cueWindow = 10
-	holdFloor = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
+	cueWindow    = 10
+	holdFloor    = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
+	releaseFloor = "Lemon has finished his answer. The floor is yours again: respond to what he said now."
+	answerHim    = "Lemon is talking to you directly. Answer him now."
 )
 
 // Gap is one code-switched turn worked out: what he meant, and each English chunk with its Spanish
@@ -83,6 +85,8 @@ type Class struct {
 	verdict    string
 	held       bool // Rosa spoke over a partial answer; his next words continue it
 	intervened bool
+	holding    bool // Rosa was told to wait; released when his attempt completes or he goes quiet
+	holdTimer  *time.Timer
 	rosaEnd    int64
 	lemonEnd   int64
 	lemonAt    time.Time
@@ -90,6 +94,9 @@ type Class struct {
 	stops      int
 	switchAt   *time.Timer
 }
+
+// holdLimit is the most silence from Lemon a hold on Rosa outlasts.
+var holdLimit = 8 * time.Second
 
 type update struct{ kind, content string }
 
@@ -247,7 +254,7 @@ func (c *Class) watch(kind, text string, startMS, endMS int64) {
 
 func (c *Class) heard(text string, startMS, endMS int64) {
 	if c.floor != "lemon" && !c.held {
-		c.fresh = c.cue(words(c.turn))
+		c.fresh = c.cue(c.turn)
 		c.attemptID++
 		c.attempt, c.verdict, c.intervened = "", "", false
 		c.thinkMS = 0
@@ -267,15 +274,27 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		id, said := c.attemptID, c.attempt
 		c.switchAt = time.AfterFunc(switchPause, func() { c.switchCheck(id, said) })
 	}
+	if c.armed != nil {
+		verdict := judge(c.attempt, c.target(*c.armed))
+		if verdict != c.verdict {
+			c.verdict = verdict
+			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
+		}
+	}
+	if c.holding {
+		switch {
+		case addressed(text):
+			c.release(answerHim)
+		case c.armed == nil || c.verdict != verdictPartial:
+			c.release(releaseFloor)
+		default:
+			c.holdUntilQuiet()
+		}
+	}
 	if c.armed == nil {
 		return
 	}
-	target := c.target(*c.armed)
-	verdict := judge(c.attempt, target)
-	if verdict != c.verdict {
-		c.verdict = verdict
-		c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
-	}
+	verdict := c.verdict
 	if verdict == verdictRight {
 		outcome := "alone"
 		if c.misses[c.key(c.armed)] > 0 {
@@ -416,16 +435,43 @@ func (c *Class) settle(id int) {
 		}
 		return
 	}
-	c.intervened = true
+	c.intervened, c.holding = true, true
+	c.holdUntilQuiet()
 	c.stops++
 	c.record("intervene", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300), "rosa": truncate(c.turn, 300)})
 	c.send("session.instructions.append", holdFloor)
 }
 
+// holdUntilQuiet releases the hold once Lemon has said nothing new for holdLimit.
+func (c *Class) holdUntilQuiet() {
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	said := c.attempt
+	c.holdTimer = time.AfterFunc(holdLimit, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.holding && c.attempt == said {
+			c.release(releaseFloor)
+		}
+	})
+}
+
+// release lifts a hold on Rosa.
+func (c *Class) release(instruction string) {
+	c.holding, c.held = false, false
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	c.record("release", map[string]any{"said": truncate(c.attempt, 300), "instruction": instruction})
+	c.send("session.instructions.append", instruction)
+}
+
 // cue arms the open target whose English cue Rosa said last, within the last words of her turn,
 // and reports whether one did: gap chunks first, then the plan items that reached the call, then the
 // whole gap sentence once Rosa has worked a chunk or given one, then a prompt she improvised.
-func (c *Class) cue(turn []string) bool {
+func (c *Class) cue(raw string) bool {
+	turn := words(raw)
 	best, at := (*[2]int)(nil), -1
 	consider := func(item, i int, en string) {
 		if c.outcomes[c.key(&[2]int{item, i})] != "" {
@@ -463,7 +509,7 @@ func (c *Class) cue(turn []string) bool {
 		}
 	}
 	if best == nil {
-		prompt, ok := improvised(turn)
+		prompt, ok := improvised(raw)
 		if !ok {
 			return false
 		}
