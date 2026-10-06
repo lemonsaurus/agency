@@ -23,6 +23,7 @@ const (
 	answerHim    = "Lemon is calling you or checking you are there. Answer in one short phrase, no greeting, and carry on where you were."
 	takeAnswer   = "Lemon answered while you were still talking. Stop, and respond to his answer now."
 	moveOn       = "Nothing is pending. Go straight on to the next step now."
+	waitForHim   = "You just asked him something and he is formulating his answer. Stop talking and wait in silence; he needs at least eight seconds."
 	talkToHim    = "Lemon is talking to you about the lesson, not answering. Answer him, let the open sentence go, and adapt to what he said."
 	repeated     = "You already said that this call. Don't repeat yourself: say or ask something new."
 	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
@@ -113,6 +114,10 @@ type Class struct {
 	logged     map[int]bool    // items whose topics went into the topic log
 	turnDone   int             // sentences of her current turn already checked
 	warned     bool            // she was told about a repeat in this turn
+	askedAt    time.Time       // when her last turn ended on a question to him
+	waitStep   int             // how far up the wait ladder the silence has gone
+	waitTimer  *time.Timer
+	waited     bool // she was told to wait in this silence
 	// onHarder asks the planner to jump ahead when he says it's too easy.
 	onHarder  func()
 	idleTimer *time.Timer
@@ -122,6 +127,18 @@ type Class struct {
 	thinkMS   int64
 	stops     int
 	switchAt  *time.Timer
+}
+
+// waitLadder is what Rosa may do as the silence after her question grows: each step comes after its
+// delay of quiet since she last spoke, and Lemon speaking starts the ladder over.
+var waitLadder = []struct {
+	after       time.Duration
+	instruction string
+}{
+	{8 * time.Second, "He has thought for eight seconds. One short, warm encouragement, a few words, then wait again."},
+	{10 * time.Second, "Still thinking. Offer to split it: ask for just the first piece, then wait."},
+	{12 * time.Second, "Give him the first word or piece, then wait for the rest."},
+	{15 * time.Second, "Give him the answer, have him say it, and move on."},
 }
 
 // holdLimit is the most silence from Lemon a hold on Rosa outlasts.
@@ -242,7 +259,7 @@ func (c *Class) SetPlan(plan Plan) {
 	}
 	c.record("plan", map[string]any{"mode": plan.Mode, "why": plan.Why, "items": plan.Items, "teasers": plan.Teasers})
 	if cautions := c.learner.Cautions(); len(cautions) > 0 {
-		c.send("session.thinking.append", truncate("Mistakes you made in earlier calls, never repeat them: "+strings.Join(cautions, " "), updateLimit))
+		c.send("session.thinking.append", truncate("Facts to get right from now on. Use them silently: no apology, no talk about earlier calls; at most one short clause, once, if it comes up. "+strings.Join(cautions, " "), updateLimit))
 	}
 	if len(plan.Items) > 0 {
 		c.handOver(0)
@@ -395,6 +412,10 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	}
 	c.held = false
 	c.floor, c.turn, c.turnDone, c.warned = "lemon", "", 0, false
+	c.waitStep, c.waited, c.askedAt = 0, false, time.Time{}
+	if c.waitTimer != nil {
+		c.waitTimer.Stop()
+	}
 	c.attempt += text
 	c.lemonEnd, c.lemonAt = endMS, time.Now()
 	if c.listen >= 0 && c.listen == c.current {
@@ -568,6 +589,12 @@ func (c *Class) closeGap() {
 }
 
 func (c *Class) said(text string, startMS, endMS int64) {
+	// Her question, then a pause, then her voice again: she is filling his think time.
+	if c.floor == "rosa" && !c.askedAt.IsZero() && startMS-c.rosaEnd >= 1000 && time.Since(c.askedAt) < waitLadder[0].after && !c.waited && c.waitStep == 0 {
+		c.waited = true
+		c.record("wait", map[string]any{"rosa": truncate(text, 200)})
+		c.send("session.instructions.append", waitForHim)
+	}
 	c.turn += text
 	c.rosaEnd = endMS
 	turn := words(c.turn)
@@ -578,6 +605,20 @@ func (c *Class) said(text string, startMS, endMS int64) {
 	}
 	said := c.turn
 	c.idleTimer = time.AfterFunc(idleLimit, func() { c.idle(said) })
+	if c.waitTimer != nil {
+		c.waitTimer.Stop()
+	}
+	if c.asking(said) || c.waited {
+		if c.askedAt.IsZero() {
+			c.askedAt = time.Now()
+		}
+		if c.waitStep < len(waitLadder) {
+			step := c.waitStep
+			c.waitTimer = time.AfterFunc(waitLadder[step].after, func() { c.climb(said, step) })
+		}
+	} else {
+		c.askedAt = time.Time{}
+	}
 	if c.floor == "lemon" && backchannel(turn) {
 		return
 	}
@@ -758,11 +799,46 @@ func overlaps(turn []string, text string) bool {
 	return total > 0 && hit*2 >= total
 }
 
+// asking is whether her turn ends by asking him something: a question, a translation prompt, or a
+// planned target's cue.
+func (c *Class) asking(turn string) bool {
+	if strings.HasSuffix(strings.TrimSpace(turn), "?") {
+		return true
+	}
+	if _, ok := improvised(turn); ok {
+		return true
+	}
+	tokens := words(turn)
+	for item := c.current; item < len(c.plan.Items); item++ {
+		if !c.handed[item] {
+			continue
+		}
+		for _, target := range c.plan.Items[item].Targets {
+			if end := cued(tokens, target.EN); end >= 0 && end >= len(tokens)-1-cueWindow {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// climb takes the next step up the wait ladder if the silence after her question has lasted.
+func (c *Class) climb(said string, step int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.turn != said || c.floor != "rosa" || c.waitStep != step || c.holding {
+		return
+	}
+	c.waitStep++
+	c.record("encourage", map[string]any{"step": step + 1})
+	c.send("session.instructions.append", waitLadder[step].instruction)
+}
+
 // idle nudges Rosa on when she has stopped after a turn that asked nothing of Lemon.
 func (c *Class) idle(said string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || !finished(said) {
+	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || !finished(said) || c.asking(said) || c.waited {
 		return
 	}
 	c.record("nudge", map[string]any{"rosa": truncate(said, 300)})

@@ -56,6 +56,7 @@ var RosaSchema = json.RawMessage(`[
 {"type":"function","name":"learner","description":"Everything learner memory holds about Lemon: profile facts, thought statuses, errors by cause, habits, the word dictionary, gaps, links he reacted to, wording log, pacing and past calls.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"remember","description":"Add to learner memory. profile: a general note about him as a learner. fact: something he told you about his life, with domain (family, Sofie, work, band and bass, home, food, plans, today, travel, childhood, friends, hobbies) and confirmed true only if he said it plainly. error: a wrong answer filed under its diagnosed cause (text is the cause; give thought, said and expected). habit: a learning habit seen, such as reciting tables, guessing, or inventing mnemonics. link: a cross-language link and how he reacted to it. caution: a mistake Rosa made, like a false etymology, to warn her next call. Never store anything Lemon asks you not to.","parameters":{"type":"object","properties":{"kind":{"type":"string","enum":["profile","fact","error","habit","link","caution"]},"text":{"type":"string"},"domain":{"type":"string"},"confirmed":{"type":"boolean"},"thought":{"type":"string"},"said":{"type":"string"},"expected":{"type":"string"}},"required":["kind","text","domain","confirmed","thought","said","expected"],"additionalProperties":false}},
 {"type":"function","name":"words","description":"Add Spanish words Lemon was exposed to into his dictionary, with how he got them and the sentence they came in, and what he has memorised: a noun's gender, a set of conjugation endings, an irregular form. Links only when true.","parameters":{"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"word":{"type":"string"},"kind":{"type":"string","enum":["word","gender","endings","form"],"description":"word, or what he has memorised: a noun's gender, a set of conjugation endings, an irregular form."},"gender":{"type":"string","enum":["","el","la"]},"how":{"type":"string","enum":["told","found with help","found alone"]},"sentence":{"type":"string"},"links":{"type":"array","items":{"type":"string"}}},"required":["word","kind","gender","how","sentence","links"],"additionalProperties":false}}},"required":["entries"],"additionalProperties":false}},
+{"type":"function","name":"etymology","description":"Check a word's etymology on Wiktionary. Call it before writing any etymology or cross-language link into a note, a thought or the dictionary, and use only what it says. language is the entry's language: Spanish, English, Norwegian Bokmål, Latin, Swedish, German, French, Ancient Greek.","parameters":{"type":"object","properties":{"word":{"type":"string"},"language":{"type":"string"}},"required":["word","language"],"additionalProperties":false}},
 {"type":"function","name":"canon","description":"Rosa's canon in full: facts, people, places, stories, teasers and open serials, with what she has told.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"canon_add","description":"Author a new canon entry, true to her persona and consistent with the canon. kind fact, person, place, story, teaser or open (a serial with a hook for next time).","parameters":{"type":"object","properties":{"id":{"type":"string"},"kind":{"type":"string","enum":["fact","person","place","story","teaser","open"]},"title":{"type":"string"},"text":{"type":"string"},"spanish":{"type":"array","items":{"type":"string"}},"next":{"type":"string"},"rating":{"type":"string","enum":["clean","spicy","x"]}},"required":["id","kind","title","text","spanish","next","rating"],"additionalProperties":false}},
 {"type":"function","name":"canon_told","description":"Mark a canon entry as told in this call; for an open serial, give the hook for next time.","parameters":{"type":"object","properties":{"id":{"type":"string"},"next":{"type":"string"}},"required":["id","next"],"additionalProperties":false}},
@@ -499,7 +500,7 @@ func (r *Rosa) debrief(class *Class, ended time.Time) {
 		seedMessage("developer", "The call just ended. "+report),
 		seedMessage("developer", r.learner.Summary(now)),
 		seedMessage("developer", "Transcript of the call:\n"+truncate(transcript, 60000)),
-		seedMessage("developer", "Review: with canon_told, mark every canon entry she told (story, teaser, fact), with the hook for next time on open serials. Scan every etymology or cross-language claim she made: if it isn't true, file a caution saying what she claimed and what is true. With remember kind fact, file what he told about his life by domain, confirmed only if he said it plainly. With status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
+		seedMessage("developer", "Review: with canon_told, mark every canon entry she told (story, teaser, fact), with the hook for next time on open serials. Check every etymology or cross-language claim she made with the etymology tool: if the source doesn't back it, file a caution stating only the true fact (never that she claimed or got something wrong; the caution is the correct form, for silent use). Cautions also hold any form she accepted or taught wrongly, written as the right form. With remember kind fact, file what he told about his life by domain, confirmed only if he said it plainly. With status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
 	}
 	reply, err := backend.AnswerWithin(ctx, input, 40)
 	if err != nil {
@@ -525,7 +526,7 @@ func (r *Rosa) debrief(class *Class, ended time.Time) {
 }
 
 // Call runs one of Rosa's backend tools.
-func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
+func (r *Rosa) Call(ctx context.Context, name, arguments string) (any, error) {
 	var args struct {
 		ID        string     `json:"id"`
 		Query     string     `json:"query"`
@@ -542,6 +543,8 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 		Domain    string     `json:"domain"`
 		Confirmed bool       `json:"confirmed"`
 		Next      string     `json:"next"`
+		Word      string     `json:"word"`
+		Language  string     `json:"language"`
 	}
 	if arguments != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -643,6 +646,12 @@ func (r *Rosa) Call(_ context.Context, name, arguments string) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"result": args.ID + " is " + args.Status + "."}, nil
+	case "etymology":
+		text, err := Etymology(ctx, args.Word, args.Language)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"source": "Wiktionary", "etymology": text}, nil
 	case "canon":
 		return map[string]any{"canon": r.canon.All()}, nil
 	case "canon_add":

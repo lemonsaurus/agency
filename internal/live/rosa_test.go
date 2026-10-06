@@ -671,3 +671,37 @@ func TestEnglishTurnsRepeatsAndListening(t *testing.T) {
 		t.Fatalf("repeat not caught: %s", text)
 	}
 }
+
+func TestClassWaitsAfterHerQuestion(t *testing.T) {
+	saved := waitLadder
+	defer func() { waitLadder = saved }()
+	waitLadder = append(waitLadder[:0:0], saved...)
+	waitLadder[0].after, waitLadder[1].after = 300*time.Millisecond, 300*time.Millisecond
+	class := newClass("ls_wait", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	drained := func() string {
+		class.mu.Lock()
+		defer class.mu.Unlock()
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+	drained()
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	out("So what did you have for dinner?", 1000)
+	out(" Yeah, go on.", 3000)
+	if text := drained(); !strings.Contains(text, waitForHim) {
+		t.Fatalf("filling his think time not stopped: %s", text)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if text := drained(); !strings.Contains(text, waitLadder[0].instruction) {
+		t.Fatalf("no encouragement after the wait: %s", text)
+	}
+	out(" Take your time?", 5000)
+	time.Sleep(400 * time.Millisecond)
+	if text := drained(); !strings.Contains(text, waitLadder[1].instruction) {
+		t.Fatalf("ladder did not climb: %s", text)
+	}
+}

@@ -13,12 +13,13 @@ import (
 // Plan is one call's lesson: its mode and the items to work through, each marked review or new
 // with the reason, so the mix can be read and tuned.
 type Plan struct {
-	Created time.Time  `json:"created"`
-	Mode    string     `json:"mode"`
-	Why     string     `json:"why"`
-	Items   []PlanItem `json:"items"`
-	Teasers []Teaser   `json:"teasers"`
-	Slang   string     `json:"slang"`
+	Created     time.Time  `json:"created"`
+	Mode        string     `json:"mode"`
+	Why         string     `json:"why"`
+	Items       []PlanItem `json:"items"`
+	Teasers     []Teaser   `json:"teasers"`
+	Slang       string     `json:"slang"`
+	Etymologies []string   `json:"etymologies"`
 }
 
 // PlanItem is one step of the call. A thought item teaches or reviews a thought with fresh targets
@@ -64,6 +65,7 @@ var planFormat = json.RawMessage(`{"type":"json_schema","name":"plan","strict":t
 "mode":{"type":"string","enum":["teach","mixed","talk"]},
 "why":{"type":"string","description":"One or two sentences: why this mode and this mix of review and new ground."},
 "teasers":{"type":"array","description":"Two to four slips from her canon for this call, the first early: one clause or sentence each.","items":{"type":"object","properties":{"canon":{"type":"string"},"line":{"type":"string"}},"required":["canon","line"],"additionalProperties":false}},
+"etymologies":{"type":"array","items":{"type":"string"},"description":"One to three etymology stories for the dips, each about a word in this call, each checked with the etymology tool and saying what it rests on."},
 "slang":{"type":"string","description":"At most one new slang, swear or sex word for this call, with how it comes up in a slip or story; or empty."},
 "items":{"type":"array","items":{"type":"object","properties":{
 "type":{"type":"string","enum":["thought","life","listen"]},
@@ -84,7 +86,7 @@ var planFormat = json.RawMessage(`{"type":"json_schema","name":"plan","strict":t
 "words":{"type":"array","description":"Every word of es not in his dictionary, marked guessable or not.","items":{"type":"object","properties":{"word":{"type":"string"},"guessable":{"type":"boolean"},"route":{"type":"string","description":"How he can reach it: a conversion rule id, cognate, shared root, Norwegian; or empty."},"hint":{"type":"string","description":"Points at the route without giving the word, or empty."}},"required":["word","guessable","route","hint"],"additionalProperties":false}}},
 "required":["en","es","also","note","misses","words"],"additionalProperties":false}}},
 "required":["type","thought","kind","domain","question","topics","passage","why","weave","targets"],"additionalProperties":false}}},
-"required":["mode","why","teasers","slang","items"],"additionalProperties":false}}`)
+"required":["mode","why","teasers","slang","etymologies","items"],"additionalProperties":false}}`)
 
 func loadPlan(path string) (Plan, bool) {
 	data, err := os.ReadFile(path)
@@ -132,6 +134,9 @@ func (p Plan) Overview(graph *Graph) []string {
 	}
 	for _, teaser := range p.Teasers {
 		fmt.Fprintf(&b, "\nTeaser to slip in (one clause, never while a question waits): %s", teaser.Line)
+	}
+	for _, story := range p.Etymologies {
+		b.WriteString("\nEtymology for a dip, verified: " + story)
 	}
 	if p.Slang != "" {
 		b.WriteString("\nNew word for a slip or story this call: " + p.Slang)
