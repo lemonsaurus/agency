@@ -200,29 +200,109 @@ func judge(attempt string, sentence Sentence) string {
 	return verdictPartial
 }
 
-// contains is whether some run of whole words in tokens, fillers aside, spells answer exactly,
-// accents aside, so "cancelar lo" counts for "cancelarlo" but "diferentes" never for "diferente".
+// contains is whether some run of his words sounds like answer. The transcript is speech
+// recognition, so spelling slips (doubled letters, a stray letter, anglicised spelling) never count:
+// words are compared by sound, word for word with a slip per six letters, or joined up with one slip
+// when the recogniser split or merged words ("cancelar lo"). A difference counts only when it is
+// audible: a missing or extra word, a word out of place, an added plural ending, a swapped final vowel.
 func contains(tokens []string, answer string) bool {
-	expected := string(squash(words(answer)))
-	if expected == "" {
+	expected := words(answer)
+	if len(expected) == 0 {
 		return false
 	}
-	var content []string
+	var said []string
 	for _, token := range tokens {
 		if !fillers[token] {
-			content = append(content, token)
+			said = append(said, sound(token))
 		}
 	}
-	for i := range content {
+	want := make([]string, len(expected))
+	joined := ""
+	for k, word := range expected {
+		want[k] = sound(word)
+		joined += want[k]
+	}
+	for i := range said {
+		if i+len(want) <= len(said) && alike(said[i:i+len(want)], want) {
+			return true
+		}
 		run := ""
-		for j := i; j < len(content) && len(run) < len(expected); j++ {
-			run += content[j]
-			if run == expected {
+		for j := i; j < len(said) && len(run) <= len(joined)+1; j++ {
+			run += said[j]
+			if j-i+1 == len(want) {
+				continue
+			}
+			if gap := len(run) - len(joined); gap >= -1 && gap <= 1 && distance([]rune(run), []rune(joined)) <= 1 && !reformed(run, joined) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// alike is whether each word sounds like its expected word, allowing a slip per six letters but no
+// change of form.
+func alike(said, want []string) bool {
+	for k := range want {
+		if said[k] == want[k] {
+			continue
+		}
+		if reformed(said[k], want[k]) || distance([]rune(said[k]), []rune(want[k])) > len(want[k])/6 {
+			return false
+		}
+	}
+	return true
+}
+
+// reformed is whether a differs from b by a real change of form: a plural ending added or dropped,
+// or the final vowel swapped (diferentes, diferenta for diferente).
+func reformed(a, b string) bool {
+	if a == b || len(a) < 3 || len(b) < 3 {
+		return false
+	}
+	if a == b+"s" || b == a+"s" || a == b+"es" || b == a+"es" {
+		return true
+	}
+	return len(a) == len(b) && a[:len(a)-1] == b[:len(b)-1] && strings.ContainsRune("aeo", rune(a[len(a)-1])) && strings.ContainsRune("aeo", rune(b[len(b)-1]))
+}
+
+// sound is a word as Spanish says it: silent h dropped, b and v merged, soft c and z as s, hard c
+// and qu as k, ll as y, doubled letters collapsed.
+func sound(word string) string {
+	word = soundShifts.Replace(word)
+	var b strings.Builder
+	var last rune
+	for _, r := range word {
+		if r == 'h' || r == last {
+			continue
+		}
+		b.WriteRune(r)
+		last = r
+	}
+	return b.String()
+}
+
+var soundShifts = strings.NewReplacer("ch", "C", "qu", "k", "ce", "se", "ci", "si", "c", "k", "z", "s", "v", "b", "ll", "y", "ge", "je", "gi", "ji", "x", "ks", "w", "u")
+
+// distance is the edit distance between a and b.
+func distance(a, b []rune) int {
+	previous := make([]int, len(b)+1)
+	current := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j-1]+cost, previous[j]+1, current[j-1]+1)
+		}
+		previous, current = current, previous
+	}
+	return previous[len(b)]
 }
 
 // hints is whether Rosa's turn gives away a Spanish word of the expected answer that the English cue

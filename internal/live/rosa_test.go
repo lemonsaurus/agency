@@ -20,7 +20,9 @@ func TestJudge(t *testing.T) {
 	cases := map[string]string{
 		"No quiero cancelarlo ahora.":       verdictRight,
 		"uh, no quiero cancelar lo, ahora":  verdictRight,
-		"no quiero cancelarlo aora":         verdictAttempt,
+		"no quiero cancelarlo aora":         verdictRight,
+		"no kiero cancellarlo ahora":        verdictRight,
+		"no quiero cancelar ahora":          verdictAttempt,
 		"no quiero cancelarlos ahora":       verdictAttempt,
 		"No quiero…":                        verdictPartial,
 		"uhmm... maybe..":                   verdictPartial,
@@ -38,8 +40,11 @@ func TestJudge(t *testing.T) {
 			t.Errorf("judge(%q) = %s, want %s", said, got, want)
 		}
 	}
-	if judge("mi vida es diferentes", Sentence{ES: "mi vida es diferente"}) != verdictAttempt || judge("naturalmennte", Sentence{ES: "naturalmente"}) != verdictAttempt {
-		t.Error("a near miss judged right")
+	if judge("mi vida es diferentes", Sentence{ES: "mi vida es diferente"}) != verdictAttempt || judge("es no normal", Sentence{ES: "no es normal"}) != verdictAttempt {
+		t.Error("a real miss judged right")
+	}
+	if judge("Naturalmennte", Sentence{ES: "naturalmente"}) != verdictRight || judge("es increible", Sentence{ES: "es increíble"}) != verdictRight {
+		t.Error("a transcription slip judged wrong")
 	}
 	if switched("why is el mundo at the end of the sentence when we say el mundo") || !switched("quiero hablar más rápido, yyy.. about many different topics") {
 		t.Error("code switch detection")
