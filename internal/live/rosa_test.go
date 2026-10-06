@@ -414,7 +414,22 @@ func TestManagerStartsRosa(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "This call's plan") {
 		t.Fatalf("plan not handed over again on resume: %s %v", data, err)
 	}
+	os.Remove(m.rosa.threadPath())
 	m.Handle(context.Background(), `{"op":"close"}`)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(m.rosa.threadPath()); err == nil {
+			break
+		}
+	}
+	saved, _ := os.ReadFile(m.rosa.threadPath())
+	if !strings.Contains(string(saved), `"id":"ls_rosa"`) {
+		t.Fatalf("thread not saved for a restart: %s", saved)
+	}
+	restarted := NewRosa(m.rosa.prompts, m.rosa.dir)
+	restarted.Restore()
+	if !restarted.resuming(time.Now()) {
+		t.Fatal("a restarted daemon forgot the open thread")
+	}
 }
 
 func TestComposeAndGapPass(t *testing.T) {

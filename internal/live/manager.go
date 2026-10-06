@@ -51,6 +51,14 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 	m.dispatcher = NewDispatcher(box, m.discord, m.Emit)
 	m.dispatcher.Diary = filepath.Join(filepath.Dir(memoryPath), "activity.jsonl")
 	m.rosa = NewRosa(filepath.Join(promptDir, "rosa"), filepath.Join(filepath.Dir(memoryPath), "rosa"))
+	m.rosa.Backend = func() *Backend {
+		_, backend, _, err := m.rosa.Instructions()
+		if err != nil {
+			return nil
+		}
+		return m.backend(backend, RosaSchema, m.rosa.Call)
+	}
+	m.rosa.Restore()
 	return m
 }
 

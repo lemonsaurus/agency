@@ -39,6 +39,8 @@ type Rosa struct {
 	last   *Class
 	ended  time.Time
 	settle *time.Timer
+	// Backend makes the planner backend for work that outlives a call, like the debrief.
+	Backend func() *Backend
 }
 
 // RosaSchema is the function list Rosa's backend sees.
@@ -76,6 +78,43 @@ var gapFormat = json.RawMessage(`{"type":"json_schema","name":"gap","strict":tru
 func NewRosa(prompts, dir string) *Rosa {
 	os.MkdirAll(filepath.Join(dir, "floor"), 0o700)
 	return &Rosa{prompts: prompts, dir: dir, memory: OpenMemory(filepath.Join(dir, "transcript.jsonl")), learner: OpenLearner(filepath.Join(dir, "learner.json"))}
+}
+
+func (r *Rosa) threadPath() string { return filepath.Join(r.dir, "thread.json") }
+
+// Restore picks up a thread saved before the daemon restarted: it resumes if a call comes within the
+// window, and is debriefed when the window passes.
+func (r *Rosa) Restore() {
+	data, err := os.ReadFile(r.threadPath())
+	if err != nil {
+		return
+	}
+	var t thread
+	if json.Unmarshal(data, &t) != nil || t.ID == "" {
+		return
+	}
+	graph, err := r.Graph()
+	if err != nil {
+		return
+	}
+	class := restore(t, graph, r.learner)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.last, r.ended = class, t.Ended
+	r.settle = time.AfterFunc(max(time.Until(t.Ended.Add(resumeWindow)), 0), func() { r.expire(class, t.Ended) })
+}
+
+// expire ends a thread whose resume window passed with no new call: debrief, then forget it.
+func (r *Rosa) expire(class *Class, ended time.Time) {
+	r.mu.Lock()
+	if r.last != class {
+		r.mu.Unlock()
+		return
+	}
+	r.last = nil
+	r.mu.Unlock()
+	os.Remove(r.threadPath())
+	r.debrief(class, ended)
 }
 
 func (r *Rosa) read(name string) (string, error) {
@@ -235,22 +274,18 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 func (r *Rosa) closed(session *Session, class *Class) {
 	now := time.Now()
 	report := class.Finish(now)
+	class.record("ended", map[string]any{"session": session.ID, "reason": session.Ended(), "minutes": now.Sub(session.started).Minutes()})
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.last, r.ended = class, now
 	if r.settle != nil {
 		r.settle.Stop()
 	}
-	r.settle = time.AfterFunc(resumeWindow, func() {
-		r.mu.Lock()
-		if r.last != class {
-			r.mu.Unlock()
-			return
-		}
-		r.last = nil
-		r.mu.Unlock()
-		r.debrief(session, class, report, now)
-	})
+	r.settle = time.AfterFunc(resumeWindow, func() { r.expire(class, now) })
+	if data, err := json.Marshal(class.snapshot(now)); err == nil {
+		os.WriteFile(r.threadPath(), data, 0o600)
+	}
+	log.Printf("rosa: call %s closed, thread %s open for resume. %s", session.ID, class.id, truncate(report, 300))
 }
 
 // transcript is what was said since since: the call, or the whole thread of calls.
@@ -364,11 +399,16 @@ func (r *Rosa) gapInstructions() string {
 
 // debrief reviews a finished thread of a few minutes or more into learner memory and leaves the next
 // call's plan waiting.
-func (r *Rosa) debrief(session *Session, class *Class, report string, ended time.Time) {
+func (r *Rosa) debrief(class *Class, ended time.Time) {
 	now := time.Now()
-	if ended.Sub(class.started) < debriefAfter {
+	if ended.Sub(class.started) < debriefAfter || r.Backend == nil {
 		return
 	}
+	backend := r.Backend()
+	if backend == nil {
+		return
+	}
+	report := class.Report()
 	transcript := r.transcript(class.started)
 	if transcript == "" {
 		return
@@ -381,7 +421,7 @@ func (r *Rosa) debrief(session *Session, class *Class, report string, ended time
 		seedMessage("developer", "Transcript of the call:\n"+truncate(transcript, 60000)),
 		seedMessage("developer", "Review: with status, set the status of each thought the call covered that the referee report doesn't list: found alone only for a clean answer he built without a hint, including one he produced before it was taught; found with help when he fixed it after a hint or a question; introduced when he didn't get there. Near misses are never right. With remember, file each distinct wrong answer under its diagnosed cause, each learning habit you saw, each new durable fact about his life, and each cross-language link he reacted to and how. With words, add the Spanish words he was exposed to that are not in his dictionary yet, with how he got them. Skip what learner memory already holds. Then return say: two or three sentences for your next call with him: what landed, what to revisit, how the pace felt. details: empty."),
 	}
-	reply, err := session.backend.Answer(ctx, input)
+	reply, err := backend.Answer(ctx, input)
 	if err != nil {
 		log.Printf("rosa: review failed: %v", err)
 	} else {
@@ -394,7 +434,7 @@ func (r *Rosa) debrief(session *Session, class *Class, report string, ended time
 			}
 		})
 	}
-	plan, err := r.compose(ctx, session.backend, composeNext, transcript, time.Now())
+	plan, err := r.compose(ctx, backend, composeNext, transcript, time.Now())
 	if err != nil {
 		log.Printf("rosa: compose failed: %v", err)
 		return

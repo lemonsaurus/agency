@@ -20,7 +20,7 @@ const (
 	cueWindow    = 10
 	holdFloor    = "Lemon is still building his answer and has only said part of it. Stop talking now. Stay silent and keep listening until he finishes it, says he doesn't know, or asks you something. No hints."
 	releaseFloor = "Lemon has finished his answer. The floor is yours again: respond to what he said now."
-	answerHim    = "Lemon is talking to you directly. Answer him now."
+	answerHim    = "Lemon is calling you or checking you are there. Answer in one short phrase, no greeting, and carry on where you were."
 	takeAnswer   = "Lemon answered while you were still talking. Stop, and respond to his answer now."
 	moveOn       = "Nothing is pending. Go straight on to the next step now."
 	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
@@ -101,6 +101,7 @@ type Class struct {
 	tookOver   bool
 	tries      int    // attempts since the armed target was last cued
 	praised    string // a target just resolved alone, until Rosa's reply shows whether she agreed
+	called     bool   // he called her by name or checked she is there in this attempt
 	idleTimer  *time.Timer
 	rosaEnd    int64
 	lemonEnd   int64
@@ -143,6 +144,52 @@ func (c *Class) send(kind, content string) {
 	}
 }
 
+// thread is a class's state between calls, saved so a resumed call survives a daemon restart.
+type thread struct {
+	ID       string            `json:"id"`
+	Started  time.Time         `json:"started"`
+	Ended    time.Time         `json:"ended"`
+	Plan     Plan              `json:"plan"`
+	Planned  bool              `json:"planned"`
+	Current  int               `json:"current"`
+	Handed   map[int]bool      `json:"handed"`
+	Outcomes map[string]string `json:"outcomes"`
+	Recorded map[string]string `json:"recorded"`
+	Misses   map[string]int    `json:"misses"`
+	Hinted   map[string]bool   `json:"hinted"`
+	Touched  map[string]bool   `json:"touched"`
+}
+
+func (c *Class) snapshot(ended time.Time) thread {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return thread{c.id, c.started, ended, c.plan, c.planned, c.current, c.handed, c.outcomes, c.recorded, c.misses, c.hinted, c.touched}
+}
+
+func restore(t thread, graph *Graph, learner *LearnerStore) *Class {
+	c := newClass(t.ID, graph, learner, "", t.Started)
+	c.plan, c.planned, c.current = t.Plan, t.Planned, t.Current
+	if t.Handed != nil {
+		c.handed = t.Handed
+	}
+	if t.Outcomes != nil {
+		c.outcomes = t.Outcomes
+	}
+	if t.Recorded != nil {
+		c.recorded = t.Recorded
+	}
+	if t.Misses != nil {
+		c.misses = t.Misses
+	}
+	if t.Hinted != nil {
+		c.hinted = t.Hinted
+	}
+	if t.Touched != nil {
+		c.touched = t.Touched
+	}
+	return c
+}
+
 // Resume carries the thread into a new call after a drop: fresh floor state, and the plan overview
 // and the items in play handed over again, since the new session has never seen them.
 func (c *Class) Resume(logPath string) {
@@ -150,6 +197,7 @@ func (c *Class) Resume(logPath string) {
 	defer c.mu.Unlock()
 	c.logPath = logPath
 	c.floor, c.turn, c.attempt, c.verdict = "", "", "", ""
+	c.rosaEnd, c.lemonEnd = 0, 0
 	c.armed, c.held, c.holding, c.overlap, c.fresh = nil, false, false, false, false
 	if c.holdTimer != nil {
 		c.holdTimer.Stop()
@@ -307,7 +355,7 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		}
 		c.tries++
 		c.attemptID++
-		c.attempt, c.verdict, c.intervened, c.tookOver = "", "", false, false
+		c.attempt, c.verdict, c.intervened, c.tookOver, c.called = "", "", false, false, false
 		c.thinkMS = 0
 		if c.rosaEnd > 0 {
 			c.thinkMS = startMS - c.rosaEnd
@@ -327,6 +375,9 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	}
 	if c.armed != nil {
 		verdict := judge(c.attempt, c.target(*c.armed))
+		if verdict != verdictRight && addressed(c.attempt) {
+			verdict = verdictAddressed
+		}
 		if verdict != c.verdict {
 			c.verdict = verdict
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
@@ -336,6 +387,11 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		id, said := c.attemptID, c.attempt
 		time.AfterFunc(settleDelay, func() { c.clarify(id, said) })
 	}
+	if addressed(text) && !c.holding && !c.called {
+		c.called = true
+		c.record("addressed", map[string]any{"said": truncate(c.attempt, 300)})
+		c.send("session.instructions.append", c.where(answerHim))
+	}
 	if c.overlap && c.fresh && !c.tookOver && c.armed != nil && c.verdict != verdictPartial && c.verdict != verdictClarify {
 		c.tookOver = true
 		c.record("take", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300)})
@@ -344,9 +400,9 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	if c.holding {
 		switch {
 		case addressed(text):
-			c.release(answerHim)
+			c.release(c.where(answerHim))
 		case c.armed == nil || c.verdict != verdictPartial:
-			c.release(releaseFloor)
+			c.release(c.where(releaseFloor))
 		default:
 			c.holdUntilQuiet()
 		}
@@ -587,9 +643,20 @@ func (c *Class) holdUntilQuiet() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.holding && c.attempt == said {
-			c.release(releaseFloor)
+			c.release(c.where(releaseFloor))
 		}
 	})
+}
+
+// where adds what Rosa was doing to an instruction, so she carries on instead of starting over.
+func (c *Class) where(instruction string) string {
+	if c.armed == nil {
+		return instruction
+	}
+	if en := c.target(*c.armed).EN; en != "" {
+		return instruction + fmt.Sprintf(" You were asking him how to say %q; carry on with that.", en)
+	}
+	return instruction
 }
 
 // release lifts a hold on Rosa.
@@ -774,6 +841,51 @@ func (c *Class) Finish(now time.Time) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closeGap()
+	report, statuses, covered := c.tally()
+	c.record("closed", map[string]any{"statuses": statuses})
+	recorded := c.recorded
+	c.learner.Update(func(l *Learner) {
+		for id, status := range statuses {
+			if recorded[id] == status {
+				continue
+			}
+			record := l.Thoughts[id]
+			if recorded[id] == "" {
+				record.Seen++
+			}
+			if status == "found alone" {
+				record.Alone++
+			} else if recorded[id] == "found alone" {
+				record.Alone--
+			}
+			record.Status, record.At = status, now
+			l.Thoughts[id] = record
+			recorded[id] = status
+		}
+		call := LessonCall{At: c.started, Session: c.id, Minutes: now.Sub(c.started).Minutes(), Thoughts: covered}
+		for i := range l.Calls {
+			if l.Calls[i].Session == c.id {
+				call.Summary = l.Calls[i].Summary
+				l.Calls[i] = call
+				return
+			}
+		}
+		l.Calls = append(l.Calls, call)
+	})
+	return report
+}
+
+// Report is what the referee saw in the thread so far, for the debrief.
+func (c *Class) Report() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	report, _, _ := c.tally()
+	return report
+}
+
+// tally sums the outcomes per thought: the referee report, each touched thought's status, and the
+// thoughts covered.
+func (c *Class) tally() (string, map[string]string, []string) {
 	type tally struct{ alone, found, total int }
 	tallies := map[string]*tally{}
 	var covered []string
@@ -816,37 +928,7 @@ func (c *Class) Finish(now time.Time) string {
 			statuses[id] = "introduced"
 		}
 	}
-	c.record("closed", map[string]any{"statuses": statuses})
-	recorded := c.recorded
-	c.learner.Update(func(l *Learner) {
-		for id, status := range statuses {
-			if recorded[id] == status {
-				continue
-			}
-			record := l.Thoughts[id]
-			if recorded[id] == "" {
-				record.Seen++
-			}
-			if status == "found alone" {
-				record.Alone++
-			} else if recorded[id] == "found alone" {
-				record.Alone--
-			}
-			record.Status, record.At = status, now
-			l.Thoughts[id] = record
-			recorded[id] = status
-		}
-		call := LessonCall{At: c.started, Session: c.id, Minutes: now.Sub(c.started).Minutes(), Thoughts: covered}
-		for i := range l.Calls {
-			if l.Calls[i].Session == c.id {
-				call.Summary = l.Calls[i].Summary
-				l.Calls[i] = call
-				return
-			}
-		}
-		l.Calls = append(l.Calls, call)
-	})
-	return report.String()
+	return report.String(), statuses, covered
 }
 
 // target is a plan target, a gap chunk (item -1), or the whole gap sentence (item -1, last index),

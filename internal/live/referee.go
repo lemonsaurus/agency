@@ -16,6 +16,8 @@ const (
 	verdictGap = "gap"
 	// English with no Spanish in it: he is asking to hear the phrase again or checking it. Never an answer.
 	verdictClarify = "clarify"
+	// He is calling Rosa or checking she is there. Never an answer, never held.
+	verdictAddressed = "addressed"
 )
 
 var accents = strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n", "à", "a", "è", "e", "ò", "o")

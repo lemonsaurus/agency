@@ -37,6 +37,8 @@ type Session struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	reason string    // how the session ended
+	heard  time.Time // the last transcript fragment, either way
 	writes sync.Mutex
 	events int
 	mu     sync.Mutex
@@ -69,6 +71,7 @@ func (s *Session) Run() {
 	for {
 		data, err := s.conn.Read(s.ctx)
 		if err != nil {
+			s.end("sideband closed: " + err.Error())
 			return
 		}
 		var event struct {
@@ -101,8 +104,14 @@ func (s *Session) Run() {
 		switch event.Type {
 		case "session.input_transcript.delta":
 			s.memory.Add("user", event.Delta, time.Now())
+			s.mu.Lock()
+			s.heard = time.Now()
+			s.mu.Unlock()
 		case "session.output_transcript.delta":
 			s.memory.Add("assistant", event.Delta, time.Now())
+			s.mu.Lock()
+			s.heard = time.Now()
+			s.mu.Unlock()
 		case "session.delegation.created":
 			if event.Delegation.Target == "client" {
 				go s.delegate(event.Delegation.ID)
@@ -111,6 +120,7 @@ func (s *Session) Run() {
 			log.Printf("live: %s %s", event.Error.Code, event.Error.Message)
 		case "session.closed":
 			log.Printf("live: session %s closed (%s)", s.ID, event.Reason)
+			s.end("OpenAI closed it: " + event.Reason)
 			return
 		}
 	}
@@ -214,5 +224,28 @@ func (s *Session) finish() {
 
 // Close ends the sideband; the Live session itself is closed by the phone.
 func (s *Session) Close() {
+	s.end("closed by the box: the phone hung up or a new call replaced it")
 	s.finish()
+}
+
+// end records the first reason the session ended, and logs it with how long the line had been quiet.
+func (s *Session) end(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reason != "" {
+		return
+	}
+	quiet := "nothing was ever said"
+	if !s.heard.IsZero() {
+		quiet = "last speech " + ago(time.Since(s.heard))
+	}
+	s.reason = reason + "; " + quiet
+	log.Printf("live: %s session %s ended after %s: %s", s.Agent, s.ID, span(time.Since(s.started)), s.reason)
+}
+
+// Ended is how the session ended, once it has.
+func (s *Session) Ended() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
 }
