@@ -21,6 +21,7 @@ type Conn interface {
 // to the backend, and updates back into the call. The dispatcher outlives it in the Manager.
 type Session struct {
 	ID      string
+	Agent   string // carla or rosa
 	conn    Conn
 	memory  *Memory
 	recall  *Recall
@@ -29,6 +30,10 @@ type Session struct {
 	started time.Time
 	last    time.Time      // when Lemon last spoke before this call
 	Zone    *time.Location // Lemon's, from the phone
+	// preamble opens every backend request: clock, state and recent results.
+	preamble func(now time.Time) []map[string]any
+	// watch sees transcript fragments and delegations with their session-timeline times.
+	watch func(kind, text string, startMS, endMS int64)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -41,7 +46,9 @@ type Session struct {
 
 func NewSession(id string, conn Conn, memory *Memory, recall *Recall, backend *Backend, state func() string) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{ID: id, conn: conn, memory: memory, recall: recall, backend: backend, state: state, started: time.Now(), last: memory.Last(), Zone: time.Local, ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
+	s := &Session{ID: id, Agent: "carla", conn: conn, memory: memory, recall: recall, backend: backend, state: state, started: time.Now(), last: memory.Last(), Zone: time.Local, ctx: ctx, cancel: cancel, Closed: make(chan struct{})}
+	s.preamble = s.carla
+	return s
 }
 
 // Run reads sideband events until the session closes.
@@ -67,6 +74,9 @@ func (s *Session) Run() {
 		var event struct {
 			Type       string `json:"type"`
 			Delta      string `json:"delta"`
+			StartMS    int64  `json:"start_ms"`
+			EndMS      int64  `json:"end_ms"`
+			OffsetMS   int64  `json:"offset_ms"`
 			Reason     string `json:"reason"`
 			Delegation struct {
 				ID     string `json:"id"`
@@ -79,6 +89,14 @@ func (s *Session) Run() {
 		}
 		if json.Unmarshal(data, &event) != nil {
 			continue
+		}
+		if s.watch != nil {
+			switch event.Type {
+			case "session.input_transcript.delta", "session.output_transcript.delta":
+				s.watch(event.Type, event.Delta, event.StartMS, event.EndMS)
+			case "session.delegation.created":
+				s.watch(event.Type, "", event.OffsetMS, event.OffsetMS)
+			}
 		}
 		switch event.Type {
 		case "session.input_transcript.delta":
@@ -104,14 +122,7 @@ func (s *Session) delegate(id string) {
 	// The delegation can arrive before the last transcript fragments; let them land.
 	time.Sleep(400 * time.Millisecond)
 	now := time.Now().In(s.Zone)
-	note := "It is " + clock(now) + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
-	if !fresh(s.started, s.last) && !s.recall.Checked(s.started) {
-		note += " Check the live state with your tools before reporting progress or what a session is doing."
-	}
-	input := []map[string]any{seedMessage("developer", note+" "+s.state())}
-	if brief := s.recall.Brief(now); brief != "" {
-		input = append(input, seedMessage("developer", brief))
-	}
+	input := s.preamble(now)
 	marked := false
 	asked := ""
 	for _, message := range s.memory.Recent(now, 24) {
@@ -139,6 +150,20 @@ func (s *Session) delegate(id string) {
 		s.append("session.thinking.append", "", "Facts behind your next answer, as of "+now.Format("15:04")+", for follow-ups; not to read out: "+reply.Details)
 	}
 	s.append("session.commentary.append", id, reply.Say)
+}
+
+// carla opens Carla's backend requests: the clock, how long Lemon was away, the dispatcher, and
+// what recent delegations already fetched.
+func (s *Session) carla(now time.Time) []map[string]any {
+	note := "It is " + clock(now) + ". This call started " + ago(now.Sub(s.started)) + ". " + away(s.started, s.last)
+	if !fresh(s.started, s.last) && !s.recall.Checked(s.started) {
+		note += " Check the live state with your tools before reporting progress or what a session is doing."
+	}
+	input := []map[string]any{seedMessage("developer", note+" "+s.state())}
+	if brief := s.recall.Brief(now); brief != "" {
+		input = append(input, seedMessage("developer", brief))
+	}
+	return input
 }
 
 // Emit sends an update into the conversation.

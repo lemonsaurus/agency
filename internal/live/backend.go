@@ -21,6 +21,7 @@ type Backend struct {
 	Auth         func(ctx context.Context) (token, account string, err error)
 	Model        string
 	Instructions string
+	Schema       json.RawMessage
 	Tools        func(ctx context.Context, name, arguments string) (any, error)
 }
 
@@ -33,7 +34,7 @@ type Reply struct {
 }
 
 var replyFormat = json.RawMessage(`{"type":"json_schema","name":"reply","strict":true,"schema":{"type":"object","properties":{
-"say":{"type":"string","description":"What Carla says to Lemon now: one short spoken-style paragraph, no IDs."},
+"say":{"type":"string","description":"What to say to Lemon now: one short spoken-style paragraph, no IDs."},
 "details":{"type":"string","description":"The facts behind it that Lemon may follow up on, as compact notes: session task names, states, counts, times, findings. Not read aloud. Under 1000 characters; empty when there are none."}},
 "required":["say","details"],"additionalProperties":false}}`)
 
@@ -110,7 +111,7 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]respo
 		"model":               b.Model,
 		"instructions":        b.Instructions,
 		"input":               input,
-		"tools":               Schema,
+		"tools":               b.Schema,
 		"text":                map[string]any{"format": replyFormat},
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,

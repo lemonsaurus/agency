@@ -27,6 +27,7 @@ type Manager struct {
 	dispatcher *Dispatcher
 	discord    *Discord
 	reminders  *Reminders
+	rosa       *Rosa
 	client     *http.Client
 	API        string
 	// Codex signs the voice backend's requests with Lemon's ChatGPT login.
@@ -49,10 +50,12 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 	m.reminders = OpenReminders(remindersPath, m.Emit)
 	m.dispatcher = NewDispatcher(box, m.discord, m.Emit)
 	m.dispatcher.Diary = filepath.Join(filepath.Dir(memoryPath), "activity.jsonl")
+	m.rosa = NewRosa(filepath.Join(promptDir, "rosa"), filepath.Join(filepath.Dir(memoryPath), "rosa"))
 	return m
 }
 
 type startRequest struct {
+	Agent  string `json:"agent"`
 	Voice  string `json:"voice"`
 	Accent string `json:"accent"`
 	Zone   string `json:"zone"`
@@ -68,19 +71,31 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 	if request.SDP == "" || request.Voice == "" {
 		return "", fmt.Errorf("voice and sdp are required")
 	}
-	live, backend, err := m.instructions(request.Accent)
+	m.reminders.SetZone(request.Zone)
+	zone := m.reminders.Zone()
+	var live, backend, voice string
+	var seed []map[string]any
+	var err error
+	switch request.Agent {
+	case "", "carla":
+		live, backend, err = m.instructions(request.Accent)
+		voice, seed = request.Voice, m.memory.Seed(time.Now().In(zone))
+	case "rosa":
+		live, backend, voice, err = m.rosa.Instructions()
+		seed = m.rosa.Seed(time.Now().In(zone))
+	default:
+		err = fmt.Errorf("unknown agent %q", request.Agent)
+	}
 	if err != nil {
 		return "", err
 	}
-	m.reminders.SetZone(request.Zone)
-	zone := m.reminders.Zone()
 	config := map[string]any{
 		"model":        "gpt-live-1",
 		"instructions": live,
-		"audio":        map[string]any{"output": map[string]any{"voice": request.Voice}},
+		"audio":        map[string]any{"output": map[string]any{"voice": voice}},
 		"delegation":   map[string]any{"type": "client"},
 	}
-	if seed := m.memory.Seed(time.Now().In(zone)); len(seed) > 0 {
+	if len(seed) > 0 {
 		config["input"] = seed
 	}
 	body, _ := json.Marshal(map[string]any{"session": config, "transport": map[string]any{"type": "webrtc", "sdp": request.SDP}})
@@ -96,8 +111,23 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 	if json.Unmarshal(reply, &answer) != nil || answer.Session.ID == "" {
 		return "", fmt.Errorf("invalid live session reply")
 	}
-	if err := m.attach(answer.Session.ID, backend, zone); err != nil {
+	conn, err := m.dial(answer.Session.ID)
+	if err != nil {
 		return "", err
+	}
+	if request.Agent == "rosa" {
+		m.adopt(m.rosa.Session(answer.Session.ID, conn, m.backend(backend, RosaSchema, m.rosa.Call), zone, m.turnOff))
+		return string(reply), nil
+	}
+	session := NewSession(answer.Session.ID, conn, m.memory, m.recall, m.backend(backend, Schema, m.call), m.state)
+	session.Zone = zone
+	m.mu.Lock()
+	pending := m.pending
+	m.pending = nil
+	m.mu.Unlock()
+	m.adopt(session)
+	for _, update := range pending {
+		session.Emit(update)
 	}
 	return string(reply), nil
 }
@@ -125,23 +155,28 @@ func (m *Manager) instructions(accent string) (string, string, error) {
 	return persona + "\n\n" + strings.TrimSpace(string(live)) + spoken, persona + "\n\n# Voice backend\n\n" + strings.TrimSpace(string(backend)), nil
 }
 
-func (m *Manager) attach(id string, instructions string, zone *time.Location) error {
+// dial attaches the sideband to a Live session.
+func (m *Manager) dial(id string) (Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	url := strings.Replace(m.API, "http", "ws", 1) + "/v1/live/sessions/" + id + "/attach"
 	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + m.key}}, HTTPClient: m.client})
 	if err != nil {
-		return fmt.Errorf("sideband attach failed: %v", err)
+		return nil, fmt.Errorf("sideband attach failed: %v", err)
 	}
 	conn.SetReadLimit(8 << 20)
-	backend := &Backend{Client: m.client, URL: CodexURL, Auth: m.Codex.Get, Model: "gpt-6.1-sol", Instructions: instructions, Tools: m.call}
-	session := NewSession(id, wsConn{conn}, m.memory, m.recall, backend, m.state)
-	session.Zone = zone
+	return wsConn{conn}, nil
+}
+
+func (m *Manager) backend(instructions string, schema json.RawMessage, tools func(ctx context.Context, name, arguments string) (any, error)) *Backend {
+	return &Backend{Client: m.client, URL: CodexURL, Auth: m.Codex.Get, Model: "gpt-6.1-sol", Instructions: instructions, Schema: schema, Tools: tools}
+}
+
+// adopt makes session the phone's current call, closing the one before it.
+func (m *Manager) adopt(session *Session) {
 	m.mu.Lock()
 	previous := m.session
 	m.session = session
-	pending := m.pending
-	m.pending = nil
 	m.mu.Unlock()
 	if previous != nil {
 		previous.Close()
@@ -154,10 +189,6 @@ func (m *Manager) attach(id string, instructions string, zone *time.Location) er
 		}
 		m.mu.Unlock()
 	}()
-	for _, update := range pending {
-		session.Emit(update)
-	}
-	return nil
 }
 
 // Emit routes an update to the live session, or holds spoken ones for the next session.
@@ -165,6 +196,9 @@ func (m *Manager) Emit(update Update) {
 	m.recall.Note(update.Content, time.Now())
 	m.mu.Lock()
 	session := m.session
+	if session != nil && session.Agent != "carla" {
+		session = nil
+	}
 	if session == nil && update.Spoken {
 		update.Content = "(From " + time.Now().In(m.reminders.Zone()).Format("15:04") + ", while the call was off) " + update.Content
 		m.pending = append(m.pending, update)
@@ -213,10 +247,15 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 	if args.State != "off" {
 		return nil, fmt.Errorf("state must be off")
 	}
+	return m.turnOff(), nil
+}
+
+// turnOff asks the phone to end the call once the goodbye is said.
+func (m *Manager) turnOff() string {
 	m.mu.Lock()
-	m.phone = args.State
+	m.phone = "off"
 	m.mu.Unlock()
-	return "The phone will go " + args.State + " after your next sentence. Say a short goodbye.", nil
+	return "The phone will go off after your next sentence. Say a short goodbye."
 }
 
 // Status is what the phone polls: what to show on the orb, Discord replies it must send, reminders
@@ -257,6 +296,7 @@ func (m *Manager) Status() Status {
 func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	var request struct {
 		Op       string           `json:"op"`
+		Agent    string           `json:"agent"`
 		Voice    string           `json:"voice"`
 		Accent   string           `json:"accent"`
 		Zone     string           `json:"zone"`
@@ -273,7 +313,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	}
 	switch request.Op {
 	case "start":
-		return m.Start(ctx, startRequest{Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP})
+		return m.Start(ctx, startRequest{Agent: request.Agent, Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP})
 	case "status":
 		data, _ := json.Marshal(m.Status())
 		return string(data), nil
@@ -282,10 +322,14 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		if strings.TrimSpace(request.Text) == "" {
 			return "ok", nil
 		}
-		m.memory.Add("user", request.Text, time.Now())
 		m.mu.Lock()
 		session := m.session
 		m.mu.Unlock()
+		memory := m.memory
+		if session != nil {
+			memory = session.memory
+		}
+		memory.Add("user", request.Text, time.Now())
 		if session != nil {
 			session.Instruct("Lemon said this while you were reconnecting: \"" + truncate(request.Text, 600) + "\". Respond to it now, then listen.")
 		}
