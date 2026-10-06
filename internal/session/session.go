@@ -893,24 +893,8 @@ func (m *Manager) applyCustomTiledForWindow(ctx context.Context, target string) 
 		minColWidth = 90
 	}
 
-	// Prefer 2 rows per column when the window is wide enough.
-	// Calculate how many columns we'd need with maxRows=2, then check
-	// if each column would still be at least minColWidth wide.
-	// If not, fall back to the full maxRows (more rows = fewer columns = wider).
-	effectiveMax := maxRows
-	if maxRows >= 2 {
-		colsNeeded := (info.PaneCount + 1) / 2 // ceil(paneCount / 2)
-		if colsNeeded < 1 {
-			colsNeeded = 1
-		}
-		// Available width per column: subtract separators, divide evenly.
-		widthPerCol := (info.Width - (colsNeeded - 1)) / colsNeeded
-		if widthPerCol >= minColWidth {
-			effectiveMax = 2
-		}
-	}
-
-	columns := layout.Grid(info.PaneCount, effectiveMax)
+	rows := layout.Rows(info.Width, info.PaneCount, maxRows, minColWidth)
+	columns := layout.Grid(info.PaneCount, rows)
 	layoutStr := layout.BuildCustomLayout(info.Width, info.Height, columns)
 	return m.tmux.SelectLayoutForWindow(ctx, target, layoutStr)
 }

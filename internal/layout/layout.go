@@ -41,6 +41,30 @@ func Grid(paneCount, maxRows int) []int {
 	return columns
 }
 
+// Rows picks how many panes stack in a column. Stacking is preferred, so
+// columns hold as many panes as fit the minimum column width, starting at two
+// rows; three or more panes never collapse into a single column, and no
+// column exceeds maxRows unless more columns are needed to respect it.
+func Rows(windowW, paneCount, maxRows, minColWidth int) int {
+	if paneCount <= 2 {
+		return 1
+	}
+	if maxRows < 2 {
+		return max(maxRows, 1)
+	}
+	limit := min(maxRows, (paneCount+1)/2) // never a single column
+	for rows := 2; rows < limit; rows++ {
+		cols := (paneCount + rows - 1) / rows
+		if (windowW-(cols-1))/cols >= minColWidth {
+			return rows
+		}
+	}
+	if limit < 2 {
+		return 2
+	}
+	return limit
+}
+
 // BuildCustomLayout generates a tmux custom layout string for the given
 // window dimensions and pane distribution. columns is the output of Grid,
 // specifying how many panes are in each column.

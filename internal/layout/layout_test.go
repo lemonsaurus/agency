@@ -192,3 +192,23 @@ func TestBuildCustomLayoutChecksumValid(t *testing.T) {
 		t.Errorf("checksum mismatch: header=%04x, computed=%04x for body %q", expectedCsum, actualCsum, body)
 	}
 }
+
+func TestRows(t *testing.T) {
+	tests := []struct {
+		width, panes, maxRows, minCol, want int
+	}{
+		{300, 2, 3, 90, 1},
+		{300, 3, 3, 90, 2},
+		{150, 3, 3, 90, 2},
+		{150, 4, 3, 90, 2},
+		{150, 5, 3, 90, 3},
+		{150, 6, 3, 90, 3},
+		{400, 6, 3, 90, 2},
+		{300, 3, 1, 90, 1},
+	}
+	for _, tt := range tests {
+		if got := Rows(tt.width, tt.panes, tt.maxRows, tt.minCol); got != tt.want {
+			t.Errorf("Rows(%d, %d, %d, %d) = %d, want %d", tt.width, tt.panes, tt.maxRows, tt.minCol, got, tt.want)
+		}
+	}
+}
