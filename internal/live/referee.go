@@ -12,6 +12,8 @@ const (
 	verdictAttempt = "attempt"
 	verdictUnsure  = "unsure"
 	verdictPartial = "partial"
+	// A complete attempt with English where Spanish words are missing: a vocabulary gap, not a miss.
+	verdictGap = "gap"
 )
 
 var accents = strings.NewReplacer("á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u", "ñ", "n", "à", "a", "è", "e", "ò", "o")
@@ -31,6 +33,60 @@ var fillers = map[string]bool{
 var backchannels = map[string]bool{
 	"mm": true, "mmm": true, "mhm": true, "hm": true, "hmm": true, "aja": true, "aha": true, "uh": true, "huh": true,
 	"si": true, "dale": true, "ok": true, "okay": true, "yeah": true, "yes": true, "claro": true, "bien": true, "eso": true,
+}
+
+// english and spanish mark which language a word is in, for code-switch detection. Words both
+// languages share (no, me, a, he, come, sea, red, real) are in neither.
+var english = setOf("the to of and in is it you that was for on are with as i his they be at one have this from or had by but what " +
+	"some we can out other were all there when up use your how said an each she which do their time if will way about many then them " +
+	"would like these her long make thing see him two has look more day could go did number sound most people my over know water than " +
+	"call first who may down been now find any new work part take get place made live where after back little only man year came show " +
+	"every good our under name very through just great think say help line turn much mean before move right too same tell does set " +
+	"three want well also play small end put home read hand large add even here must big high such follow why ask change went light " +
+	"kind off need house try us again point mother world near build father head stand own page should country found answer school grow " +
+	"study still learn keep never last let thought city hard start might story saw far left late run while close night life few open " +
+	"seem together next white children begin got walk example ease paper often always music those both mark book until mile river feel " +
+	"talk bird soon body dog family song door friend fast faster quickly slowly really different topics topic things stuff because")
+
+var spanish = setOf("quiero queres quieres es pero ahora yo vos tu te lo la el los las un una uno de del en con por para que muy mas y o " +
+	"sobre porque cuando como donde estoy esta estas soy sos eres tengo tenes tienes puedo podes puedes voy vas hablar hablo intento hay " +
+	"eso esto este mi su nos les le se ya tambien bien mucho muchos muchas poco hoy manana ayer todo nada algo siempre nunca aqui alla " +
+	"tambien entonces creo sabes sabe sé fue era estaba tiene hace hacer ser estar tener ir decir")
+
+func setOf(text string) map[string]bool {
+	set := map[string]bool{}
+	for _, word := range strings.Fields(text) {
+		set[word] = true
+	}
+	return set
+}
+
+// spanishEnding marks words that only Spanish builds: -ción, -mente, and verbs with lo, la, me, te or se
+// hooked on.
+func spanishEnding(word string) bool {
+	for _, ending := range []string{"cion", "mente", "arlo", "erlo", "irlo", "arla", "arme", "arte", "arse", "erse", "irse"} {
+		if strings.HasSuffix(word, ending) {
+			return true
+		}
+	}
+	return false
+}
+
+// switched is whether a Spanish turn carries English content words: a quiet request for the
+// Spanish he is missing. It takes two Spanish words, so an English chat with a che or a dale in it
+// doesn't count; fillers and listening sounds count as neither.
+func switched(text string) bool {
+	es, en := 0, 0
+	for _, word := range words(text) {
+		switch {
+		case fillers[word] || backchannels[word]:
+		case spanish[word] || spanishEnding(word):
+			es++
+		case english[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
+			en++
+		}
+	}
+	return es > 1 && en > 0
 }
 
 var unsure = []string{
@@ -66,8 +122,9 @@ func squash(tokens []string) []rune {
 	return []rune(b.String())
 }
 
-// judge decides whether an attempt at sentence is right, a complete attempt, an "I don't know",
-// or still partial. A trailing question mark ends an attempt, as a questioning inflection does; a
+// judge decides whether an attempt at sentence is right, a complete attempt, a complete attempt
+// with English filling a vocabulary gap, an "I don't know", or still partial. English words count
+// toward the length of an attempt and never end it. A trailing question mark ends an attempt, as a questioning inflection does; a
 // trailing hesitation keeps it open. Right allows one slip per twelve letters for transcription.
 func judge(attempt string, sentence Sentence) string {
 	tokens := words(attempt)
@@ -84,13 +141,14 @@ func judge(attempt string, sentence Sentence) string {
 			return verdictRight
 		}
 	}
-	if strings.HasSuffix(strings.TrimSpace(attempt), "?") {
-		return verdictAttempt
-	}
-	if trimmed := strings.TrimSpace(attempt); strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]] {
-		return verdictPartial
-	}
-	if expected := squash(words(sentence.ES)); len(said) > 0 && len(said)*4 >= len(expected)*3 {
+	trimmed := strings.TrimSpace(attempt)
+	trailing := strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]]
+	expected := squash(words(sentence.ES))
+	long := len(said) > 0 && len(said)*4 >= len(expected)*3
+	if strings.HasSuffix(trimmed, "?") || !trailing && long {
+		if switched(attempt) {
+			return verdictGap
+		}
 		return verdictAttempt
 	}
 	return verdictPartial

@@ -29,6 +29,8 @@ func TestJudge(t *testing.T) {
 		"I don't know":                      verdictUnsure,
 		"hmm, no idea":                      verdictUnsure,
 		"no sé":                             verdictUnsure,
+		"no quiero cancelarlo right now":    verdictGap,
+		"no quiero... about":                verdictPartial,
 	}
 	for said, want := range cases {
 		if got := judge(said, sentence); got != want {
@@ -53,10 +55,26 @@ func TestCued(t *testing.T) {
 	}
 }
 
-func testLesson() Lesson {
-	return Lesson{ID: "01", Title: "Test", Mission: "m", Close: "Tell me something true.", Thoughts: []Thought{
-		{ID: "es", Title: "es", Sentences: []Sentence{{EN: "it's normal", ES: "Es normal"}, {EN: "it's not normal", ES: "No es normal"}}},
-		{ID: "quiero", Title: "quiero", Sentences: []Sentence{{EN: "I want to cancel it", ES: "Quiero cancelarlo"}}},
+func testGraph(t *testing.T, dir string) *Graph {
+	thoughts := []Thought{
+		{ID: "t02-es", Title: "es and no es", Kind: "structure"},
+		{ID: "t04-quiero", Title: "quiero", Kind: "structure", Needs: []string{"t02-es"}},
+		{ID: "t05-yo", Title: "yo for emphasis", Kind: "structure", Needs: []string{"t04-quiero"}},
+	}
+	data, _ := json.Marshal(thoughts)
+	os.MkdirAll(filepath.Join(dir, "graph"), 0o700)
+	os.WriteFile(filepath.Join(dir, "graph", "complete-spanish-01.json"), data, 0o600)
+	graph, err := LoadGraph(filepath.Join(dir, "graph"), filepath.Join(dir, "thoughts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return graph
+}
+
+func testPlan() Plan {
+	return Plan{Mode: "teach", Why: "first call", Items: []PlanItem{
+		{Thought: "t02-es", Kind: "new", Why: "start", Targets: []Sentence{{EN: "it's normal", ES: "es normal"}, {EN: "it's not normal", ES: "no es normal"}}},
+		{Thought: "t04-quiero", Kind: "new", Why: "next", Targets: []Sentence{{EN: "I want to cancel it", ES: "quiero cancelarlo"}}},
 	}}
 }
 
@@ -64,13 +82,20 @@ func TestClassRefereesTheFloor(t *testing.T) {
 	dir := t.TempDir()
 	learner := OpenLearner(filepath.Join(dir, "learner.json"))
 	logPath := filepath.Join(dir, "floor.jsonl")
-	class := newClass(testLesson(), learner, logPath, time.Now())
-	class.open()
+	class := newClass(testGraph(t, dir), learner, logPath, time.Now())
+	prompted := make(chan bool, 1)
+	class.prompted = func() { prompted <- true }
+	class.SetPlan(testPlan())
 	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
 	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
 
 	out("How would you say it's normal?", 1000)
 	in("es normal", 4000)
+	select {
+	case <-prompted:
+	case <-time.After(time.Second):
+		t.Fatal("the first prompt did not trigger the adjust pass")
+	}
 	out("Good. And how would you say it's not normal?", 5000)
 	in("no es", 9000)
 	out("Mm", 9500)
@@ -88,25 +113,25 @@ func TestClassRefereesTheFloor(t *testing.T) {
 		t.Fatal("no intervention")
 	}
 	in("... normal", 30000)
-	if class.outcomes["es/1"] != "alone" || class.outcomes["es/2"] != "alone" {
-		t.Fatalf("outcomes %v", class.outcomes)
-	}
-	if !class.closing && !class.next {
-		t.Fatal("next thought not handed over with the last prompt")
+	if class.outcomes["1:t02-es/1"] != "alone" || class.outcomes["1:t02-es/2"] != "alone" || !class.handed[1] {
+		t.Fatalf("outcomes %v handed %v", class.outcomes, class.handed)
 	}
 	out("How would you say I want to cancel it?", 31000)
 	in("Quiero lo cancelar?", 35000)
 	out("Close. What does lo mean?", 36000)
 	in("quiero cancelarlo", 40000)
-	if class.outcomes["quiero/1"] != "helped" || !class.closing {
+	if class.outcomes["2:t04-quiero/1"] != "helped" || !class.closing {
 		t.Fatalf("outcomes %v closing=%v", class.outcomes, class.closing)
 	}
 	report := class.Finish("ls_1", time.Now())
-	if !strings.Contains(report, "interventions: 1") || learner.Status("es") != "found alone" || learner.Status("quiero") != "found with help" {
-		t.Fatalf("report=%s statuses=%s %s", report, learner.Status("es"), learner.Status("quiero"))
+	if !strings.Contains(report, "interventions: 1") || learner.Status("t02-es") != "found alone" || learner.Status("t04-quiero") != "found with help" {
+		t.Fatalf("report=%s statuses=%s %s", report, learner.Status("t02-es"), learner.Status("t04-quiero"))
+	}
+	if !learner.Known("quiero cancelarlo") || learner.Known("sobre") {
+		t.Fatal("dictionary not fed by resolved targets")
 	}
 	data, _ := os.ReadFile(logPath)
-	for _, kind := range []string{`"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"intervene"`, `"kind":"resolved"`, `"kind":"close"`, `"kind":"closed"`} {
+	for _, kind := range []string{`"kind":"plan"`, `"kind":"prompt"`, `"kind":"attempt"`, `"kind":"verdict"`, `"kind":"intervene"`, `"kind":"resolved"`, `"kind":"close"`, `"kind":"closed"`} {
 		if !strings.Contains(string(data), kind) {
 			t.Errorf("floor log lacks %s", kind)
 		}
@@ -114,13 +139,92 @@ func TestClassRefereesTheFloor(t *testing.T) {
 }
 
 func TestClassLetsRosaAnswerAWrongAttempt(t *testing.T) {
-	class := newClass(testLesson(), OpenLearner(""), "", time.Now())
+	class := newClass(testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
 	class.watch("session.output_transcript.delta", "How would you say it's not normal?", 1000, 1100)
 	class.watch("session.input_transcript.delta", "es no normal", 3000, 3500)
 	class.watch("session.output_transcript.delta", "Hm, where does the no go? No es normal.", 4000, 4100)
 	time.Sleep(settleDelay + 100*time.Millisecond)
-	if class.stops != 0 || class.outcomes["es/2"] != "shown" {
+	if class.stops != 0 || class.outcomes["1:t02-es/2"] != "shown" {
 		t.Fatalf("stops=%d outcomes=%v", class.stops, class.outcomes)
+	}
+}
+
+func TestClassWorksOutACodeSwitch(t *testing.T) {
+	learner := OpenLearner("")
+	learner.Update(func(l *Learner) { l.expose("es muy diferente", "found alone", time.Now()) })
+	class := newClass(testGraph(t, t.TempDir()), learner, "", time.Now())
+	asked := make(chan string, 1)
+	class.onSwitch = func(said, about string) { asked <- said }
+	class.watch("session.output_transcript.delta", "Contame, che.", 1000, 1100)
+	class.watch("session.input_transcript.delta", "quiero hablar más rápido, yyy..", 2000, 2500)
+	class.watch("session.input_transcript.delta", " about many different topics", 4000, 4500)
+	var said string
+	select {
+	case said = <-asked:
+	case <-time.After(switchPause + time.Second):
+		t.Fatal("code switch not sent for gap help")
+	}
+	if !strings.Contains(said, "topics") {
+		t.Fatalf("sent a partial turn: %q", said)
+	}
+	gap := Gap{Said: said, Sentence: "quiero hablar más rápido sobre muchos temas diferentes", Chunks: []GapChunk{
+		{English: "about", Spanish: "sobre", Route: "new", Ask: "how do you say about?"},
+		{English: "different", Spanish: "diferentes", Also: []string{"diferente"}, Route: "convert", Ask: "how do you say different?"},
+		{English: "topics", Spanish: "temas", Route: "import", Guessable: true, Hint: "it's almost like in Norwegian", Ask: "and topics?"},
+	}}
+	for i, chunk := range gap.Chunks {
+		gap.Chunks[i].Known = learner.Known(chunk.Spanish)
+	}
+	class.SetGap(gap)
+	notes := ""
+	for len(class.outbox) > 0 {
+		notes += (<-class.outbox).content
+	}
+	if !strings.Contains(notes, "In his dictionary: challenge him") || !strings.Contains(notes, "New but guessable") || !strings.Contains(notes, "New and not guessable: give it") {
+		t.Fatalf("notes %s", notes)
+	}
+	class.watch("session.output_transcript.delta", "Okay, but you know this. How do you say different?", 6000, 6100)
+	class.watch("session.input_transcript.delta", "diferentes?", 9000, 9200)
+	class.watch("session.output_transcript.delta", "Sí. And topics?", 10000, 10100)
+	class.watch("session.input_transcript.delta", "temas", 14000, 14200)
+	class.watch("session.output_transcript.delta", "Eso. So what's the end of the sentence?", 15000, 15100)
+	class.watch("session.input_transcript.delta", "sobre muchos temas diferentes", 19000, 19500)
+	if class.outcomes["gap1/2"] != "alone" || class.outcomes["gap1/3"] != "alone" || class.outcomes["gap1/4"] != "alone" {
+		t.Fatalf("outcomes %v", class.outcomes)
+	}
+	class.Finish("ls_2", time.Now())
+	if !learner.Known("temas") || len(learner.data.Gaps) != 3 || learner.data.Gaps[0].Found {
+		t.Fatalf("gaps %+v", learner.data.Gaps)
+	}
+}
+
+func TestCandidates(t *testing.T) {
+	dir := t.TempDir()
+	graph := testGraph(t, dir)
+	learner := OpenLearner("")
+	now := time.Now()
+	learner.Update(func(l *Learner) {
+		l.Thoughts["t02-es"] = ThoughtStatus{Status: "found alone", Alone: 1, At: now.Add(-2 * 24 * time.Hour)}
+		l.Thoughts["t04-quiero"] = ThoughtStatus{Status: "found with help", At: now}
+	})
+	text := Candidates(graph, learner, now)
+	if !strings.Contains(text, "- t02-es") || !strings.Contains(text, "- t04-quiero") || !strings.Contains(text, "- t05-yo") {
+		t.Fatalf("candidates %s", text)
+	}
+	learner.Update(func(l *Learner) { l.Thoughts["t02-es"] = ThoughtStatus{Status: "found alone", Alone: 3, At: now} })
+	if strings.Contains(Candidates(graph, learner, now), "- t02-es \"") {
+		t.Fatal("a thought found alone recently is due")
+	}
+	if err := graph.Author(Thought{ID: "r-lunfardo", Title: "lunfardo", Needs: []string{"t02-es"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Author(Thought{ID: "r-bad", Title: "bad", Needs: []string{"nope"}}); err == nil {
+		t.Fatal("dangling prerequisite accepted")
+	}
+	reloaded, _ := LoadGraph(filepath.Join(dir, "graph"), filepath.Join(dir, "thoughts.jsonl"))
+	if thought, ok := reloaded.Get("r-lunfardo"); !ok || thought.Source != "rosa" {
+		t.Fatalf("authored thought not saved: %+v", thought)
 	}
 }
 
@@ -160,12 +264,14 @@ func TestManagerStartsRosa(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	rosa := filepath.Join(dir, "rosa")
-	os.MkdirAll(filepath.Join(rosa, "course"), 0o700)
+	os.MkdirAll(rosa, 0o700)
 	for name, text := range map[string]string{"identity.md": "rosa identity", "live.md": "rosa live", "backend.md": "rosa backend", "voice": "bossa\n"} {
 		os.WriteFile(filepath.Join(rosa, name), []byte(text), 0o600)
 	}
-	lesson, _ := json.Marshal(testLesson())
-	os.WriteFile(filepath.Join(rosa, "course", "lesson-01.json"), lesson, 0o600)
+	testGraph(t, rosa)
+	plan, _ := json.Marshal(testPlan())
+	os.MkdirAll(filepath.Join(dir, "run", "rosa"), 0o700)
+	os.WriteFile(filepath.Join(dir, "run", "rosa", "plan.json"), plan, 0o600)
 	m := NewManager(&fakeBox{transcripts: map[string][]json.RawMessage{}}, "key", func() (string, error) { return "carla persona", nil }, dir, filepath.Join(dir, "run", "memory.jsonl"))
 	m.API = server.URL
 	m.client = server.Client()
@@ -182,7 +288,7 @@ func TestManagerStartsRosa(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, data, err := conn.Read(ctx)
-	if err != nil || !strings.Contains(string(data), "session.thinking.append") || !strings.Contains(string(data), "Today's lesson") {
+	if err != nil || !strings.Contains(string(data), "session.thinking.append") || !strings.Contains(string(data), "This call's plan") {
 		t.Fatalf("lesson not handed over: %s %v", data, err)
 	}
 	m.Emit(Update{true, "Lara wrote in #dev."})
@@ -196,4 +302,55 @@ func TestManagerStartsRosa(t *testing.T) {
 		t.Fatal("unknown agent accepted")
 	}
 	m.Handle(context.Background(), `{"op":"close"}`)
+}
+
+func TestComposeAndGapPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+			Text  struct {
+				Format struct {
+					Name string `json:"name"`
+				} `json:"format"`
+			} `json:"text"`
+			Tools json.RawMessage `json:"tools"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		switch body.Text.Format.Name {
+		case "plan":
+			plan := `{"mode":"teach","why":"early","items":[{"thought":"t04-quiero","kind":"new","why":"next unlocked","weave":["t02-es"],"targets":[{"en":"I want to compile it","es":"quiero compilarlo","also":[],"note":"","misses":[],"words":[{"word":"quiero","guessable":false,"route":"","hint":""},{"word":"compilarlo","guessable":true,"route":"t04-ation-ar","hint":"compilation"}]},{"en":"","es":"x","also":[],"note":"","misses":[],"words":[]}]},{"thought":"t99-nope","kind":"new","why":"made up","weave":[],"targets":[{"en":"a","es":"b","also":[],"note":"","misses":[],"words":[]}]}]}`
+			data, _ := json.Marshal(plan)
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":`+string(data)+`}]}]`)
+		case "gap":
+			if body.Model != gapModel || body.Tools != nil {
+				t.Errorf("gap pass model=%s tools=%s", body.Model, body.Tools)
+			}
+			gap := `{"sentence":"sobre muchos temas diferentes","chunks":[{"english":"different","spanish":"diferentes","also":[],"route":"convert","thought":"t03-ant-ent","guessable":true,"hint":"think of the -ent words","ask":"how do you say different?","link":"","misses":[]},{"english":"about","spanish":"sobre","also":[],"route":"new","thought":"","guessable":false,"hint":"","ask":"how do you say about?","link":"","misses":[]}],"aside":"tópico means cliché"}`
+			data, _ := json.Marshal(gap)
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":`+string(data)+`}]}]`)
+		default:
+			t.Errorf("unexpected format %q", body.Text.Format.Name)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	testGraph(t, dir)
+	r := NewRosa(dir, filepath.Join(dir, "run"))
+	r.learner.Update(func(l *Learner) { l.expose("quiero", "found alone", time.Now()) })
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Schema: RosaSchema, Tools: r.Call}
+	plan, err := r.compose(context.Background(), backend, "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 1 || len(plan.Items[0].Targets) != 1 || len(plan.Items[0].Targets[0].Words) != 1 || plan.Items[0].Targets[0].Words[0].Word != "compilarlo" {
+		t.Fatalf("plan %+v", plan)
+	}
+	session := NewSession("ls_gap", &fakeConn{events: make(chan []byte)}, r.memory, &Recall{}, backend, func() string { return "" })
+	class := newClass(r.graph, r.learner, "", time.Now())
+	gaps := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: gapModel}
+	r.gapPass(session, gaps, class, "quiero hablar about many different topics", "free conversation")
+	if class.gap == nil || len(class.gap.Chunks) != 2 || class.gap.Chunks[0].Known || !class.gap.Chunks[0].Guessable {
+		t.Fatalf("gap %+v", class.gap)
+	}
+	session.Close()
 }

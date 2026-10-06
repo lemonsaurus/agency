@@ -54,16 +54,30 @@ type responsePart struct {
 
 // Answer runs the loop and returns the reply with every tool call it made.
 func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, error) {
+	text, fetched, err := b.Complete(ctx, input, replyFormat, 8)
+	if err != nil {
+		return Reply{}, err
+	}
+	var reply Reply
+	if json.Unmarshal([]byte(text), &reply) != nil || strings.TrimSpace(reply.Say) == "" {
+		return Reply{}, fmt.Errorf("the backend produced no answer")
+	}
+	reply.Fetched = fetched
+	return reply, nil
+}
+
+// Complete runs the tool loop for up to rounds requests and returns the final text in format.
+func (b *Backend) Complete(ctx context.Context, input []map[string]any, format json.RawMessage, rounds int) (string, []Fetched, error) {
 	items := make([]json.RawMessage, 0, len(input)+8)
 	for _, item := range input {
 		data, _ := json.Marshal(item)
 		items = append(items, data)
 	}
 	var fetched []Fetched
-	for round := 0; round < 8; round++ {
-		outputs, err := b.request(ctx, items)
+	for round := 0; round < rounds; round++ {
+		outputs, err := b.request(ctx, items, format)
 		if err != nil {
-			return Reply{}, err
+			return "", nil, err
 		}
 		var text []string
 		calls := 0
@@ -91,35 +105,31 @@ func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, er
 			}
 		}
 		if calls == 0 {
-			var reply Reply
-			if json.Unmarshal([]byte(strings.Join(text, "")), &reply) != nil || strings.TrimSpace(reply.Say) == "" {
-				return Reply{}, fmt.Errorf("the backend produced no answer")
-			}
-			reply.Fetched = fetched
-			return reply, nil
+			return strings.Join(text, ""), fetched, nil
 		}
 	}
-	return Reply{}, fmt.Errorf("the backend kept calling tools without answering")
+	return "", nil, fmt.Errorf("the backend kept calling tools without answering")
 }
 
-func (b *Backend) request(ctx context.Context, input []json.RawMessage) ([]responseOutput, error) {
+func (b *Backend) request(ctx context.Context, input []json.RawMessage, format json.RawMessage) ([]responseOutput, error) {
 	token, account, err := b.Auth(ctx)
 	if err != nil {
 		return nil, err
 	}
-	body, _ := json.Marshal(map[string]any{
-		"model":               b.Model,
-		"instructions":        b.Instructions,
-		"input":               input,
-		"tools":               b.Schema,
-		"text":                map[string]any{"format": replyFormat},
-		"tool_choice":         "auto",
-		"parallel_tool_calls": false,
-		"reasoning":           map[string]string{"effort": "low"},
-		"store":               false,
-		"stream":              true,
-		"include":             []string{"reasoning.encrypted_content"},
-	})
+	fields := map[string]any{
+		"model":        b.Model,
+		"instructions": b.Instructions,
+		"input":        input,
+		"text":         map[string]any{"format": format},
+		"reasoning":    map[string]string{"effort": "low"},
+		"store":        false,
+		"stream":       true,
+		"include":      []string{"reasoning.encrypted_content"},
+	}
+	if b.Schema != nil {
+		fields["tools"], fields["tool_choice"], fields["parallel_tool_calls"] = b.Schema, "auto", false
+	}
+	body, _ := json.Marshal(fields)
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.URL, bytes.NewReader(body))

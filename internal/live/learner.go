@@ -18,14 +18,103 @@ type Learner struct {
 	Errors   []LearnerError           `json:"errors"`
 	Habits   []string                 `json:"habits"`
 	Pacing   []Pace                   `json:"pacing"`
+	Gaps     []GapRecord              `json:"gaps"`
+	Words    map[string]Word          `json:"words"`
+	Links    []string                 `json:"links"`
 	Calls    []LessonCall             `json:"calls"`
 }
 
+// Word is one Spanish word Lemon has been exposed to, keyed by its accentless lowercase form. How is
+// the best way he has got it: told, found with help, or found alone. Kind is word, or what he has
+// memorised: gender (with Gender, el or la), endings (a set of conjugation endings), or form (an
+// irregular form).
+type Word struct {
+	Word     string    `json:"word"`
+	Kind     string    `json:"kind,omitempty"`
+	Gender   string    `json:"gender,omitempty"`
+	First    time.Time `json:"first"`
+	Last     time.Time `json:"last"`
+	Seen     int       `json:"seen"`
+	How      string    `json:"how"`
+	Sentence string    `json:"sentence"`
+	Links    []string  `json:"links,omitempty"`
+}
+
+var hows = map[string]int{"told": 1, "found with help": 2, "found alone": 3}
+
+// expose records the words of a Spanish sentence as seen, keeping the best way he has got each.
+func (l *Learner) expose(sentence, how string, now time.Time) {
+	if l.Words == nil {
+		l.Words = map[string]Word{}
+	}
+	for _, raw := range strings.Fields(sentence) {
+		word := strings.ToLower(strings.Trim(raw, ".,;:!?¡¿\"'()…"))
+		key := strings.Join(words(word), "")
+		if key == "" {
+			continue
+		}
+		entry, ok := l.Words[key]
+		if !ok {
+			entry = Word{Word: word, First: now}
+		}
+		entry.Last, entry.Sentence = now, truncate(sentence, 200)
+		entry.Seen++
+		if hows[how] > hows[entry.How] {
+			entry.How = how
+		}
+		l.Words[key] = entry
+	}
+}
+
+// Known is whether every word of a Spanish chunk is in the dictionary, singular or plural.
+func (s *LearnerStore) Known(chunk string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tokens := words(chunk)
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, token := range tokens {
+		found := false
+		for _, form := range []string{token, strings.TrimSuffix(token, "s"), strings.TrimSuffix(token, "es"), token + "s"} {
+			if _, ok := s.data.Words[form]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// GapRecord is one English chunk from a code-switched turn: found by its route, or not.
+type GapRecord struct {
+	At      time.Time `json:"at"`
+	English string    `json:"english"`
+	Spanish string    `json:"spanish"`
+	Route   string    `json:"route"`
+	Thought string    `json:"thought,omitempty"`
+	Found   bool      `json:"found"`
+}
+
 // ThoughtStatus is introduced, found with help, or found alone; a thought never introduced is absent.
+// Seen counts the calls that touched it and Alone the calls where he found it alone.
 type ThoughtStatus struct {
 	Status string    `json:"status"`
-	Lesson string    `json:"lesson"`
+	Seen   int       `json:"seen"`
+	Alone  int       `json:"alone"`
 	At     time.Time `json:"at"`
+}
+
+// Due is whether a thought should come back for hidden repetition: always until he finds it alone,
+// then after a gap that doubles with every call he finds it alone.
+func (t ThoughtStatus) Due(now time.Time) bool {
+	if t.Status != "found alone" {
+		return true
+	}
+	return now.Sub(t.At) >= 24*time.Hour<<min(max(t.Alone-1, 0), 8)
 }
 
 // LearnerError is a wrong answer filed under its diagnosed cause.
@@ -59,6 +148,8 @@ const (
 	learnerErrors = 200
 	learnerPacing = 600
 	learnerCalls  = 200
+	learnerGaps   = 400
+	learnerLinks  = 100
 )
 
 // LearnerStore keeps Learner in one JSON file, rewritten whole on every change.
@@ -88,6 +179,8 @@ func (s *LearnerStore) Update(change func(l *Learner)) error {
 	s.data.Errors = tail(s.data.Errors, learnerErrors)
 	s.data.Pacing = tail(s.data.Pacing, learnerPacing)
 	s.data.Calls = tail(s.data.Calls, learnerCalls)
+	s.data.Gaps = tail(s.data.Gaps, learnerGaps)
+	s.data.Links = tail(s.data.Links, learnerLinks)
 	if s.path == "" {
 		return nil
 	}
@@ -121,10 +214,11 @@ func (s *LearnerStore) Summary(now time.Time) string {
 		b.WriteString(" About Lemon: " + strings.Join(s.data.Profile, " "))
 	}
 	if len(s.data.Thoughts) > 0 {
-		b.WriteString(" Thoughts so far:")
-		for id, status := range s.data.Thoughts {
-			fmt.Fprintf(&b, " %s %s;", id, status.Status)
+		counts := map[string]int{}
+		for _, status := range s.data.Thoughts {
+			counts[status.Status]++
 		}
+		fmt.Fprintf(&b, " Thoughts: %d found alone, %d found with help, %d introduced.", counts["found alone"], counts["found with help"], counts["introduced"])
 	}
 	if len(s.data.Errors) > 0 {
 		b.WriteString(" Recent errors by cause:")
@@ -132,11 +226,30 @@ func (s *LearnerStore) Summary(now time.Time) string {
 			fmt.Fprintf(&b, " [%s] said %q for %q: %s;", e.Thought, e.Said, e.Expected, e.Cause)
 		}
 	}
+	if len(s.data.Words) > 0 {
+		fmt.Fprintf(&b, " Dictionary: %d Spanish words met.", len(s.data.Words))
+	}
+	if len(s.data.Links) > 0 {
+		b.WriteString(" Cross-language links he reacted to, make more of these kinds: " + strings.Join(tail(s.data.Links, 8), " "))
+	}
 	if len(s.data.Habits) > 0 {
 		b.WriteString(" Habits: " + strings.Join(s.data.Habits, " "))
 	}
-	if len(s.data.Used) > 0 {
-		b.WriteString(" Sentences already used, vary them: " + strings.Join(tail(s.data.Used, 30), "; ") + ".")
+	var recycle, reinforce []string
+	for _, gap := range tail(s.data.Gaps, 40) {
+		switch {
+		case gap.Found:
+		case gap.Route == "new":
+			recycle = append(recycle, gap.English+" = "+gap.Spanish)
+		default:
+			reinforce = append(reinforce, fmt.Sprintf("%s = %s by %s %s", gap.English, gap.Spanish, gap.Route, gap.Thought))
+		}
+	}
+	if len(recycle) > 0 {
+		b.WriteString(" Words he reached for and didn't have, recycle them: " + strings.Join(recycle, "; ") + ".")
+	}
+	if len(reinforce) > 0 {
+		b.WriteString(" Routes he had but didn't use, reinforce them: " + strings.Join(reinforce, "; ") + ".")
 	}
 	if len(s.data.Calls) == 0 {
 		b.WriteString(" This is Lemon's first lesson with you.")
