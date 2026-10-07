@@ -129,9 +129,9 @@ func speech(text string) string {
 	return nonSpeech.ReplaceAllString(text, "")
 }
 
-var idleWords = setOf("okay ok wait hang on let me think so right alright hmm um uh one second sec moment yeah yes well hold")
+var idleWords = setOf("okay ok wait hang on let me think so right alright hmm um uh one second sec moment yeah yes well hold i am trying thinking")
 
-// englishTurn sorts an English turn with no Spanish in it. Thinking aloud ("okay, wait, um") is a wait.
+// englishTurn sorts an English turn with no Spanish in it. Thinking aloud ("okay, wait, I'm trying") is a wait.
 // Repeating or asking about the cue is a clarification: she says the phrase again. Anything else, a
 // complaint, a comment on the lesson, a story, is a conversation turn: she answers it and adapts.
 // Vocabulary questions never get here; unsure catches them first.

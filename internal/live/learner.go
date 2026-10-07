@@ -44,7 +44,7 @@ type TopicUse struct {
 }
 
 // Domains are the parts of his life Rosa asks about, fewest known facts first.
-var Domains = []string{"family", "Sofie", "work", "band and bass", "home", "food", "plans", "today", "travel", "childhood", "friends", "hobbies"}
+var Domains = []string{"family", "Sofie", "work", "music", "home", "food", "plans", "today", "travel", "childhood", "friends", "hobbies"}
 
 // hear records the words of a Spanish chunk he understood by ear.
 func (l *Learner) hear(chunk string, now time.Time) {

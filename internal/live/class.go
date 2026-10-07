@@ -519,10 +519,11 @@ func (c *Class) switchCheck(id int, said string) {
 }
 
 // SetGap hands Rosa the worked-out gap and arms its chunks and the full sentence as micro-targets.
+// A pass for an earlier, shorter cut of the turn that finishes late is dropped.
 func (c *Class) SetGap(gap Gap) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(gap.Chunks) == 0 {
+	if len(gap.Chunks) == 0 || gap.Said != c.asked {
 		return
 	}
 	c.closeGap()
