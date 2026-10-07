@@ -288,6 +288,16 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	b.WriteString("# Auto-reshuffle layout on resize\n")
 	fmt.Fprintf(&b, "set-hook -g client-resized \"run-shell -b '%s relayout'\"\n\n", agencyBin)
 
+	// The cloud host streams only the sky viewers on screen: tell the daemon
+	// whenever what is on screen may have changed.
+	if cfg.Cloud.Host != "" {
+		b.WriteString("# Park sky viewers that leave the screen\n")
+		for _, hook := range []string{"session-window-changed", "client-session-changed", "client-attached", "client-detached", "window-pane-changed", "after-resize-pane"} {
+			fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s visibility'\"\n", hook, agencyBin)
+		}
+		b.WriteString("\n")
+	}
+
 	// Navigation.
 	b.WriteString("# Navigation\n")
 	b.WriteString("bind Up select-pane -U\n")

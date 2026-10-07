@@ -68,6 +68,10 @@ type Manager struct {
 	currentLayout  string                  // last applied layout name (for relayout)
 	processOwnedBy func(pid, ancestor int) bool
 
+	shownMu   sync.Mutex
+	shownSink func(line string) // sends the host a shown set; nil without a host link
+	shownLine string            // the last set sent
+
 	// WindowPerPane gives every spawn its own window, named after the pane
 	// label. The headless cloud server runs this way so viewers can attach
 	// to exactly one agent. Window names given to spawn, move, and

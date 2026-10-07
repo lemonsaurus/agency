@@ -101,6 +101,8 @@ func main() {
 		runLayout(os.Args[2:])
 	case "relayout":
 		runRelayout()
+	case "visibility":
+		runVisibility()
 	case "broadcast-dialog":
 		runBroadcastDialog()
 	case "broadcast-keys":
@@ -293,6 +295,9 @@ func runCloud(args []string) {
 	case "file":
 		runFile(args[1:])
 		return
+	case "park-screen":
+		runParkScreen(args[1:])
+		return
 	case "projects":
 		runProjects(args[1:])
 		return
@@ -319,12 +324,18 @@ func runCloud(args []string) {
 		return
 	}
 	if args[0] == "attach" {
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "Usage: agency cloud attach <window-id>")
+		window, viewer := "", ""
+		switch {
+		case len(args) == 2:
+			window = args[1]
+		case len(args) == 4 && args[2] == "--viewer":
+			window, viewer = args[1], args[3]
+		default:
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud attach <window-id> [--viewer <key>]")
 			os.Exit(1)
 		}
 		tc := tmux.NewClient(cfg.Session.Name, "")
-		if err := tc.AttachWindow(context.Background(), args[1]); err != nil {
+		if err := tc.AttachWindow(context.Background(), window, viewer); err != nil {
 			fmt.Fprintf(os.Stderr, "Error attaching: %v\n", err)
 			os.Exit(1)
 		}
@@ -542,9 +553,13 @@ func runCloudView(args []string) {
 		}
 	}
 	windowID := args[0]
+	viewer := ""
+	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+		viewer = cloud.ViewerKey(cloud.Device(cfg.Session.Name), pane)
+	}
 	delay := time.Second
 	for {
-		_ = remote.Attach(ctx, windowID)
+		_ = remote.Attach(ctx, windowID, viewer)
 		windows, err := remote.Windows(ctx)
 		if err != nil {
 			fmt.Printf("\n☁  link dropped (%v). Reconnecting in %s...\n", err, delay)
@@ -1436,6 +1451,15 @@ func runBroadcastKeys(args []string) {
 	if resp != "ok" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
 		os.Exit(1)
+	}
+}
+
+// runVisibility is what tmux hooks call when the windows on screen change.
+func runVisibility() {
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "visibility")
+	if err != nil || resp != "ok" {
+		os.Exit(0)
 	}
 }
 

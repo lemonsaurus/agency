@@ -143,10 +143,17 @@ func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote 
 	return nil
 }
 
-// Watch calls changed for every change notice from the host's `agency cloud
-// watch` and reminder for every "reminder {json}" line, until the link drops
-// or ctx ends. The open stdin pipe keeps the remote side alive.
-func (c *Client) Watch(ctx context.Context, changed func(), reminder func(payload string)) error {
+// WatchHandlers receive what the host's `agency cloud watch` prints.
+type WatchHandlers struct {
+	Changed  func()               // the panes the sky harness mirrors changed
+	Reminder func(payload string) // a "reminder {json}" line
+	Views    func(payload string) // a "views ..." line: what the host did with a shown set
+}
+
+// Watch reports the host's lines to handlers until the link drops or ctx
+// ends, and writes every line from send to the host. The open stdin pipe
+// keeps the remote side alive.
+func (c *Client) Watch(ctx context.Context, handlers WatchHandlers, send <-chan string) error {
 	if err := c.ensureMaster(ctx); err != nil {
 		return err
 	}
@@ -165,13 +172,31 @@ func (c *Client) Watch(ctx context.Context, changed func(), reminder func(payloa
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case line := <-send:
+				if _, err := fmt.Fprintln(stdin, line); err != nil {
+					return
+				}
+			}
+		}
+	}()
 	lines := bufio.NewScanner(stdout)
 	for lines.Scan() {
 		if payload, ok := strings.CutPrefix(lines.Text(), "reminder "); ok {
-			reminder(payload)
+			handlers.Reminder(payload)
 			continue
 		}
-		changed()
+		if payload, ok := strings.CutPrefix(lines.Text(), "views "); ok {
+			handlers.Views(payload)
+			continue
+		}
+		handlers.Changed()
 	}
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
@@ -180,12 +205,17 @@ func (c *Client) Watch(ctx context.Context, changed func(), reminder func(payloa
 }
 
 // Attach hands this terminal to one remote window until the link drops or
-// the window dies.
-func (c *Client) Attach(ctx context.Context, windowID string) error {
+// the window dies. A viewer key lets the host park the attachment while the
+// device does not show it.
+func (c *Client) Attach(ctx context.Context, windowID, viewer string) error {
 	if err := c.ensureMaster(ctx); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(true, "attach", windowID)...)
+	args := []string{"attach", windowID}
+	if viewer != "" {
+		args = append(args, "--viewer", viewer)
+	}
+	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(true, args...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

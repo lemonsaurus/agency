@@ -138,18 +138,39 @@ func (c *Client) Attach(ctx context.Context) error {
 // session grouped with the main one, so each viewer keeps its own current
 // window. The view session is removed once the client detaches; the window
 // and its agent stay with the main session.
-func (c *Client) AttachWindow(ctx context.Context, windowID string) error {
-	view := fmt.Sprintf("view-%d", os.Getpid())
+//
+// A viewer key opts into parking: the client starts on its park session when
+// its device does not show the key, and later moves between the two as the
+// device reports what is on screen. Without a key the client always streams.
+func (c *Client) AttachWindow(ctx context.Context, windowID, viewer string) error {
+	c.SweepViews(ctx)
+	id := os.Getpid()
+	view := fmt.Sprintf("%s%d", ViewPrefix, id)
+	park := fmt.Sprintf("%s%d", ParkPrefix, id)
 	if _, err := c.Cmd.Run(ctx, "new-session", "-d", "-t", c.SessionName, "-s", view); err != nil {
 		return err
 	}
-	defer c.Cmd.Run(ctx, "kill-session", "-t", view)
+	defer c.Cmd.Run(ctx, "kill-session", "-t", "="+view)
+	defer c.Cmd.Run(ctx, "kill-session", "-t", "="+park)
 	if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err != nil {
 		return err
 	}
-	// destroy-unattached is set from inside the attached client, so a link
-	// that dies before the deferred kill still takes the view session with it.
-	return c.Cmd.Exec(ctx, "attach-session", "-t", view, ";", "set-option", "-t", view, "destroy-unattached", "on")
+	device, keyed := viewerDevice(viewer)
+	if !keyed {
+		// destroy-unattached is set from inside the attached client, so a link
+		// that dies before the deferred kill still takes the view session with it.
+		return c.Cmd.Exec(ctx, "attach-session", "-t", view, ";", "set-option", "-t", view, "destroy-unattached", "on")
+	}
+	for _, option := range [][2]string{{"@agency_viewer", viewer}, {"@agency_window", windowID}} {
+		if _, err := c.Cmd.Run(ctx, "set-option", "-t", "="+view+":", option[0], option[1]); err != nil {
+			return err
+		}
+	}
+	target := view
+	if !c.isShown(ctx, viewer, device) && c.park(ctx, park, windowID) == nil {
+		target = park
+	}
+	return c.Cmd.Exec(ctx, "attach-session", "-t", "="+target)
 }
 
 // SplitWindow creates a new pane by splitting, running the given command.
@@ -515,6 +536,9 @@ func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		if len(parts) >= 18 {
 			pane.Group = parts[16]
 			pane.Session = parts[17]
+		}
+		if strings.HasPrefix(pane.Session, ParkPrefix) {
+			continue
 		}
 		panes = append(panes, pane)
 	}

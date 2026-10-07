@@ -108,6 +108,7 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 			m.dropViewer(ctx, paneID)
 		}
 	}
+	_ = m.Visibility(ctx)
 	return fmt.Sprintf("%d cloud panes, %d added, %d moved, %d removed", len(windows), added, moved, removed), nil
 }
 

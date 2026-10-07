@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
@@ -20,17 +20,37 @@ import (
 
 // runCloudWatch runs on the host: it prints a line whenever the panes a sky
 // harness mirrors change, and a "reminder {json}" line when a reminder comes
-// due while the link is up. It exits when the SSH client closes stdin.
+// due while the link is up. Each "shown <device> <keys...>" line on stdin
+// says which of that device's viewers are on screen: the rest are parked, and
+// a "views" line reports the result. It exits when the SSH client closes
+// stdin.
 func runCloudWatch(cfg *config.Config) {
 	tc := tmux.NewClient(cfg.Session.Name, "")
 	ctx, cancel := context.WithCancel(context.Background())
+	shown := make(chan string)
 	go func() {
-		io.Copy(io.Discard, os.Stdin)
-		cancel()
+		defer cancel()
+		lines := bufio.NewScanner(os.Stdin)
+		for lines.Scan() {
+			select {
+			case shown <- lines.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 	last := ""
 	since := time.Now()
-	for {
+	devices := map[string]bool{}
+	report := func(device string, state tmux.ViewState, err error) bool {
+		if err != nil {
+			log.Printf("views %s: %v", device, err)
+			return true
+		}
+		_, werr := fmt.Printf("views %s shown=%d/%d moved=%d\n", device, state.Shown, state.Views, state.Moved)
+		return werr == nil
+	}
+	for tick := 0; ; tick++ {
 		now := time.Now()
 		for _, reminder := range live.DueReminders(remindersPath(), since, now) {
 			payload, _ := json.Marshal(reminder)
@@ -47,9 +67,27 @@ func runCloudWatch(cfg *config.Config) {
 				}
 			}
 		}
+		if tick%10 == 0 {
+			tc.SweepViews(ctx)
+		}
+		for device := range devices {
+			if state, err := tc.Reconcile(ctx, device); err == nil && state.Moved > 0 {
+				if !report(device, state, nil) {
+					return
+				}
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
+		case line := <-shown:
+			if device, keys, ok := cloud.ParseShownLine(line); ok {
+				devices[device] = true
+				state, err := tc.ApplyShown(ctx, device, keys)
+				if !report(device, state, err) {
+					return
+				}
+			}
 		case <-time.After(time.Second):
 		}
 	}
@@ -92,12 +130,34 @@ func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
 			}
 		}
 	}()
+	// The channel holds only the latest shown set, so a link that is down
+	// never queues stale ones.
+	shown := make(chan string, 1)
+	send := func(line string) {
+		select {
+		case <-shown:
+		default:
+		}
+		select {
+		case shown <- line:
+		default:
+		}
+	}
+	mgr.SetShownSink(send)
 	trigger()
 	remote := &cloud.Client{Host: host}
+	handlers := cloud.WatchHandlers{
+		Changed:  trigger,
+		Reminder: func(payload string) { showReminder(ctx, payload) },
+		Views:    func(payload string) { log.Printf("sky views: %s", payload) },
+	}
 	delay := time.Second
 	for {
 		started := time.Now()
-		err := remote.Watch(ctx, trigger, func(payload string) { showReminder(ctx, payload) })
+		if line := mgr.ShownLine(); line != "" {
+			send(line)
+		}
+		err := remote.Watch(ctx, handlers, shown)
 		if ctx.Err() != nil {
 			return
 		}
