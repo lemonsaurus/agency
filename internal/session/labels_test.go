@@ -12,7 +12,7 @@ func TestTaskLabelSpawnAndRestart(t *testing.T) {
 	ctx := context.Background()
 	mock := &testMock{}
 	mgr := newTestManager(mock)
-	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/project", "Cloud Harness Setup"); err != nil {
+	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/project", "Cloud Harness Setup", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := mgr.ListPanes()[0].TaskLabel; got != "Cloud Harness Setup" {
@@ -139,7 +139,7 @@ func TestSpawnRejectsMissingAndInvalidTaskLabels(t *testing.T) {
 	for _, label := range []string{"", "  ", "bad\nlabel", strings.Repeat("界", 101)} {
 		mock := &testMock{}
 		mgr := newTestManager(mock)
-		if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp", label); err == nil {
+		if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp", label, ""); err == nil {
 			t.Fatalf("accepted label %q", label)
 		}
 		if mock.findCall("split-window") != nil || mgr.PaneCount() != 0 {

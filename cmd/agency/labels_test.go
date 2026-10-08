@@ -74,7 +74,7 @@ func TestSpawnMessagesIncludeLabel(t *testing.T) {
 	label := "Cloud \"Harness\" Setup"
 	for _, window := range []string{"", "cloud"} {
 		for _, message := range []string{
-			spawnAgentMessage(window, "manager", "pi", "/tmp", label),
+			spawnAgentMessage(window, "manager", "pi", "/tmp", label, ""),
 			spawnCommandMessage(window, "manager", "pi --no-session", "/tmp", label),
 		} {
 			parts := strings.SplitN(message, ":", 2)
@@ -87,7 +87,7 @@ func TestSpawnMessagesIncludeLabel(t *testing.T) {
 			}
 		}
 	}
-	if got := spawnAgentMessage("", "", "pi", "/tmp", "Human task"); !strings.Contains(got, `"label":"Human task"`) {
+	if got := spawnAgentMessage("", "", "pi", "/tmp", "Human task", ""); !strings.Contains(got, `"label":"Human task"`) {
 		t.Fatalf("human label omitted: %s", got)
 	}
 }

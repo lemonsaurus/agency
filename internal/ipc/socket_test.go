@@ -18,6 +18,7 @@ type spawnRecord struct {
 	dir    string
 	role   control.Role
 	label  string
+	prompt string
 }
 
 type commandRecord struct {
@@ -87,21 +88,21 @@ func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Reques
 
 func (m *mockHandler) Live(_ context.Context, payload string) (string, error) { return "live:" + payload, nil }
 
-func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label string) error {
+func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label, prompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failNext {
 		m.failNext = false
 		return fmt.Errorf("spawn failed")
 	}
-	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role, label: label})
+	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role, label: label, prompt: prompt})
 	return nil
 }
 
-func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir, label string) error {
+func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir, label, prompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role, label: label})
+	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role, label: label, prompt: prompt})
 	return nil
 }
 
@@ -344,11 +345,12 @@ func TestServerSpawnWindow(t *testing.T) {
 
 func TestSpawnRoleTransitions(t *testing.T) {
 	tests := []struct {
-		name      string
-		requester control.Requester
-		message   string
-		wantRole  control.Role
-		wantError bool
+		name       string
+		requester  control.Requester
+		message    string
+		wantRole   control.Role
+		wantPrompt string
+		wantError  bool
 	}{
 		{
 			name:      "human defaults to controller",
@@ -381,6 +383,19 @@ func TestSpawnRoleTransitions(t *testing.T) {
 			wantRole:  control.RoleWorker,
 		},
 		{
+			name:       "manager passes a prompt",
+			requester:  control.Requester{PaneID: "%1", Role: control.RoleManager},
+			message:    `spawn-role:{"agent":"pi","dir":"/tmp","role":"worker","label":"Test task","prompt":"Fix it"}`,
+			wantRole:   control.RoleWorker,
+			wantPrompt: "Fix it",
+		},
+		{
+			name:      "prompt needs an agent",
+			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
+			message:   `spawn-role:{"command":"zsh","dir":"/tmp","role":"worker","label":"Test task","prompt":"Fix it"}`,
+			wantError: true,
+		},
+		{
 			name:      "manager cannot create manager",
 			requester: control.Requester{PaneID: "%1", Role: control.RoleManager},
 			message:   `spawn-role:{"agent":"pi","dir":"/tmp","role":"manager","label":"Test task"}`,
@@ -405,8 +420,8 @@ func TestSpawnRoleTransitions(t *testing.T) {
 			if tt.wantError {
 				return
 			}
-			if len(h.spawns) != 1 || h.spawns[0].role != tt.wantRole {
-				t.Fatalf("spawns = %+v, want role %s", h.spawns, tt.wantRole)
+			if len(h.spawns) != 1 || h.spawns[0].role != tt.wantRole || h.spawns[0].prompt != tt.wantPrompt {
+				t.Fatalf("spawns = %+v, want role %s prompt %q", h.spawns, tt.wantRole, tt.wantPrompt)
 			}
 		})
 	}

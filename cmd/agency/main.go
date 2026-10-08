@@ -159,6 +159,7 @@ Usage:
   agency spawn --window <name> ...   Spawn into a named tmux window
   agency spawn --role <role> ...     Request a manager or worker pane
   agency spawn --label "task" ...    Set task label (required for agent spawns)
+  agency spawn --prompt "text" ...   Send the agent its first message
   agency label [--pane %N] [-- "task"] Read or write a pane task label
   agency spawn-dialog <agent> [dir] Open directory picker popup, then spawn
   agency whoami [--role]            Print current pane authority
@@ -781,13 +782,14 @@ func runSpawn(args []string) {
 	sockPath := socketPath(cfg.Session.Name)
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] [--label task] <agent|--cmd> [dir]")
+		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] [--label task] [--prompt text] <agent|--cmd> [dir]")
 		os.Exit(1)
 	}
 
 	windowName := ""
 	role := ""
 	label := ""
+	prompt := ""
 	for len(args) > 0 && strings.HasPrefix(args[0], "--") && args[0] != "--cmd" {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Error: spawn option needs a value")
@@ -798,6 +800,8 @@ func runSpawn(args []string) {
 			windowName = args[1]
 		case "--label":
 			label = args[1]
+		case "--prompt":
+			prompt = args[1]
 		case "--role":
 			parsed, err := control.ParseRole(args[1])
 			if err != nil || parsed == control.RoleController {
@@ -818,6 +822,10 @@ func runSpawn(args []string) {
 
 	var msgs []string
 	if args[0] == "--cmd" {
+		if prompt != "" {
+			fmt.Fprintln(os.Stderr, "Error: --prompt needs an agent, not --cmd")
+			os.Exit(1)
+		}
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: agency spawn --cmd \"command\" [dir]")
 			os.Exit(1)
@@ -835,7 +843,7 @@ func runSpawn(args []string) {
 			if !ok {
 				continue
 			}
-			msgs = append(msgs, spawnAgentMessage(windowName, role, name, abs, label))
+			msgs = append(msgs, spawnAgentMessage(windowName, role, name, abs, label, prompt))
 		}
 		if len(msgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Error: no valid directories to spawn in")
@@ -1053,6 +1061,7 @@ type spawnPayload struct {
 	Dir     string `json:"dir,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Label   string `json:"label,omitempty"`
+	Prompt  string `json:"prompt,omitempty"`
 }
 
 type sendPayload struct {
@@ -1076,11 +1085,11 @@ type moveWindowPayload struct {
 	Index  int    `json:"index"`
 }
 
-func spawnAgentMessage(windowName, role, name, dir, label string) string {
-	if windowName == "" && role == "" && label == "" {
+func spawnAgentMessage(windowName, role, name, dir, label, prompt string) string {
+	if windowName == "" && role == "" && label == "" && prompt == "" {
 		return "spawn:" + name + dirSuffix(dir)
 	}
-	payload, _ := json.Marshal(spawnPayload{Window: windowName, Agent: name, Dir: dir, Role: role, Label: label})
+	payload, _ := json.Marshal(spawnPayload{Window: windowName, Agent: name, Dir: dir, Role: role, Label: label, Prompt: prompt})
 	if windowName == "" {
 		return "spawn-role:" + string(payload)
 	}

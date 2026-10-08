@@ -111,33 +111,34 @@ func (m *Manager) Live(ctx context.Context, payload string) (string, error) {
 	return m.LiveHandler(ctx, payload)
 }
 
-// SpawnAgent spawns a new pane running the named agent.
-func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label string) error {
+// SpawnAgent spawns a new pane running the named agent. A nonempty prompt is
+// the agent's first message.
+func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir, label)
+	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir, label, prompt)
 }
 
-func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label string) error {
+func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) error {
 	agent, ok := m.registry.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown agent type: %q", name)
 	}
-	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir, label)
+	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir, label, prompt)
 }
 
 // SpawnCommand spawns a pane running an arbitrary command.
 func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error {
-	return m.spawnPane(ctx, requester, role, "", "", command, dir, label)
+	return m.spawnPane(ctx, requester, role, "", "", command, dir, label, "")
 }
 
 func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error {
-	return m.spawnPane(ctx, requester, role, windowName, "", command, dir, label)
+	return m.spawnPane(ctx, requester, role, windowName, "", command, dir, label, "")
 }
 
-func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir, label string) error {
+func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir, label, prompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -158,7 +159,12 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	} else if rootID == "" {
 		rootID = requester.PaneID
 	}
-	spawnCommand := roleCommand(command, role, parentID, rootID)
+	launch := command
+	if prompt != "" {
+		// The prompt rides only on this launch; respawns rerun the bare command.
+		launch += " '" + strings.ReplaceAll(prompt, "'", `'\''`) + "'"
+	}
+	spawnCommand := roleCommand(launch, role, parentID, rootID)
 	displayName := m.displayName(agentType, command, dir)
 
 	var paneID string
@@ -330,7 +336,7 @@ func (m *Manager) Capabilities() control.Capabilities {
 	if len(key) == 1 && key >= "A" && key <= "Z" {
 		key = "Shift+" + key
 	}
-	return control.Capabilities{Protocol: 1, PaneLabels: true, PromotionShortcut: prefix + " then " + key}
+	return control.Capabilities{Protocol: 1, PaneLabels: true, SpawnPrompt: true, PromotionShortcut: prefix + " then " + key}
 }
 
 func (m *Manager) TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error) {

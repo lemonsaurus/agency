@@ -117,6 +117,7 @@ agency --migrate-controller <pane>   Migrate a legacy session under the selected
 agency spawn <agent> [dir...]       Spawn one pane per directory
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
 agency spawn --role <role> --label "task" ...  Programmatic manager or worker spawn
+agency spawn --prompt "text" ...               Start the agent on a first prompt
 agency label [--pane %N]             Read a pane's task label
 agency label [--pane %N] -- "task"    Set a pane's task label (empty clears)
 agency whoami [--role]               Print current pane authority

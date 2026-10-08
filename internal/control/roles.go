@@ -19,6 +19,7 @@ type Capabilities struct {
 	Protocol          int    `json:"protocol"`
 	PaneLabels        bool   `json:"paneLabels"`
 	PromptBridge      bool   `json:"promptBridge"`
+	SpawnPrompt       bool   `json:"spawnPrompt"`
 	PromotionShortcut string `json:"promotionShortcut"`
 }
 

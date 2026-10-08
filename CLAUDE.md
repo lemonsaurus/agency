@@ -128,6 +128,7 @@ agency spawn codex            Spawn a Codex pane
 agency spawn gemini           Spawn a Gemini pane
 agency spawn --cmd "aider"    Spawn arbitrary command
 agency spawn --role worker pi Make a programmatic child role explicit
+agency spawn --prompt "..." pi  Start the agent on a first prompt
 agency replace [--cmd ...]    Start a role-preserving successor
 agency request-promotion ...  Request worker promotion
 agency approve-promotion %3   Human approval used by the tmux binding

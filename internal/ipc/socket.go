@@ -18,8 +18,8 @@ import (
 type Handler interface {
 	Capabilities() control.Capabilities
 	ResolveRequester(ctx context.Context, pid int) (control.Requester, error)
-	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label string) error
-	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label string) error
+	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) error
+	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) error
 	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error
 	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error
 	TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error)
@@ -50,6 +50,7 @@ type spawnPayload struct {
 	Dir     string `json:"dir,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Label   string `json:"label,omitempty"`
+	Prompt  string `json:"prompt,omitempty"`
 }
 
 type labelPayload struct {
@@ -276,7 +277,7 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", s.handler.SpawnCommand(s.ctx, requester, role, command, dir, "")
 		}
 		name, dir := splitDirSuffix(arg)
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "")
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "", "")
 	case "spawn-role", "spawn-window":
 		requester, err := s.requester(pid)
 		if err != nil {
@@ -297,6 +298,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", err
 		}
 		if payload.Command != "" {
+			if payload.Prompt != "" {
+				return "", fmt.Errorf("prompt needs an agent, not a command")
+			}
 			if payload.Window != "" {
 				return "", s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir, payload.Label)
 			}
@@ -306,9 +310,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", fmt.Errorf("agent or command is required")
 		}
 		if payload.Window != "" {
-			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label)
+			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
 		}
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label)
+		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
 	case "label", "label-if-empty":
 		requester, err := s.requester(pid)
 		if err != nil {

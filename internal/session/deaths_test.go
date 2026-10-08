@@ -24,10 +24,10 @@ func TestDeathLogRecordsKillHandoffAndVanish(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 	mgr.Deaths = &deaths.Log{Path: filepath.Join(t.TempDir(), "pane-deaths.jsonl")}
-	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/manager", "Pack Lane"); err != nil {
+	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/manager", "Pack Lane", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/other", "Other Lane"); err != nil {
+	if err := mgr.SpawnAgent(ctx, testController, control.RoleManager, "claude", "/tmp/other", "Other Lane", ""); err != nil {
 		t.Fatal(err)
 	}
 	mock.listOutput = "1\twork\t%1\t0\tclaude\t/tmp/manager\t1\t101\tmanager\t%0\t%0\t\n1\twork\t%2\t1\tclaude\t/tmp/other\t0\t102\tmanager\t%0\t%0\t"
