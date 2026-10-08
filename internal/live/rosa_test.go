@@ -731,3 +731,54 @@ func TestClassWaitsAfterHerQuestion(t *testing.T) {
 		t.Fatalf("ladder did not climb: %s", text)
 	}
 }
+
+func TestRosaRollsALongCall(t *testing.T) {
+	dir := t.TempDir()
+	testGraph(t, dir)
+	r := NewRosa(dir, filepath.Join(dir, "run"))
+	if err := savePlan(r.planPath(), testPlan()); err != nil {
+		t.Fatal(err)
+	}
+	rolls := make(chan bool, 1)
+	backend := &Backend{}
+	first := r.Session("ls_one", &fakeConn{events: make(chan []byte)}, backend, time.UTC, func() string { return "" }, func() { rolls <- true })
+	class := r.class
+	r.memory.Add("assistant", "How would you say I play piano?", time.Now())
+	r.memory.Add("user", "Toco el piano", time.Now())
+	r.armRoll(class, "He is driving to a cabin trip with work.", r.roll)
+	if !r.Rolling() {
+		t.Fatal("an armed roll is not reported to the phone")
+	}
+
+	// The roll waits for a pause after a turn that asks nothing of him, and replaces the nudge.
+	class.watch("session.output_transcript.delta", "Eso, toco el piano.", 1000, 1100)
+	select {
+	case <-rolls:
+	case <-time.After(rollQuiet + time.Second):
+		t.Fatal("no roll at the pause")
+	}
+	if class.RollArmed() || !r.Rolling() {
+		t.Fatal("roll not handed to the phone")
+	}
+
+	seed, _ := json.Marshal(r.Seed(time.Now()))
+	if !strings.Contains(string(seed), "fresh connection") || !strings.Contains(string(seed), "cabin trip") || !strings.Contains(string(seed), "Toco el piano") || strings.Contains(string(seed), "Open fresh") {
+		t.Fatalf("seed %s", seed)
+	}
+	second := r.Session("ls_two", &fakeConn{events: make(chan []byte)}, backend, time.UTC, func() string { return "" }, func() {})
+	if r.class != class || r.session != second || r.Rolling() {
+		t.Fatal("the fresh session did not take the call over")
+	}
+
+	// The old session closing afterwards leaves the call open.
+	first.Close()
+	time.Sleep(100 * time.Millisecond)
+	r.mu.Lock()
+	last := r.last
+	r.mu.Unlock()
+	if last != nil {
+		t.Fatal("the rolled session closed the call")
+	}
+	second.Close()
+	time.Sleep(100 * time.Millisecond)
+}

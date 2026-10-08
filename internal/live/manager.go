@@ -68,6 +68,8 @@ type startRequest struct {
 	Accent string `json:"accent"`
 	Zone   string `json:"zone"`
 	SDP    string `json:"sdp"`
+	// Rolls is a phone that can hand a long Rosa call to a fresh session.
+	Rolls bool `json:"rolls"`
 }
 
 // Start creates the Live session for the phone's SDP offer, attaches the sideband, and returns
@@ -124,7 +126,15 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 		return "", err
 	}
 	if request.Agent == "rosa" {
-		m.adopt(m.rosa.Session(answer.Session.ID, conn, m.backend(backend, RosaSchema, m.rosa.Call), zone, m.turnOff))
+		var roll func()
+		if request.Rolls {
+			roll = func() {
+				m.mu.Lock()
+				m.phone = "roll"
+				m.mu.Unlock()
+			}
+		}
+		m.adopt(m.rosa.Session(answer.Session.ID, conn, m.backend(backend, RosaSchema, m.rosa.Call), zone, m.turnOff, roll))
 		return string(reply), nil
 	}
 	session := NewSession(answer.Session.ID, conn, m.memory, m.recall, m.backend(backend, Schema, m.call), m.state)
@@ -273,6 +283,7 @@ func (m *Manager) turnOff() string {
 type Status struct {
 	Session   string         `json:"session,omitempty"`
 	Phone     string         `json:"phone,omitempty"`
+	Rolling   bool           `json:"rolling,omitempty"`
 	Narrating []string       `json:"narrating"`
 	Tickets   []Ticket       `json:"tickets"`
 	Pending   int            `json:"pending"`
@@ -290,7 +301,7 @@ func (m *Manager) Status() Status {
 	phone := m.phone
 	m.phone = ""
 	m.mu.Unlock()
-	status := Status{Session: id, Phone: phone, Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending(), Reminders: m.reminders.Pending(time.Now())}
+	status := Status{Session: id, Phone: phone, Rolling: m.rosa.Rolling(), Narrating: m.dispatcher.Narrating(), Tickets: m.dispatcher.Tickets(), Pending: pending, Replies: m.discord.Pending(), Reminders: m.reminders.Pending(time.Now())}
 	if status.Narrating == nil {
 		status.Narrating = []string{}
 	}
@@ -311,6 +322,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		Token    string           `json:"token"`
 		When     string           `json:"when"`
 		SDP      string           `json:"sdp"`
+		Rolls    bool             `json:"rolls"`
 		Text     string           `json:"text"`
 		Messages []DiscordMessage `json:"messages"`
 		ID       int              `json:"id"`
@@ -321,7 +333,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	}
 	switch request.Op {
 	case "start":
-		return m.Start(ctx, startRequest{Agent: request.Agent, Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP})
+		return m.Start(ctx, startRequest{Agent: request.Agent, Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP, Rolls: request.Rolls})
 	case "status":
 		data, _ := json.Marshal(m.Status())
 		return string(data), nil

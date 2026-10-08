@@ -29,6 +29,8 @@ const (
 	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
 	// Dead air after Rosa's turn, with nothing asked of Lemon, before the box nudges her on.
 	idleLimit = 4 * time.Second
+	// A roll waiting for its pause takes this much quiet after her turn instead.
+	rollQuiet = 1500 * time.Millisecond
 	// A target he keeps not getting, with no new cue, is let go after this many attempts.
 	armedLimit = 3
 )
@@ -73,6 +75,7 @@ type Class struct {
 	onSwitch  func(said, context string)
 	prompted  func()
 	exhausted func()
+	roll      func() // hands the call to a fresh session at the next pause
 
 	plan      Plan
 	planned   bool
@@ -605,7 +608,11 @@ func (c *Class) said(text string, startMS, endMS int64) {
 		c.idleTimer.Stop()
 	}
 	said := c.turn
-	c.idleTimer = time.AfterFunc(idleLimit, func() { c.idle(said) })
+	quiet := idleLimit
+	if c.roll != nil {
+		quiet = rollQuiet
+	}
+	c.idleTimer = time.AfterFunc(quiet, func() { c.idle(said) })
 	if c.waitTimer != nil {
 		c.waitTimer.Stop()
 	}
@@ -835,11 +842,33 @@ func (c *Class) climb(said string, step int) {
 	c.send("session.instructions.append", waitLadder[step].instruction)
 }
 
+// RollWhenQuiet rolls the call into a fresh session at the next pause after a turn that asked
+// nothing of Lemon, in place of the nudge.
+func (c *Class) RollWhenQuiet(roll func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.roll = roll
+	c.record("rolling", nil)
+}
+
+// RollArmed is whether a roll waits for its pause.
+func (c *Class) RollArmed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.roll != nil
+}
+
 // idle nudges Rosa on when she has stopped after a turn that asked nothing of Lemon.
 func (c *Class) idle(said string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.turn != said || c.floor != "rosa" || c.armed != nil || c.holding || !finished(said) || c.asking(said) || c.waited {
+		return
+	}
+	if roll := c.roll; roll != nil {
+		c.roll = nil
+		c.record("roll", map[string]any{"rosa": truncate(said, 300)})
+		go roll()
 		return
 	}
 	c.record("nudge", map[string]any{"rosa": truncate(said, 300)})

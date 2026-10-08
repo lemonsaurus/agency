@@ -19,7 +19,13 @@ const (
 	// position, same outcomes, one debrief at the end. Within carryOn it picks up mid-thought.
 	resumeWindow = time.Hour
 	carryOn      = 2 * time.Minute
-	gapModel     = "gpt-6-luna"
+	// A call this old that runs out of plan rolls into a fresh session with a new plan, at the next
+	// pause with nothing asked of him; the fresh session must start within rollFresh of the roll.
+	rollAfter = 12 * time.Minute
+	rollFresh = time.Minute
+	// The last messages a rolled session hears verbatim, after the summary.
+	rollTail = 12
+	gapModel = "gpt-6-luna"
 )
 
 // Rosa is the Spanish tutor voice: her own persona, prompts, voice, transcript memory, learner
@@ -35,6 +41,12 @@ type Rosa struct {
 	graph   *Graph
 	class   *Class
 	turnOff func() string
+	// session is the call's current session and roll asks its phone for a fresh one; rolled is
+	// when it asked, and summary is the call so far for the fresh session.
+	session *Session
+	roll    func()
+	rolled  time.Time
+	summary string
 	// last is the thread whose call ended at ended; its debrief waits on settle until the resume
 	// window passes without a new call.
 	last   *Class
@@ -176,6 +188,9 @@ func (r *Rosa) resuming(now time.Time) bool {
 // Seed opens the call with the clock, how long ago the last call ended and what to do about it, the
 // previous conversation behind that note, and what learner memory holds.
 func (r *Rosa) Seed(now time.Time) []map[string]any {
+	if summary, ok := r.rolling(now); ok {
+		return r.rollSeed(now, summary)
+	}
 	last := r.memory.Last()
 	note := "It is " + clock(now) + ". "
 	switch {
@@ -210,7 +225,7 @@ func (r *Rosa) Seed(now time.Time) []map[string]any {
 
 // Session follows one call: the class hands over the waiting plan, adjusts it to the opening chat,
 // referees the floor and works out code-switched turns; the call is debriefed when it closes.
-func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Location, turnOff func() string) *Session {
+func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Location, turnOff func() string, roll func()) *Session {
 	session := NewSession(id, conn, r.memory, &Recall{}, backend, func() string { return "" })
 	session.Agent, session.Zone = "rosa", zone
 	r.mu.Lock()
@@ -223,7 +238,12 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 	}
 	logPath := filepath.Join(r.dir, "floor", id+".jsonl")
 	var class *Class
-	if r.resuming(time.Now()) {
+	if _, ok := r.rolling(time.Now()); ok {
+		r.mu.Lock()
+		class, r.rolled = r.class, time.Time{}
+		r.mu.Unlock()
+		class.Resume(logPath)
+	} else if r.resuming(time.Now()) {
 		r.mu.Lock()
 		class = r.last
 		if r.settle != nil {
@@ -251,7 +271,7 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 		return []map[string]any{seedMessage("developer", note), seedMessage("developer", r.learner.Summary(now))}
 	}
 	r.mu.Lock()
-	r.class, r.turnOff = class, turnOff
+	r.class, r.turnOff, r.session, r.roll = class, turnOff, session, roll
 	r.mu.Unlock()
 	go class.run(session)
 	switch plan, ok := loadPlan(r.planPath()); {
@@ -282,6 +302,17 @@ func (r *Rosa) Session(id string, conn Conn, backend *Backend, zone *time.Locati
 // closed records the call at once and leaves its thread open for the resume window; the debrief runs
 // when the window passes with no new call.
 func (r *Rosa) closed(session *Session, class *Class) {
+	r.mu.Lock()
+	current, rolled := r.session == session, time.Since(r.rolled) < rollFresh
+	r.mu.Unlock()
+	if !current {
+		return
+	}
+	if rolled {
+		// A rolled call closes for good only if its fresh session never arrives.
+		time.AfterFunc(rollFresh, func() { r.closed(session, class) })
+		return
+	}
 	now := time.Now()
 	report := class.Finish(now)
 	class.record("ended", map[string]any{"session": session.ID, "reason": session.Ended(), "minutes": now.Sub(session.started).Minutes()})
@@ -348,6 +379,80 @@ func (r *Rosa) more(session *Session, class *Class) {
 		items = r.fallback(class)
 	}
 	class.Extend(items)
+	r.mu.Lock()
+	roll := r.roll
+	r.mu.Unlock()
+	if roll == nil || time.Since(session.started) < rollAfter {
+		return
+	}
+	summary, err := r.summarise(session, class)
+	if err != nil {
+		log.Printf("rosa: summary for a roll failed: %v", err)
+		return
+	}
+	r.armRoll(class, summary, roll)
+}
+
+// armRoll has the class roll at its next pause: the phone is asked for a fresh session, which opens
+// with summary.
+func (r *Rosa) armRoll(class *Class, summary string, roll func()) {
+	class.RollWhenQuiet(func() {
+		r.mu.Lock()
+		r.rolled, r.summary = time.Now(), summary
+		r.mu.Unlock()
+		roll()
+	})
+}
+
+// Rolling is whether the call waits for a pause to roll into a fresh session, or just asked for one.
+func (r *Rosa) Rolling() bool {
+	r.mu.Lock()
+	class, rolled := r.class, r.rolled
+	r.mu.Unlock()
+	return class != nil && (class.RollArmed() || time.Since(rolled) < rollFresh)
+}
+
+// rolling is the summary for a fresh session the call asked for within rollFresh.
+func (r *Rosa) rolling(now time.Time) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.summary, r.class != nil && now.Sub(r.rolled) < rollFresh
+}
+
+var summaryFormat = json.RawMessage(`{"type":"json_schema","name":"summary","strict":true,"schema":{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}}`)
+
+// summarise is the call so far, short enough to seed a fresh session.
+func (r *Rosa) summarise(session *Session, class *Class) (string, error) {
+	ctx, cancel := context.WithTimeout(session.ctx, time.Minute)
+	defer cancel()
+	backend := &Backend{Client: session.backend.Client, URL: session.backend.URL, Auth: session.backend.Auth, Model: gapModel,
+		Instructions: "Rosa, a Spanish tutor on a voice call with Lemon, carries this call on in a fresh session that cannot hear what came before. Write what she needs to continue as if nothing changed, under 1200 characters, as plain notes: what he told her about his life and plans, his mood and energy, running jokes, what he asked her to change about how she teaches, what he practised and struggled with, and the story she was telling if one is unfinished."}
+	text, _, err := backend.Complete(ctx, []map[string]any{seedMessage("developer", "Transcript of the call:\n"+truncate(r.transcript(class.started), 60000))}, summaryFormat, 1)
+	if err != nil {
+		return "", err
+	}
+	var reply struct {
+		Summary string `json:"summary"`
+	}
+	if json.Unmarshal([]byte(text), &reply) != nil || strings.TrimSpace(reply.Summary) == "" {
+		return "", fmt.Errorf("empty summary")
+	}
+	return truncate(reply.Summary, 1500), nil
+}
+
+// rollSeed opens a fresh session mid-call: no greeting, the summary, the last exchanges verbatim,
+// and what her first turn does.
+func (r *Rosa) rollSeed(now time.Time, summary string) []map[string]any {
+	seed := []map[string]any{
+		seedMessage("developer", "It is "+clock(now)+". This is the same call with Lemon, carried on over a fresh connection, and he heard no break. Never greet him, never mention a break, a reconnect or the time, and never apologise. Where the call stands: "+summary),
+		seedMessage("developer", r.learner.Summary(now)),
+		seedMessage("developer", "The last exchanges of this call follow."),
+	}
+	recent := r.memory.Recent(now, rollTail)
+	for _, message := range recent {
+		seed = append(seed, seedMessage(message.Role, message.Text))
+	}
+	return append(seed, seedMessage("developer", "(The fresh connection starts here.) Your first turn, when told to carry on: one short line that follows naturally from the last exchange above, in the same voice and energy, then straight into the next step of the plan. Your next turns carry on as before; nothing about the call has changed."))
 }
 
 // fallback is the next step when the planner has nothing: the next frontier thought with its own
