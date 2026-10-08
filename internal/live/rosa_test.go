@@ -54,6 +54,23 @@ func TestJudge(t *testing.T) {
 	}
 }
 
+func TestImprovisedAndInstructed(t *testing.T) {
+	travel := Sentence{EN: "they want to travel"}
+	if judge("Mm-hm Um, Ellos", travel) != verdictPartial || judge("Ellos quieren viajar", travel) != verdictAttempt {
+		t.Error("an improvised prompt judged by fillers")
+	}
+	for _, turn := range []string{"Try it as one thought.", "Che, darles and viajar are both yours now. Build it.", "And now, just to feel it, say it again slowly.", "Querés means you want. Try telling me you want to travel."} {
+		if !instructs(turn) {
+			t.Errorf("missed instruction %q", turn)
+		}
+	}
+	for _, turn := range []string{"Perfect.", "She put the kettle on, and we just sat there listening.", "Makes sense."} {
+		if instructs(turn) {
+			t.Errorf("instruction in %q", turn)
+		}
+	}
+}
+
 func TestCued(t *testing.T) {
 	turn := words("Nice. Now, how would you say it's not normal?")
 	if cued(turn, "it is not normal") < 0 || cued(turn, "It's not normal") < 0 {
@@ -476,6 +493,7 @@ func TestComposeAndGapPass(t *testing.T) {
 	session := NewSession("ls_gap", &fakeConn{events: make(chan []byte)}, r.memory, &Recall{}, backend, func() string { return "" })
 	class := newClass("ls_gap", r.graph, r.learner, "", time.Now())
 	gaps := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: gapModel}
+	class.asked = "quiero hablar about many different topics"
 	r.gapPass(session, gaps, class, "quiero hablar about many different topics", "free conversation")
 	if class.gap == nil || len(class.gap.Chunks) != 2 || class.gap.Chunks[0].Known || !class.gap.Chunks[0].Guessable {
 		t.Fatalf("gap %+v", class.gap)
@@ -517,6 +535,14 @@ func TestClassKeepsTheCallMoving(t *testing.T) {
 	if text := sent(); !strings.Contains(text, moveOn) {
 		t.Fatalf("no nudge after dead air: %s", text)
 	}
+
+	// An instruction to say something waits for him like a question does.
+	out("Them. Más. Ahora. Try it as one thought.", 15000)
+	time.Sleep(idle + 300*time.Millisecond)
+	if text := sent(); strings.Contains(text, moveOn) {
+		t.Fatalf("nudged past an instruction: %s", text)
+	}
+	in("quiero darles más ahora", 19000)
 
 	// A complete answer over her still-running turn makes her stop and take it.
 	out("How would you say it's not normal? And remember where", 20000)

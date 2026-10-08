@@ -800,10 +800,10 @@ func overlaps(turn []string, text string) bool {
 	return total > 0 && hit*2 >= total
 }
 
-// asking is whether her turn ends by asking him something: a question, a translation prompt, or a
-// planned target's cue.
+// asking is whether her turn ends by asking him something: a question, a translation prompt, an
+// instruction to say or build something, or a planned target's cue.
 func (c *Class) asking(turn string) bool {
-	if strings.HasSuffix(strings.TrimSpace(turn), "?") {
+	if strings.HasSuffix(strings.TrimSpace(turn), "?") || instructs(turn) {
 		return true
 	}
 	if _, ok := improvised(turn); ok {

@@ -193,6 +193,29 @@ func improvised(turn string) (string, bool) {
 	return "", false
 }
 
+var leadIns = setOf("now so okay ok and che just then alright right")
+
+var commands = setOf("try build say put make tell finish repeat use translate flip give go keep")
+
+// instructs is whether her turn ends by telling him to say or build something: "Try it as one
+// thought.", "Build it.", "And now, just to feel it, say it again slowly."
+func instructs(turn string) bool {
+	sentences := strings.FieldsFunc(turn, func(r rune) bool { return r == '.' || r == '?' || r == '!' })
+	if len(sentences) == 0 {
+		return false
+	}
+	for _, clause := range strings.Split(sentences[len(sentences)-1], ",") {
+		tokens := words(clause)
+		for len(tokens) > 0 && leadIns[tokens[0]] {
+			tokens = tokens[1:]
+		}
+		if len(tokens) > 0 && commands[tokens[0]] {
+			return true
+		}
+	}
+	return false
+}
+
 func prompted(rest string) string {
 	rest = strings.TrimSpace(rest)
 	if rest == "that" || rest == "it" || rest == "this" || rest == "that one" {
@@ -250,6 +273,19 @@ func words(text string) []string {
 }
 
 // squash is the spoken content without fillers or spaces, so "cancelar lo" matches "cancelarlo".
+var listening = setOf("mhm huh aha aja yeah yes")
+
+// content counts his words that are neither fillers nor listening sounds.
+func content(tokens []string) int {
+	n := 0
+	for _, token := range tokens {
+		if !fillers[token] && !listening[token] {
+			n++
+		}
+	}
+	return n
+}
+
 func squash(tokens []string) []rune {
 	var b strings.Builder
 	for _, token := range tokens {
@@ -288,8 +324,9 @@ func judge(attempt string, sentence Sentence) string {
 	trimmed := strings.TrimSpace(attempt)
 	trailing := strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "…") || len(tokens) > 0 && fillers[tokens[len(tokens)-1]]
 	expected := squash(words(sentence.ES))
-	// An improvised prompt has no expected Spanish, so only a trailing hesitation keeps it open.
-	long := len(said) > 0 && (sentence.ES == "" || len(said)*4 >= len(expected)*3)
+	// An improvised prompt has no expected Spanish: a trailing hesitation or fewer than half the
+	// prompt's words keeps it open, so "Mm-hm, um, ellos" is still partial.
+	long := len(said) > 0 && (sentence.ES == "" && content(tokens)*2 >= len(words(sentence.EN)) || sentence.ES != "" && len(said)*4 >= len(expected)*3)
 	if strings.HasSuffix(trimmed, "?") || !trailing && long {
 		if switched(attempt) {
 			return verdictGap
