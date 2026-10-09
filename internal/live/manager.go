@@ -87,6 +87,9 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 		}
 		return RecordNote(ctx, m.API, m.key, voice, identity, script)
 	}
+	m.chat.Hear = func(ctx context.Context, path string) (string, error) {
+		return Transcribe(ctx, m.client, m.API, m.key, path)
+	}
 	return m
 }
 
@@ -364,6 +367,9 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		Error    string           `json:"error"`
 		Rev      int64            `json:"rev"`
 		Emoji    string           `json:"emoji"`
+		Media    string           `json:"media"`
+		Seconds  float64          `json:"seconds"`
+		Peaks    []float64        `json:"peaks"`
 	}
 	if err := json.Unmarshal([]byte(payload), &request); err != nil {
 		return "", fmt.Errorf("invalid live request")
@@ -423,6 +429,13 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		return string(data), nil
 	case "chat-send":
 		message, err := m.chat.Send(request.Text)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(message)
+		return string(data), nil
+	case "chat-voice":
+		message, err := m.chat.SendVoice(ctx, request.Media, request.Seconds, request.Peaks)
 		if err != nil {
 			return "", err
 		}

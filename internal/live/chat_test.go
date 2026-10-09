@@ -119,3 +119,23 @@ func TestVoiceNoteEncoding(t *testing.T) {
 		t.Fatalf("coverage %v", covered("che, Lemon, escuchá", "Che Lemon escuchá esto"))
 	}
 }
+
+func TestChatTakesHisVoiceNotes(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRosa(dir, filepath.Join(dir, "run"))
+	chat := OpenChat(r)
+	chat.Hear = func(ctx context.Context, path string) (string, error) { return "quiero hablar about music", nil }
+	if _, err := chat.SendVoice(context.Background(), filepath.Join(dir, "elsewhere.m4a"), 3, nil); err == nil {
+		t.Fatal("took a voice note from outside the chat folder")
+	}
+	os.MkdirAll(chat.Dir(), 0o700)
+	path := filepath.Join(chat.Dir(), "lemon-1.m4a")
+	os.WriteFile(path, []byte("m4a"), 0o600)
+	message, err := chat.SendVoice(context.Background(), path, 3.2, []float64{.2, 1})
+	if err != nil || message.Kind != "voice" || message.From != "lemon" || message.Text != "quiero hablar about music" || message.Seconds != 3.2 {
+		t.Fatalf("message %+v, %v", message, err)
+	}
+	if input, _ := json.Marshal(chat.input(time.Now(), "reply")); !strings.Contains(string(input), "speech recognition of what he said) quiero hablar about music") {
+		t.Fatalf("input %s", input)
+	}
+}

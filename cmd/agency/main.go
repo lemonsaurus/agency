@@ -145,7 +145,7 @@ Usage:
   agency cloud projects --json      List project directories under ~/git/*/*
   agency cloud watch                Print a line whenever the headless panes change (used over SSH)
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, zone, sdp}; prints the answer JSON
-  agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|chat-sync <rev>|chat-send <text>|chat-react <id> [emoji]|close
+  agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close
   agency remind [<+20m|YYYY-MM-DDTHH:MM> <text>]  One-off reminder for the phone and connected desktops, in Lemon's zone; no arguments print the time there
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
   agency world <client> <session>   Switch a client between local and the sky harness (tmux keybinding)

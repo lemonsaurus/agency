@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -173,7 +174,7 @@ func runActivity(cfg *config.Config) {
 // runLive relays one voice request from the phone to the daemon.
 func runLive(sessionName string, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|chat-sync <rev>|chat-send <text>|chat-react <id> [emoji]|close")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close")
 		os.Exit(1)
 	}
 	request := map[string]any{"op": args[0]}
@@ -205,6 +206,35 @@ func runLive(sessionName string, args []string) {
 			os.Exit(1)
 		}
 		request["text"] = args[1]
+	case "chat-voice":
+		// The phone streams the recording on stdin; the daemon only gets its path.
+		if len(args) != 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live chat-voice <seconds> <comma-separated peaks> < audio")
+			os.Exit(1)
+		}
+		audio, err := io.ReadAll(io.LimitReader(os.Stdin, 10<<20))
+		if err != nil || len(audio) == 0 {
+			fmt.Fprintln(os.Stderr, "Error: no audio on stdin")
+			os.Exit(1)
+		}
+		home, _ := os.UserHomeDir()
+		dir := filepath.Join(home, ".agents", "run", "agency", "rosa", "chat")
+		os.MkdirAll(dir, 0o700)
+		path := filepath.Join(dir, fmt.Sprintf("lemon-%d.m4a", time.Now().UnixMilli()))
+		if err := os.WriteFile(path, audio, 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		var seconds float64
+		fmt.Sscanf(args[1], "%g", &seconds)
+		peaks := []float64{}
+		for _, field := range strings.Split(args[2], ",") {
+			var peak float64
+			if _, err := fmt.Sscanf(field, "%g", &peak); err == nil {
+				peaks = append(peaks, peak)
+			}
+		}
+		request["media"], request["seconds"], request["peaks"] = path, seconds, peaks
 	case "chat-react":
 		if len(args) < 2 || len(args) > 3 {
 			fmt.Fprintln(os.Stderr, "Usage: agency cloud live chat-react <id> [emoji]")

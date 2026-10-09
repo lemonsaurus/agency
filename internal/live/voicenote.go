@@ -7,8 +7,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -220,4 +224,44 @@ func abs16(s int16) int {
 		return -int(s)
 	}
 	return int(s)
+}
+
+// Transcribe is what Lemon said in a voice note, on the platform key.
+func Transcribe(ctx context.Context, client *http.Client, api, key, path string) (string, error) {
+	audio, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("model", "gpt-4o-transcribe")
+	form.WriteField("prompt", "A voice note from a Spanish learner to his Argentine teacher. He mixes English and rioplatense Spanish with voseo.")
+	file, _ := form.CreateFormFile("file", filepath.Base(path))
+	file.Write(audio)
+	form.Close()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, api+"/v1/audio/transcriptions", &body)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("transcription request failed")
+	}
+	defer response.Body.Close()
+	reply, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	var result struct {
+		Text  string `json:"text"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	json.Unmarshal(reply, &result)
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("transcription HTTP %d: %s", response.StatusCode, truncate(strings.ReplaceAll(result.Error.Message, key, "[key]"), 300))
+	}
+	return strings.TrimSpace(result.Text), nil
 }

@@ -74,6 +74,7 @@ type Chat struct {
 	Backend func() *Backend
 	Record  func(ctx context.Context, script string) (VoiceNote, error)
 	Take    func(ctx context.Context, scene string, look []byte) ([]byte, error)
+	Hear    func(ctx context.Context, path string) (string, error)
 	Wake    func()
 	Zone    func() *time.Location
 	Calling func() bool
@@ -182,6 +183,33 @@ func (c *Chat) Send(text string) (ChatMessage, error) {
 	}
 	c.mu.Lock()
 	message := c.add(ChatMessage{From: "lemon", Kind: "text", Text: truncate(text, 4000)})
+	c.polled = time.Now()
+	c.mu.Unlock()
+	c.poke()
+	return message, nil
+}
+
+// Dir is where voice notes and photos live; his voice notes are written there before SendVoice.
+func (c *Chat) Dir() string { return c.dir }
+
+// SendVoice files a voice note from Lemon, transcribed so she can read what he said, and wakes Rosa.
+func (c *Chat) SendVoice(ctx context.Context, path string, seconds float64, peaks []float64) (ChatMessage, error) {
+	if filepath.Dir(filepath.Clean(path)) != c.dir {
+		return ChatMessage{}, fmt.Errorf("voice notes live in %s", c.dir)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return ChatMessage{}, err
+	}
+	text := ""
+	if c.Hear != nil {
+		heard, err := c.Hear(ctx, path)
+		if err != nil {
+			log.Printf("rosa chat: transcription failed: %v", err)
+		}
+		text = heard
+	}
+	c.mu.Lock()
+	message := c.add(ChatMessage{From: "lemon", Kind: "voice", Text: truncate(text, 4000), Media: path, Seconds: seconds, Peaks: tail(peaks, 64)})
 	c.polled = time.Now()
 	c.mu.Unlock()
 	c.poke()
@@ -515,10 +543,14 @@ func (c *Chat) input(now time.Time, closing string) []map[string]any {
 	input = append(input, seedMessage("developer", "The chat so far, oldest first. Each message starts with its time and number for you; never write those yourself."))
 	for _, message := range history {
 		line := fmt.Sprintf("[%s #%d] ", time.UnixMilli(message.At).In(now.Location()).Format("Mon 2 Jan 15:04"), message.ID)
-		switch message.Kind {
-		case "voice":
+		switch {
+		case message.Kind == "voice" && message.From == "lemon" && message.Text == "":
+			line += "(voice note that could not be transcribed; ask him to say it again or type it) "
+		case message.Kind == "voice" && message.From == "lemon":
+			line += "(voice note, speech recognition of what he said) "
+		case message.Kind == "voice":
 			line += "(voice note) "
-		case "photo":
+		case message.Kind == "photo":
 			line += "(photo: " + message.Scene + ") "
 		}
 		line += message.Text
