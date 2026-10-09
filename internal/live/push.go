@@ -24,8 +24,8 @@ import (
 // ErrTokenGone means FCM no longer knows the phone's token.
 var ErrTokenGone = errors.New("push token is no longer registered")
 
-// Pusher wakes the phone through Firebase Cloud Messaging. The message carries no reminder text:
-// the phone fetches reminders from the box over SSH.
+// Pusher wakes the phone through Firebase Cloud Messaging. The message only names what to sync: the
+// phone fetches reminders and Rosa's texts from the box over SSH.
 type Pusher struct {
 	API    string // https://fcm.googleapis.com
 	client *http.Client
@@ -67,8 +67,8 @@ func NewPusher(keyPath string) (*Pusher, error) {
 		email: account.ClientEmail, tokens: account.TokenURI, app: account.ProjectID}, nil
 }
 
-// Send delivers a high-priority data message that makes the phone sync reminders.
-func (p *Pusher) Send(token string) error {
+// Send delivers a high-priority data message that makes the phone sync what, reminders or rosa.
+func (p *Pusher) Send(token, what string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	access, err := p.accessToken(ctx)
@@ -77,8 +77,8 @@ func (p *Pusher) Send(token string) error {
 	}
 	body, _ := json.Marshal(map[string]any{"message": map[string]any{
 		"token":   token,
-		"data":    map[string]string{"sync": "reminders"},
-		"android": map[string]any{"priority": "HIGH", "collapse_key": "reminders"},
+		"data":    map[string]string{"sync": what},
+		"android": map[string]any{"priority": "HIGH", "collapse_key": what},
 	}})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.API+"/v1/projects/"+p.app+"/messages:send", strings.NewReader(string(body)))
 	if err != nil {

@@ -28,6 +28,7 @@ type Manager struct {
 	discord    *Discord
 	reminders  *Reminders
 	rosa       *Rosa
+	chat       *Chat
 	client     *http.Client
 	API        string
 	// Codex signs the voice backend's requests with Lemon's ChatGPT login.
@@ -59,7 +60,41 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 		return m.backend(backend, RosaSchema, m.rosa.Call)
 	}
 	m.rosa.Restore()
+	m.chat = OpenChat(m.rosa)
+	m.rosa.Chat = m.chat
+	m.chat.Zone, m.chat.Wake = m.reminders.Zone, func() { m.reminders.Wake("rosa") }
+	m.chat.Calling = func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.session != nil && m.session.Agent == "rosa"
+	}
+	m.chat.Backend = func() *Backend {
+		instructions, err := m.rosa.ChatInstructions()
+		if err != nil {
+			log.Printf("rosa chat: %v", err)
+			return nil
+		}
+		return m.backend(instructions, ChatSchema, m.rosa.Call)
+	}
+	m.chat.Record = func(ctx context.Context, script string) (VoiceNote, error) {
+		identity, err := m.rosa.read("identity.md")
+		if err != nil {
+			return VoiceNote{}, err
+		}
+		voice, err := m.rosa.read("voice")
+		if err != nil {
+			return VoiceNote{}, err
+		}
+		return RecordNote(ctx, m.API, m.key, voice, identity, script)
+	}
 	return m
+}
+
+// StartChat runs Rosa's texting until ctx ends; photos need the ChatGPT login in Codex.
+func (m *Manager) StartChat(ctx context.Context) {
+	camera := &Photographer{Client: &http.Client{}, URL: ImagesURL, Auth: m.Codex.Get}
+	m.chat.Take = camera.Take
+	go m.chat.Run(ctx)
 }
 
 type startRequest struct {
@@ -327,6 +362,8 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		Messages []DiscordMessage `json:"messages"`
 		ID       int              `json:"id"`
 		Error    string           `json:"error"`
+		Rev      int64            `json:"rev"`
+		Emoji    string           `json:"emoji"`
 	}
 	if err := json.Unmarshal([]byte(payload), &request); err != nil {
 		return "", fmt.Errorf("invalid live request")
@@ -381,6 +418,21 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 			return "", err
 		}
 		return result["result"].(string), nil
+	case "chat-sync":
+		data, _ := json.Marshal(m.chat.Sync(request.Rev))
+		return string(data), nil
+	case "chat-send":
+		message, err := m.chat.Send(request.Text)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(message)
+		return string(data), nil
+	case "chat-react":
+		if err := m.chat.React(request.ID, "lemon", request.Emoji); err != nil {
+			return "", err
+		}
+		return "ok", nil
 	case "close":
 		m.mu.Lock()
 		session := m.session

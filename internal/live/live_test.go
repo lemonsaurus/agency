@@ -652,10 +652,10 @@ func TestPusherWakesThePhone(t *testing.T) {
 		t.Fatal(err)
 	}
 	pusher.API = server.URL
-	if err := pusher.Send("tok"); err != nil || len(sent) != 1 || !strings.HasPrefix(sent[0], "Bearer at ") || !strings.Contains(sent[0], `"sync":"reminders"`) || !strings.Contains(sent[0], `"priority":"HIGH"`) {
+	if err := pusher.Send("tok", "reminders"); err != nil || len(sent) != 1 || !strings.HasPrefix(sent[0], "Bearer at ") || !strings.Contains(sent[0], `"sync":"reminders"`) || !strings.Contains(sent[0], `"priority":"HIGH"`) {
 		t.Fatalf("err=%v sent=%v", err, sent)
 	}
-	if err := pusher.Send("stale"); !errors.Is(err, ErrTokenGone) {
+	if err := pusher.Send("stale", "reminders"); !errors.Is(err, ErrTokenGone) {
 		t.Fatalf("stale err=%v", err)
 	}
 }

@@ -102,7 +102,7 @@ func (r *Reminders) Add(when, text string, now time.Time) (map[string]any, error
 	token := r.data.Token
 	r.mu.Unlock()
 	if token != "" {
-		go r.wake(token)
+		go r.wake(token, "reminders")
 	}
 	return map[string]any{"id": reminder.ID, "result": "Reminder set for " + at.Format("Monday 2 January, 15:04 MST") + ": the phone and any connected desktop notify Lemon then."}, nil
 }
@@ -126,16 +126,26 @@ func parseWhen(when string, now time.Time) (time.Time, error) {
 	return at, nil
 }
 
-// wake tells the phone to fetch reminders; an unregistered token is forgotten.
-func (r *Reminders) wake(token string) {
+// Wake tells the phone to sync what, if it has registered.
+func (r *Reminders) Wake(what string) {
+	r.mu.Lock()
+	token := r.data.Token
+	r.mu.Unlock()
+	if token != "" {
+		r.wake(token, what)
+	}
+}
+
+// wake tells the phone to sync what; an unregistered token is forgotten.
+func (r *Reminders) wake(token, what string) {
 	if r.Push == nil {
 		return
 	}
-	err := r.Push.Send(token)
+	err := r.Push.Send(token, what)
 	if err == nil {
 		return
 	}
-	log.Printf("reminders: push: %v", err)
+	log.Printf("push %s: %v", what, err)
 	if errors.Is(err, ErrTokenGone) {
 		r.mu.Lock()
 		if r.data.Token == token {

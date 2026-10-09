@@ -119,6 +119,13 @@ func (m *Memory) Recent(now time.Time, limit int) []memoryMessage {
 	return recent
 }
 
+// Tail is the last messages ever said, however old.
+func (m *Memory) Tail(limit int) []memoryMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]memoryMessage(nil), tail(m.messages, limit)...)
+}
+
 // Last is when anything was last said, zero when nothing was.
 func (m *Memory) Last() time.Time {
 	m.mu.Lock()

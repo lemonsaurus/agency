@@ -52,6 +52,8 @@ type Rosa struct {
 	last   *Class
 	ended  time.Time
 	settle *time.Timer
+	// Chat is texting with him, read into every call's opening.
+	Chat *Chat
 	// Backend makes the planner backend for work that outlives a call, like the debrief.
 	Backend func() *Backend
 }
@@ -161,6 +163,19 @@ func (r *Rosa) Instructions() (live, backend, voice string, err error) {
 	return identity + "\n\n" + live, identity + "\n\n# Planner\n\n" + backend, voice, nil
 }
 
+// ChatInstructions are Rosa's texting prompt, from her own folder.
+func (r *Rosa) ChatInstructions() (string, error) {
+	identity, err := r.read("identity.md")
+	if err != nil {
+		return "", err
+	}
+	chat, err := r.read("chat.md")
+	if err != nil {
+		return "", err
+	}
+	return identity + "\n\n" + chat, nil
+}
+
 // Graph is the thought graph, loaded on first use and again at the start of every call.
 func (r *Rosa) Graph() (*Graph, error) {
 	r.mu.Lock()
@@ -207,6 +222,11 @@ func (r *Rosa) Seed(now time.Time) []map[string]any {
 		note += " Say nothing until you are told to open; then greet him once."
 	}
 	seed := []map[string]any{seedMessage("developer", note), seedMessage("developer", r.learner.Summary(now))}
+	if r.Chat != nil {
+		if texts := r.Chat.Recent(now); texts != "" {
+			seed = append(seed, seedMessage("developer", "Your recent WhatsApp texts with Lemon, which this call knows about:\n"+texts))
+		}
+	}
 	recent := r.memory.Recent(now, memoryMaxSeed)
 	budget, start := memorySeedMax, len(recent)
 	for start > 0 && budget-len(recent[start-1].Text) >= 0 {

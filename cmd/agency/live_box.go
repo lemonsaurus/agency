@@ -131,6 +131,7 @@ func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.
 	} else if !os.IsNotExist(err) {
 		log.Printf("reminders: push disabled: %v", err)
 	}
+	manager.StartChat(context.Background())
 	return manager
 }
 
@@ -172,7 +173,7 @@ func runActivity(cfg *config.Config) {
 // runLive relays one voice request from the phone to the daemon.
 func runLive(sessionName string, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|close")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|chat-sync <rev>|chat-send <text>|chat-react <id> [emoji]|close")
 		os.Exit(1)
 	}
 	request := map[string]any{"op": args[0]}
@@ -189,6 +190,31 @@ func runLive(sessionName string, args []string) {
 		}
 		for key, value := range body {
 			request[key] = value
+		}
+	case "chat-sync":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live chat-sync <rev>")
+			os.Exit(1)
+		}
+		var rev int64
+		fmt.Sscanf(args[1], "%d", &rev)
+		request["rev"] = rev
+	case "chat-send":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live chat-send <text>")
+			os.Exit(1)
+		}
+		request["text"] = args[1]
+	case "chat-react":
+		if len(args) < 2 || len(args) > 3 {
+			fmt.Fprintln(os.Stderr, "Usage: agency cloud live chat-react <id> [emoji]")
+			os.Exit(1)
+		}
+		var id int
+		fmt.Sscanf(args[1], "%d", &id)
+		request["id"] = id
+		if len(args) == 3 {
+			request["emoji"] = args[2]
 		}
 	case "said":
 		if len(args) != 2 {
