@@ -79,20 +79,24 @@ func spanishEnding(word string) bool {
 	return false
 }
 
-// english is whether a turn is English with no Spanish in it: at least one English word and nothing
-// that only Spanish says.
+// english is whether a turn is English with no Spanish in it: two English words of three letters or
+// more, or one of four or more, and nothing that only Spanish says. Short words alone are not English:
+// "um, in" is the start of intento, "I... to" the start of to get ready.
 func english(tokens []string) bool {
-	en := 0
+	en, strong := 0, false
 	for _, word := range tokens {
 		switch {
 		case fillers[word] || backchannels[word]:
 		case spanish[word] || spanishEnding(word):
 			return false
 		case englishWords[word] || strings.HasSuffix(word, "ly") || strings.HasSuffix(word, "ing") || strings.Contains(word, "th") || strings.ContainsAny(word, "wk"):
-			en++
+			if len(word) >= 3 {
+				en++
+			}
+			strong = strong || len(word) >= 4
 		}
 	}
-	return en > 0
+	return en >= 2 || strong
 }
 
 // switched is whether a mainly Spanish turn carries English content words: a quiet request for the
@@ -242,6 +246,51 @@ func addressed(text string) bool {
 		}
 	}
 	return len(content) == 1 && (content[0] == "rosa" || content[0] == "hello")
+}
+
+// accepts is whether Rosa's reply opens by taking his answer as right: his sentence is done, whatever
+// the letter count said.
+func accepts(turn []string) bool {
+	var content []string
+	for _, word := range turn {
+		if !fillers[word] {
+			content = append(content, word)
+		}
+	}
+	if len(content) == 0 {
+		return false
+	}
+	switch content[0] {
+	case "perfecto", "eso", "exacto", "bien", "dale", "perfect", "exactly", "good", "nice":
+		return true
+	}
+	opening := " " + strings.Join(content[:min(len(content), 4)], " ") + " "
+	for _, phrase := range []string{" that is it ", " there you go ", " you got it ", " ahi esta ", " muy bien ", " that is right ", " well done "} {
+		if strings.Contains(opening, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// settled is whether a quiet partial answer is really a whole attempt: it carries at least half of
+// the expected sentence's words of three letters or more, by sound.
+func settled(attempt string, sentence Sentence) bool {
+	said := map[string]bool{}
+	for _, token := range words(speech(attempt)) {
+		said[sound(token)] = true
+	}
+	total, hit := 0, 0
+	for _, word := range words(sentence.ES) {
+		if len(word) < 3 {
+			continue
+		}
+		total++
+		if said[sound(word)] {
+			hit++
+		}
+	}
+	return total > 0 && hit*2 >= total
 }
 
 // easier is whether he says the material is too easy or asks to move on.

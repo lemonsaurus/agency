@@ -302,13 +302,17 @@ func (r *Rosa) compose(ctx context.Context, backend *Backend, task, transcript s
 }
 
 // adjustPlan rewrites the plan's items from index from onward to fit what Lemon said today.
-func (r *Rosa) adjustPlan(ctx context.Context, backend *Backend, plan Plan, from int, transcript string, now time.Time) (Plan, error) {
+func (r *Rosa) adjustPlan(ctx context.Context, backend *Backend, plan Plan, from int, transcript, asked string, now time.Time) (Plan, error) {
 	rest, _ := json.Marshal(Plan{Mode: plan.Mode, Why: plan.Why, Items: plan.Items[from:]})
+	var taught []string
+	for _, item := range plan.Items[:from] {
+		taught = append(taught, item.Thought)
+	}
 	input := []map[string]any{
 		seedMessage("developer", "It is "+clock(now)+". "+r.learner.Summary(now)),
 		seedMessage("developer", "Today's call so far:\n"+truncate(transcript, 20000)),
 		seedMessage("developer", "The rest of today's plan, not yet taught:\n"+string(rest)),
-		seedMessage("developer", "Adjust the rest of the plan to what Lemon said and asked for today: rebuild targets from what he told you, add or swap an item he asked for, switch mode if he wants to just talk. Keep the review and new mix unless today gives a reason. Return the adjusted rest of the plan."),
+		seedMessage("developer", "Adjust the rest of the plan to what Lemon said and asked for today: rebuild targets from what he told you, add or swap an item he asked for, switch mode if he wants to just talk. Keep the review and new mix unless today gives a reason. Never a thought this call is already working on ("+strings.Join(taught, ", ")+"), and never a target already asked in it."+asked+" Return the adjusted rest of the plan."),
 	}
 	return r.plan(ctx, backend, input, now)
 }

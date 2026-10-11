@@ -107,6 +107,8 @@ type Class struct {
 	tookOver   bool
 	tries      int      // attempts since the armed target was last cued
 	praised    string   // a target just resolved alone, until Rosa's reply shows whether she agreed
+	judging    bool     // his attempt is complete; Rosa's reply shows whether she accepted it
+	gapWhole   bool     // the whole gap sentence has been armed once; it never comes back
 	called     bool     // he called her by name or checked she is there in this attempt
 	previous   []string // his words in the attempt before this one, which her echo doesn't count as a hint
 	prompts    []string // every target asked this call, so nothing is asked twice
@@ -231,7 +233,7 @@ func (c *Class) Resume(logPath string) {
 	c.logPath = logPath
 	c.floor, c.turn, c.attempt, c.verdict = "", "", "", ""
 	c.rosaEnd, c.lemonEnd = 0, 0
-	c.armed, c.held, c.holding, c.overlap, c.fresh = nil, false, false, false, false
+	c.armed, c.held, c.holding, c.overlap, c.fresh, c.judging = nil, false, false, false, false, false
 	if c.holdTimer != nil {
 		c.holdTimer.Stop()
 	}
@@ -359,8 +361,14 @@ func (c *Class) handOver(i int) {
 	for _, note := range item.Notes(thought, fmt.Sprintf("%d of %d", i+1, len(c.plan.Items))) {
 		c.send("session.thinking.append", note)
 	}
-	if len(c.prompts) > 0 {
-		c.send("session.thinking.append", truncate("Already asked this call, never ask these again: "+strings.Join(c.prompts, "; ")+".", updateLimit))
+	var asked []string
+	for _, prompt := range c.prompts {
+		if c.armed == nil || prompt != c.target(*c.armed).EN {
+			asked = append(asked, prompt)
+		}
+	}
+	if len(asked) > 0 {
+		c.send("session.thinking.append", truncate("Already asked this call, never ask these again: "+strings.Join(asked, "; ")+".", updateLimit))
 	}
 	c.handed[i] = true
 	c.record("item", map[string]any{"item": i, "thought": item.Thought, "kind": item.Kind})
@@ -381,6 +389,8 @@ func (c *Class) watch(kind, text string, startMS, endMS int64) {
 		c.said(text, startMS, endMS)
 	case "session.delegation.created":
 		c.record("delegation", map[string]any{"t": startMS})
+	case "session.delegation.answered":
+		c.record("said", map[string]any{"t": startMS, "say": truncate(text, 600)})
 	case "error":
 		// A model error mid-call may be moderation cutting her off; logged so it can be reviewed.
 		c.record("error", map[string]any{"error": truncate(text, 300), "rosa": truncate(c.turn, 300)})
@@ -442,7 +452,8 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
 		}
 		if verdict == verdictMeta {
-			// He is talking about the lesson, not answering: she answers him and the target goes.
+			// He is talking about the lesson, not answering: she answers him and the target goes for good.
+			c.outcomes[c.key(c.armed)] = "dropped"
 			c.armed = nil
 			if c.holding {
 				c.release(talkToHim)
@@ -531,7 +542,7 @@ func (c *Class) SetGap(gap Gap) {
 	}
 	c.closeGap()
 	c.gapID++
-	c.gap = &gap
+	c.gap, c.gapWhole = &gap, false
 	lines := []string{fmt.Sprintf("Gap help for his turn %q. He meant: %s", gap.Said, gap.Sentence)}
 	for i, chunk := range gap.Chunks {
 		line := fmt.Sprintf("%d. %q → %s, route: %s", i+1, chunk.English, chunk.Spanish, chunk.Route)
@@ -639,6 +650,14 @@ func (c *Class) said(text string, startMS, endMS int64) {
 				if !c.fresh {
 					break
 				}
+				// She takes a mostly-said sentence as his answer: it was whole, not partial.
+				if accepts(turn) && settled(c.attempt, c.target(*c.armed)) {
+					c.verdict = verdictAttempt
+					c.record("verdict", map[string]any{"t": c.lemonEnd, "target": c.key(c.armed), "verdict": c.verdict, "said": truncate(c.attempt, 300)})
+					c.misses[c.key(c.armed)]++
+					c.judging = true
+					break
+				}
 				c.held = true
 				if !c.intervened && time.Since(c.lemonAt) < stallLimit {
 					id := c.attemptID
@@ -646,6 +665,7 @@ func (c *Class) said(text string, startMS, endMS int64) {
 				}
 			case verdictAttempt, verdictUnsure:
 				c.misses[c.key(c.armed)]++
+				c.judging = c.verdict == verdictAttempt
 			case verdictGap:
 				c.hinted[c.key(c.armed)] = true
 			}
@@ -657,6 +677,26 @@ func (c *Class) said(text string, startMS, endMS int64) {
 			c.record("downgrade", map[string]any{"target": c.praised, "rosa": truncate(c.turn, 300)})
 		}
 		c.praised = ""
+	}
+	if c.judging {
+		switch {
+		case c.armed == nil || c.verdict == verdictRight:
+			c.judging = false
+		case accepts(turn):
+			c.judging = false
+			outcome := "alone"
+			if key := c.key(c.armed); c.misses[key] > 1 || c.hinted[key] || says(turn, c.target(*c.armed).ES) {
+				outcome = "helped"
+			}
+			c.record("accepted", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300), "rosa": truncate(c.turn, 200)})
+			if c.target(*c.armed).ES == "" {
+				c.armed, c.verdict = nil, ""
+			} else {
+				c.resolve(*c.armed, outcome)
+			}
+		case len(turn) >= 4 || corrects(turn):
+			c.judging = false
+		}
 	}
 	if c.armed == nil || c.floor != "rosa" {
 		return
@@ -901,9 +941,17 @@ func (c *Class) holdUntilQuiet() {
 	c.holdTimer = time.AfterFunc(holdLimit, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.holding && c.attempt == said {
-			c.release(c.where(releaseFloor))
+		if !c.holding || c.attempt != said {
+			return
 		}
+		// Quiet this long with most of the sentence said: that was his whole answer, not part of it.
+		if c.armed != nil && c.verdict == verdictPartial && settled(c.attempt, c.target(*c.armed)) {
+			c.verdict = verdictAttempt
+			c.record("verdict", map[string]any{"t": c.lemonEnd, "target": c.key(c.armed), "verdict": c.verdict, "said": truncate(c.attempt, 300)})
+			c.release(releaseFloor)
+			return
+		}
+		c.release(c.where(releaseFloor))
 	})
 }
 
@@ -957,7 +1005,7 @@ func (c *Class) cue(raw string) bool {
 			}
 		}
 	}
-	if best == nil && c.gap != nil && len(turn) > 0 {
+	if best == nil && c.gap != nil && len(turn) > 0 && !c.gapWhole {
 		whole := [2]int{-1, len(c.gap.Chunks)}
 		started := false
 		for i, chunk := range c.gap.Chunks {
@@ -966,7 +1014,7 @@ func (c *Class) cue(raw string) bool {
 			}
 		}
 		if started && c.outcomes[c.key(&whole)] == "" {
-			best = &whole
+			best, c.gapWhole = &whole, true
 		}
 	}
 	if best == nil {
@@ -976,6 +1024,7 @@ func (c *Class) cue(raw string) bool {
 		}
 		c.adhoc = Sentence{EN: prompt}
 		delete(c.misses, "adhoc")
+		delete(c.outcomes, "adhoc")
 		best = &[2]int{-2, 0}
 	}
 	if c.armed != nil && *c.armed == *best {
@@ -984,7 +1033,7 @@ func (c *Class) cue(raw string) bool {
 	if best[0] > c.current {
 		c.advance(best[0])
 	}
-	c.armed, c.verdict = best, ""
+	c.armed, c.verdict, c.judging = best, "", false
 	if hints(turn, c.target(*best), c.previous) {
 		c.hinted[c.key(best)] = true
 	}
@@ -1142,7 +1191,7 @@ func (c *Class) Position() string {
 		b.WriteString(" Outcomes so far:")
 		for i, item := range c.plan.Items {
 			for t, target := range item.Targets {
-				if outcome := c.outcomes[c.key(&[2]int{i, t})]; outcome != "" {
+				if outcome := c.outcomes[c.key(&[2]int{i, t})]; outcome != "" && outcome != "skipped" && outcome != "dropped" {
 					fmt.Fprintf(&b, " %s %s;", target.ES, outcome)
 				}
 			}
@@ -1234,7 +1283,7 @@ func (c *Class) tally() (string, map[string]string, []string) {
 		fmt.Fprintf(&report, " [%s %s]", item.Kind, item.Thought)
 		for k, target := range item.Targets {
 			outcome := c.outcomes[c.key(&[2]int{i, k})]
-			if outcome == "" || outcome == "skipped" {
+			if outcome == "" || outcome == "skipped" || outcome == "dropped" {
 				continue
 			}
 			t.total++

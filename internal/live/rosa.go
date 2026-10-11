@@ -372,12 +372,19 @@ func (r *Rosa) adjust(session *Session, class *Class) {
 	}
 	ctx, cancel := context.WithTimeout(session.ctx, 3*time.Minute)
 	defer cancel()
-	adjusted, err := r.adjustPlan(ctx, session.backend, plan, from, r.transcript(class.started), time.Now())
+	adjusted, err := r.adjustPlan(ctx, session.backend, plan, from, r.transcript(class.started), asked(class), time.Now())
 	if err != nil {
 		log.Printf("rosa: adjust failed: %v", err)
 		return
 	}
-	class.Replace(from, adjusted.Items, adjusted.Mode, adjusted.Why)
+	var items []PlanItem
+	for _, item := range adjusted.Items {
+		if item.Type == "thought" && class.Touches(item.Thought) > 0 {
+			continue
+		}
+		items = append(items, item)
+	}
+	class.Replace(from, items, adjusted.Mode, adjusted.Why)
 }
 
 // more composes further items when the call's plan runs out; the call only ends when Lemon ends it.

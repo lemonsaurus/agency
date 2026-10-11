@@ -251,6 +251,85 @@ func TestClassReleasesAHold(t *testing.T) {
 	}
 }
 
+// A sentence he answered and she accepted is finished, whatever the letter count said, and a target
+// dropped by a meta turn never comes back; the whole gap sentence is armed once.
+func TestClassAcceptsThenNeverReasks(t *testing.T) {
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	plan := testPlan()
+	plan.Items[1].Targets = append([]Sentence{{EN: "I want to get ready, but not now", ES: "quiero prepararme, pero no ahora"}}, plan.Items[1].Targets...)
+	class.SetPlan(plan)
+	class.handed[1] = true
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	notes := func() string {
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+
+	holdLimit = 300 * time.Millisecond
+	defer func() { holdLimit = 8 * time.Second }()
+	out("How would you say I want to get ready, but not now?", 1000)
+	in("Quiero, pero no ahora", 4000)
+	if class.verdict != verdictPartial {
+		t.Fatalf("verdict %s", class.verdict)
+	}
+	time.Sleep(settleDelay + holdLimit + 200*time.Millisecond)
+	class.mu.Lock()
+	verdict, holding := class.verdict, class.holding
+	class.mu.Unlock()
+	if verdict != verdictAttempt || holding {
+		t.Fatalf("a quiet, mostly-said answer stayed %s holding=%v", verdict, holding)
+	}
+	if text := notes(); strings.Contains(text, "carry on with that") {
+		t.Fatalf("she was told to re-ask a finished sentence: %s", text)
+	}
+	out("Perfecto.", 13000)
+	if class.outcomes["2:t04-quiero/1"] != "alone" || class.armed != nil {
+		t.Fatalf("her acceptance did not finish the target: outcomes %v armed %v", class.outcomes, class.armed)
+	}
+	out("Now, back to the sentence: how would you say I want to get ready, but not now?", 20000)
+	in("We already said that", 24000)
+	if class.armed != nil || class.outcomes["2:t04-quiero/1"] != "alone" {
+		t.Fatalf("a finished target was armed again: %v %v", class.armed, class.outcomes)
+	}
+
+	out("Fair. How would you say I want to cancel it?", 30000)
+	in("Um In", 33000)
+	if class.armed == nil || class.verdict != verdictPartial {
+		t.Fatalf("a hesitation syllable ended his turn: armed %v verdict %s", class.armed, class.verdict)
+	}
+	in(" You keep asking me the same thing over and over", 36000)
+	if class.verdict != verdictMeta || class.outcomes["2:t04-quiero/2"] != "dropped" {
+		t.Fatalf("verdict %s outcomes %v", class.verdict, class.outcomes)
+	}
+	notes()
+	out("Okay. How would you say I want to cancel it?", 40000)
+	in("quiero cancelarlo", 44000)
+	if class.key(class.armed) == "2:t04-quiero/2" || class.outcomes["2:t04-quiero/2"] != "dropped" {
+		t.Fatalf("a dropped target was armed again: %v %v", class.armed, class.outcomes)
+	}
+
+	class.asked = "que me digan, something about"
+	class.SetGap(Gap{Said: class.asked, Sentence: "Que me digan algo sobre eso", Chunks: []GapChunk{{English: "something about", Spanish: "algo sobre", Route: "new", Ask: "how do you say something about?"}}})
+	notes()
+	out("How do you say something about?", 50000)
+	in("algo sobre", 53000)
+	out("Eso. Keep going.", 54000)
+	in("I already", 58000)
+	if class.armed == nil || class.key(class.armed) != "gap1/2" {
+		t.Fatalf("the whole gap sentence was not armed once: %v", class.armed)
+	}
+	in(" said that too, you are repeating yourself", 59000)
+	out("Ha, yeah, that one is on Lemon's code.", 62000)
+	in("Talk my friend out of it", 66000)
+	if class.armed != nil {
+		t.Fatalf("the whole gap sentence came back: %v", class.armed)
+	}
+}
+
 func TestClassLetsRosaAnswerAWrongAttempt(t *testing.T) {
 	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
 	class.SetPlan(testPlan())
@@ -638,6 +717,11 @@ func TestEnglishTurnsRepeatsAndListening(t *testing.T) {
 		"sorry, say that again":                     verdictClarify,
 		"okay, wait, hang on":                       verdictPartial,
 		"[breath":                                   verdictPartial,
+		"Um In":                                     verdictPartial,
+		"Okay I... Okay, Uh. To":                    verdictPartial,
+		"I already":                                 verdictPartial,
+		"I already said that too. You're repeating": verdictMeta,
+		"Talk my friend out of it":                  verdictMeta,
 		"what's probably":                           verdictUnsure,
 		"how do you say improve":                    verdictUnsure,
 	}

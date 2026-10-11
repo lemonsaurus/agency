@@ -159,6 +159,9 @@ func (s *Session) delegate(id string) {
 		return
 	}
 	s.recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Said: reply.Say, Details: reply.Details})
+	if s.watch != nil {
+		s.watch("session.delegation.answered", reply.Say, 0, 0)
+	}
 	if strings.TrimSpace(reply.Details) != "" {
 		s.append("session.thinking.append", "", "Facts behind your next answer, as of "+now.Format("15:04")+", for follow-ups; not to read out: "+reply.Details)
 	}
