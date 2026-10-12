@@ -507,9 +507,9 @@ func TestManagerStartAttachesSideband(t *testing.T) {
 	m.API = server.URL
 	m.client = server.Client()
 	m.Emit(Update{true, "Quill finished while you were away."})
-	reply, err := m.Handle(context.Background(), `{"op":"start","voice":"quartz","accent":"New Zealand","sdp":"v=0 offer"}`)
-	if err != nil || !strings.Contains(reply, "v=0 answer") {
-		t.Fatalf("reply=%q err=%v", reply, err)
+	reply, err := m.Handle(context.Background(), `{"op":"start","voice":"quartz","accent":"New Zealand","sdp":"v=0 offer","switches":true}`)
+	if err != nil || !strings.Contains(reply, "v=0 answer") || !m.switches {
+		t.Fatalf("reply=%q err=%v switches=%v", reply, err, m.switches)
 	}
 	session := created["session"].(map[string]any)
 	if session["delegation"].(map[string]any)["type"] != "client" || !strings.Contains(session["instructions"].(string), "New Zealand") || !strings.HasPrefix(session["instructions"].(string), "persona\n\nlive rules") {
@@ -571,6 +571,17 @@ func TestConversationTool(t *testing.T) {
 	}
 	if got := m.Status().Phone; got != "" {
 		t.Fatalf("phone not consumed: %q", got)
+	}
+	if _, err := m.call(context.Background(), "conversation", `{"state":"rosa"}`); err == nil || m.Status().Phone != "" {
+		t.Fatal("a phone that cannot switch was told to switch to Rosa")
+	}
+	m.switches = true
+	result, err = m.call(context.Background(), "conversation", `{"state":"rosa"}`)
+	if err != nil || !strings.Contains(fmt.Sprint(result), "Rosa") {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+	if got := m.Status().Phone; got != "rosa" {
+		t.Fatalf("phone=%q", got)
 	}
 }
 

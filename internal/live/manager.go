@@ -40,6 +40,8 @@ type Manager struct {
 	pending []Update
 	said    []string
 	phone   string
+	// switches is whether the phone on Carla's current call can hand it to Rosa.
+	switches bool
 }
 
 func NewManager(box Box, key string, persona func() (string, error), promptDir, memoryPath string) *Manager {
@@ -125,6 +127,8 @@ type startRequest struct {
 	SDP    string `json:"sdp"`
 	// Rolls is a phone that can hand a long Rosa call to a fresh session.
 	Rolls bool `json:"rolls"`
+	// Switches is a phone that can hand Carla's call over to Rosa.
+	Switches bool `json:"switches"`
 }
 
 // Start creates the Live session for the phone's SDP offer, attaches the sideband, and returns
@@ -195,6 +199,7 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 	session := NewSession(answer.Session.ID, conn, m.memory, m.recall, m.backend(backend, Schema, m.call), m.state)
 	session.Zone = zone
 	m.mu.Lock()
+	m.switches = request.Switches
 	pending := m.pending
 	m.pending = nil
 	m.mu.Unlock()
@@ -333,10 +338,19 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 	if name == "remind" {
 		return m.reminders.Add(args.At, args.Text, time.Now().In(m.reminders.Zone()))
 	}
-	if args.State != "off" {
-		return nil, fmt.Errorf("state must be off")
+	switch args.State {
+	case "off":
+		return m.turnOff(), nil
+	case "rosa":
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if !m.switches {
+			return nil, fmt.Errorf("this phone's app cannot switch calls yet; Lemon opens the Rosa tab himself")
+		}
+		m.phone = "rosa"
+		return "The phone hands Lemon over to Rosa after your next sentence. Say a short goodbye.", nil
 	}
-	return m.turnOff(), nil
+	return nil, fmt.Errorf("state must be off or rosa")
 }
 
 // text runs Carla's chat tools: reminders on the box, the rest through the dispatcher, whose updates
@@ -375,9 +389,8 @@ func (m *Manager) turnOff() string {
 }
 
 // Status is what the phone polls: what to show on the orb, Discord replies it must send, reminders
-// it must schedule, and
-// whether the backend asked to turn the conversation off. The phone
-// request is handed over once.
+// it must schedule, and whether the backend asked to turn the conversation off, roll it or hand it to
+// Rosa. The phone request is handed over once.
 type Status struct {
 	Session   string         `json:"session,omitempty"`
 	Phone     string         `json:"phone,omitempty"`
@@ -421,6 +434,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 		When     string           `json:"when"`
 		SDP      string           `json:"sdp"`
 		Rolls    bool             `json:"rolls"`
+		Switches bool             `json:"switches"`
 		Text     string           `json:"text"`
 		Messages []DiscordMessage `json:"messages"`
 		ID       int              `json:"id"`
@@ -436,7 +450,7 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 	}
 	switch request.Op {
 	case "start":
-		return m.Start(ctx, startRequest{Agent: request.Agent, Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP, Rolls: request.Rolls})
+		return m.Start(ctx, startRequest{Agent: request.Agent, Voice: request.Voice, Accent: request.Accent, Zone: request.Zone, SDP: request.SDP, Rolls: request.Rolls, Switches: request.Switches})
 	case "status":
 		data, _ := json.Marshal(m.Status())
 		return string(data), nil
