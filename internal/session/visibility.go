@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lemonsaurus/agency/internal/cloud"
 )
@@ -29,6 +30,15 @@ func (m *Manager) ShownLine() string {
 	return m.shownLine
 }
 
+// Focus records that a terminal of this device took focus and tells the host,
+// which sizes the windows this device shows to its viewers.
+func (m *Manager) Focus(ctx context.Context) error {
+	m.shownMu.Lock()
+	m.focused = time.Now().UnixMilli()
+	m.shownMu.Unlock()
+	return m.Visibility(ctx)
+}
+
 // Visibility sends the host which viewers are on screen when that changed.
 // The host parks the others: their remote clients stop receiving output
 // until they show again.
@@ -43,7 +53,7 @@ func (m *Manager) Visibility(ctx context.Context) error {
 		return err
 	}
 	device := cloud.Device(m.cfg.Session.Name)
-	line := cloud.ShownLine(device, visibleViewers(device, out))
+	line := cloud.ShownLine(device, m.focused, visibleViewers(device, out))
 	if line == m.shownLine {
 		return nil
 	}

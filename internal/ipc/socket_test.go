@@ -205,6 +205,10 @@ func (m *mockHandler) Visibility(_ context.Context) error {
 	return nil
 }
 
+func (m *mockHandler) Focus(_ context.Context) error {
+	return nil
+}
+
 func (m *mockHandler) BroadcastKeys(_ context.Context, keys string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

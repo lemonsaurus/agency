@@ -8,12 +8,12 @@ import (
 
 func TestShownLineRoundTrips(t *testing.T) {
 	for _, keys := range [][]string{{"bluefin-agency/%4", "bluefin-agency/%9"}, nil} {
-		device, got, ok := ParseShownLine(ShownLine("bluefin-agency", keys))
-		if !ok || device != "bluefin-agency" || len(got) != len(keys) || (len(keys) > 0 && !reflect.DeepEqual(got, keys)) {
-			t.Fatalf("round trip of %v = %q %v %v", keys, device, got, ok)
+		device, focused, got, ok := ParseShownLine(ShownLine("bluefin-agency", 1791448552000, keys))
+		if !ok || device != "bluefin-agency" || focused != 1791448552000 || len(got) != len(keys) || (len(keys) > 0 && !reflect.DeepEqual(got, keys)) {
+			t.Fatalf("round trip of %v = %q %d %v %v", keys, device, focused, got, ok)
 		}
 	}
-	if _, _, ok := ParseShownLine("changed"); ok {
+	if _, _, _, ok := ParseShownLine("changed"); ok {
 		t.Fatal("parsed a non-shown line")
 	}
 }

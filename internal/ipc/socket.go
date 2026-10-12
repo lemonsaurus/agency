@@ -39,6 +39,8 @@ type Handler interface {
 	SyncCloud(ctx context.Context) (string, error)
 	// Visibility tells the cloud host which viewers are on screen.
 	Visibility(ctx context.Context) error
+	// Focus tells the cloud host this device's terminal took focus.
+	Focus(ctx context.Context) error
 	// Live serves the phone's voice requests: session start, status, Discord relay.
 	Live(ctx context.Context, payload string) (string, error)
 }
@@ -234,6 +236,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 	}
 	if line == "visibility" {
 		return "", s.handler.Visibility(s.ctx)
+	}
+	if line == "focus" {
+		return "", s.handler.Focus(s.ctx)
 	}
 	if line == "sync-cloud" {
 		return s.handler.SyncCloud(s.ctx)

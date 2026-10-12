@@ -100,8 +100,11 @@ func buildCloudConf(agencyBin string) string {
 	b.WriteString("set -s exit-empty off\n")
 	b.WriteString("set -g status off\n")
 	b.WriteString("set -g pane-border-status off\n")
-	// The last client to type owns the size; other viewers see it cropped.
-	b.WriteString("set -g window-size latest\n")
+	// agency cloud fit sizes each window to the device focused last.
+	b.WriteString("set -g window-size manual\n")
+	for _, hook := range []string{"client-attached", "client-detached", "client-resized", "client-session-changed"} {
+		fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s cloud fit'\"\n", hook, agencyBin)
+	}
 	// Mouse on so wheel scroll lands in this server's copy-mode, which holds
 	// the real scrollback; the viewer's local history only starts at attach.
 	b.WriteString("set -g mouse on\n")
@@ -291,9 +294,13 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// The cloud host streams only the sky viewers on screen: tell the daemon
 	// whenever what is on screen may have changed.
 	if cfg.Cloud.Host != "" {
-		b.WriteString("# Park sky viewers that leave the screen\n")
-		for _, hook := range []string{"session-window-changed", "client-session-changed", "client-attached", "client-detached", "window-pane-changed", "after-resize-pane"} {
+		b.WriteString("# Park sky viewers that leave the screen; size sky windows to the focused device\n")
+		b.WriteString("set -g focus-events on\n")
+		for _, hook := range []string{"session-window-changed", "client-session-changed", "client-detached", "window-pane-changed", "after-resize-pane"} {
 			fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s visibility'\"\n", hook, agencyBin)
+		}
+		for _, hook := range []string{"client-attached", "client-focus-in"} {
+			fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s focus'\"\n", hook, agencyBin)
 		}
 		b.WriteString("\n")
 	}

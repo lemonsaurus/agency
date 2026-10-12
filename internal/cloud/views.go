@@ -3,6 +3,7 @@ package cloud
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -25,19 +26,24 @@ func ViewerKey(device, pane string) string {
 	return device + "/" + pane
 }
 
-// ShownLine tells the host which of a device's viewers are on screen. An
-// empty set is a valid line: the device shows no viewer.
-func ShownLine(device string, keys []string) string {
-	return strings.TrimSpace("shown " + device + " " + strings.Join(keys, " "))
+// ShownLine tells the host which of a device's viewers are on screen and when
+// a terminal of the device last took focus, in Unix milliseconds, 0 for never.
+// An empty set is a valid line: the device shows no viewer.
+func ShownLine(device string, focused int64, keys []string) string {
+	return strings.TrimSpace(fmt.Sprintf("shown %s %d %s", device, focused, strings.Join(keys, " ")))
 }
 
 // ParseShownLine reads a ShownLine.
-func ParseShownLine(line string) (device string, keys []string, ok bool) {
+func ParseShownLine(line string) (device string, focused int64, keys []string, ok bool) {
 	fields := strings.Fields(line)
-	if len(fields) < 2 || fields[0] != "shown" {
-		return "", nil, false
+	if len(fields) < 3 || fields[0] != "shown" {
+		return "", 0, nil, false
 	}
-	return fields[1], fields[2:], true
+	focused, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return "", 0, nil, false
+	}
+	return fields[1], focused, fields[3:], true
 }
 
 const (

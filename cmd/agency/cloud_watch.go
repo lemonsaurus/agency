@@ -20,9 +20,10 @@ import (
 
 // runCloudWatch runs on the host: it prints a line whenever the panes a sky
 // harness mirrors change, and a "reminder {json}" line when a reminder comes
-// due while the link is up. Each "shown <device> <keys...>" line on stdin
-// says which of that device's viewers are on screen: the rest are parked, and
-// a "views" line reports the result. It exits when the SSH client closes
+// due while the link is up. Each "shown <device> <focused> <keys...>" line on
+// stdin says which of that device's viewers are on screen and when it last took
+// focus: the rest are parked, windows fit the device focused last, and a
+// "views" line reports the result. It exits when the SSH client closes
 // stdin.
 func runCloudWatch(cfg *config.Config) {
 	tc := tmux.NewClient(cfg.Session.Name, "")
@@ -81,9 +82,9 @@ func runCloudWatch(cfg *config.Config) {
 		case <-ctx.Done():
 			return
 		case line := <-shown:
-			if device, keys, ok := cloud.ParseShownLine(line); ok {
+			if device, focused, keys, ok := cloud.ParseShownLine(line); ok {
 				devices[device] = true
-				state, err := tc.ApplyShown(ctx, device, keys)
+				state, err := tc.ApplyShown(ctx, device, focused, keys)
 				if !report(device, state, err) {
 					return
 				}

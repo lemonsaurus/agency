@@ -101,8 +101,8 @@ func main() {
 		runLayout(os.Args[2:])
 	case "relayout":
 		runRelayout()
-	case "visibility":
-		runVisibility()
+	case "visibility", "focus":
+		runVisibility(os.Args[1])
 	case "broadcast-dialog":
 		runBroadcastDialog()
 	case "broadcast-keys":
@@ -298,6 +298,12 @@ func runCloud(args []string) {
 		return
 	case "park-screen":
 		runParkScreen(args[1:])
+		return
+	case "fit":
+		if err := tmux.NewClient("", "").Fit(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	case "projects":
 		runProjects(args[1:])
@@ -1463,10 +1469,11 @@ func runBroadcastKeys(args []string) {
 	}
 }
 
-// runVisibility is what tmux hooks call when the windows on screen change.
-func runVisibility() {
+// runVisibility is what tmux hooks call when the windows on screen change or
+// a terminal takes focus.
+func runVisibility(message string) {
 	cfg := loadConfig()
-	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "visibility")
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), message)
 	if err != nil || resp != "ok" {
 		os.Exit(0)
 	}

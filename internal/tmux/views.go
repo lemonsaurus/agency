@@ -30,7 +30,20 @@ type ViewState struct {
 // screen: "=" then space-separated keys. Unset means the device never reported
 // and every viewer streams.
 func shownOption(device string) string {
-	return "@agency_shown_" + strings.Map(func(r rune) rune {
+	return "@agency_shown_" + optionDevice(device)
+}
+
+// focusedOption is the server option holding when a terminal of the device
+// last took focus, in Unix milliseconds.
+func focusedOption(device string) string {
+	return focusedPrefix + optionDevice(device)
+}
+
+const focusedPrefix = "@agency_focused_"
+
+// optionDevice makes a device name usable in an option name.
+func optionDevice(device string) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
 			return r
@@ -139,12 +152,90 @@ func (c *Client) clientSessions(ctx context.Context) (map[string][]string, error
 	return clients, nil
 }
 
-// ApplyShown records the viewer keys device has on screen and reconciles.
-func (c *Client) ApplyShown(ctx context.Context, device string, keys []string) (ViewState, error) {
-	if _, err := c.Cmd.Run(ctx, "set-option", "-g", shownOption(device), "="+strings.Join(keys, " ")); err != nil {
+// ApplyShown records the viewer keys device has on screen and when it last
+// took focus, reconciles, and refits the windows.
+func (c *Client) ApplyShown(ctx context.Context, device string, focused int64, keys []string) (ViewState, error) {
+	if _, err := c.Cmd.Run(ctx, "set-option", "-g", shownOption(device), "="+strings.Join(keys, " "), ";", "set-option", "-g", focusedOption(device), strconv.FormatInt(focused, 10)); err != nil {
 		return ViewState{}, err
 	}
-	return c.Reconcile(ctx, device)
+	state, err := c.Reconcile(ctx, device)
+	if err != nil {
+		return state, err
+	}
+	return state, c.Fit(ctx)
+}
+
+// Fit sizes every window a client shows to the viewers of the device that
+// took focus last among those showing it, at the smallest of them. Keyless
+// clients and devices that never took focus rank last.
+func (c *Client) Fit(ctx context.Context) error {
+	out, err := c.Cmd.Run(ctx, "list-clients", "-F", "#{window_id}\t#{window_width}\t#{window_height}\t#{client_width}\t#{client_height}\t#{@agency_viewer}")
+	if err != nil {
+		return err
+	}
+	focused := c.focusTimes(ctx)
+	type fit struct {
+		focused             int64
+		width, height, w, h int
+	}
+	fits := map[string]*fit{}
+	var windows []string
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) != 6 {
+			continue
+		}
+		var size [4]int
+		for i := range size {
+			size[i], _ = strconv.Atoi(parts[i+1])
+		}
+		if size[2] == 0 || size[3] == 0 {
+			continue
+		}
+		var at int64
+		if device, ok := viewerDevice(parts[5]); ok {
+			at = focused[focusedOption(device)]
+		}
+		f := fits[parts[0]]
+		switch {
+		case f == nil:
+			fits[parts[0]] = &fit{at, size[0], size[1], size[2], size[3]}
+			windows = append(windows, parts[0])
+		case at > f.focused:
+			f.focused, f.w, f.h = at, size[2], size[3]
+		case at == f.focused:
+			f.w, f.h = min(f.w, size[2]), min(f.h, size[3])
+		}
+	}
+	for _, id := range windows {
+		f := fits[id]
+		if f.w == f.width && f.h == f.height {
+			continue
+		}
+		if _, err := c.Cmd.Run(ctx, "resize-window", "-t", id, "-x", strconv.Itoa(f.w), "-y", strconv.Itoa(f.h)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// focusTimes maps each focusedOption the server holds to its time.
+func (c *Client) focusTimes(ctx context.Context) map[string]int64 {
+	times := map[string]int64{}
+	out, err := c.Cmd.Run(ctx, "show-options", "-g")
+	if err != nil {
+		return times
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name, value, ok := strings.Cut(line, " ")
+		if !ok || !strings.HasPrefix(name, focusedPrefix) {
+			continue
+		}
+		if at, err := strconv.ParseInt(value, 10, 64); err == nil {
+			times[name] = at
+		}
+	}
+	return times
 }
 
 // Reconcile moves each of device's viewer clients onto its view session when
