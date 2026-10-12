@@ -137,7 +137,11 @@ func (c *CarlaChat) turn(ctx context.Context) {
 	reply, err := backend.Answer(compose, c.input(now, news, closing))
 	if err != nil {
 		log.Printf("carla chat: reply failed: %v", err)
-		c.deliver(ChatMessage{From: "carla", Kind: "text", Text: "Something went wrong on the box: " + err.Error()})
+		said := Failure(err, reply.Fetched)
+		if asked != "" {
+			c.Recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Error: said})
+		}
+		c.deliver(ChatMessage{From: "carla", Kind: "text", Text: said})
 		return
 	}
 	if asked != "" {

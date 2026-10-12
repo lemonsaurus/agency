@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +40,21 @@ var replyFormat = json.RawMessage(`{"type":"json_schema","name":"reply","strict"
 "details":{"type":"string","description":"The facts behind it that Lemon may follow up on, as compact notes: session task names, states, counts, times, findings. Not read aloud. Under 1000 characters; empty when there are none."}},
 "required":["say","details"],"additionalProperties":false}}`)
 
+// retryDelays are the pauses before resending a request the endpoint failed on its side. The tool
+// calls already made stay in the input, so a resend never runs a tool twice.
+var retryDelays = []time.Duration{2 * time.Second, 5 * time.Second}
+
+// transientError is the endpoint failing on its side: overloaded, a 5xx or 429, or a dropped stream.
+type transientError struct{ error }
+
+func (e transientError) Unwrap() error { return e.error }
+
+// Transient is whether err is the endpoint failing on its side.
+func Transient(err error) bool {
+	var transient transientError
+	return errors.As(err, &transient)
+}
+
 type responseOutput struct {
 	Type      string          `json:"type"`
 	CallID    string          `json:"call_id"`
@@ -52,7 +69,8 @@ type responsePart struct {
 	Text string `json:"text"`
 }
 
-// Answer runs the loop and returns the reply with every tool call it made.
+// Answer runs the loop and returns the reply with every tool call it made. A failed answer still
+// carries the tool calls that ran before the failure.
 func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, error) {
 	return b.AnswerWithin(ctx, input, 8)
 }
@@ -61,17 +79,18 @@ func (b *Backend) Answer(ctx context.Context, input []map[string]any) (Reply, er
 func (b *Backend) AnswerWithin(ctx context.Context, input []map[string]any, rounds int) (Reply, error) {
 	text, fetched, err := b.Complete(ctx, input, replyFormat, rounds)
 	if err != nil {
-		return Reply{}, err
+		return Reply{Fetched: fetched}, err
 	}
 	var reply Reply
 	if json.Unmarshal([]byte(text), &reply) != nil || strings.TrimSpace(reply.Say) == "" {
-		return Reply{}, fmt.Errorf("the backend produced no answer")
+		return Reply{Fetched: fetched}, fmt.Errorf("the backend produced no answer")
 	}
 	reply.Fetched = fetched
 	return reply, nil
 }
 
-// Complete runs the tool loop for up to rounds requests and returns the final text in format.
+// Complete runs the tool loop for up to rounds requests and returns the final text in format, and
+// every tool call it made, also when it fails.
 func (b *Backend) Complete(ctx context.Context, input []map[string]any, format json.RawMessage, rounds int) (string, []Fetched, error) {
 	items := make([]json.RawMessage, 0, len(input)+8)
 	for _, item := range input {
@@ -80,9 +99,9 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 	}
 	var fetched []Fetched
 	for round := 0; round < rounds; round++ {
-		outputs, err := b.request(ctx, items, format)
+		outputs, err := b.send(ctx, items, format)
 		if err != nil {
-			return "", nil, err
+			return "", fetched, err
 		}
 		var text []string
 		calls := 0
@@ -113,7 +132,23 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 			return strings.Join(text, ""), fetched, nil
 		}
 	}
-	return "", nil, fmt.Errorf("the backend kept calling tools without answering")
+	return "", fetched, fmt.Errorf("the backend kept calling tools without answering")
+}
+
+// send is request, resent after each of retryDelays while the endpoint fails on its side.
+func (b *Backend) send(ctx context.Context, input []json.RawMessage, format json.RawMessage) ([]responseOutput, error) {
+	for attempt := 0; ; attempt++ {
+		outputs, err := b.request(ctx, input, format)
+		if err == nil || !Transient(err) || attempt == len(retryDelays) {
+			return outputs, err
+		}
+		log.Printf("live: backend request failed, resending in %s: %v", retryDelays[attempt], err)
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(retryDelays[attempt]):
+		}
+	}
 }
 
 func (b *Backend) request(ctx context.Context, input []json.RawMessage, format json.RawMessage) ([]responseOutput, error) {
@@ -148,7 +183,10 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage, format j
 	request.Header.Set("Content-Type", "application/json")
 	response, err := b.Client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("backend request failed")
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("backend request failed")
+		}
+		return nil, transientError{fmt.Errorf("backend request failed")}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
@@ -161,7 +199,11 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage, format j
 		}
 		json.Unmarshal(reply, &failure)
 		message := failure.Error.Message + failure.Detail
-		return nil, fmt.Errorf("backend returned HTTP %d: %s", response.StatusCode, truncate(strings.ReplaceAll(message, token, "[token]"), 300))
+		err := fmt.Errorf("backend returned HTTP %d: %s", response.StatusCode, truncate(strings.ReplaceAll(message, token, "[token]"), 300))
+		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return nil, transientError{err}
+		}
+		return nil, err
 	}
 	// The stream's completed event carries no output; the items arrive one by one as output_item.done.
 	var outputs []responseOutput
@@ -194,9 +236,11 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage, format j
 			}
 		case "response.completed":
 			return outputs, nil
-		case "response.failed", "response.incomplete", "error":
+		case "response.failed", "error":
+			return nil, transientError{fmt.Errorf("backend failed: %s", truncate(event.Message+event.Response.Error.Message, 300))}
+		case "response.incomplete":
 			return nil, fmt.Errorf("backend failed: %s", truncate(event.Message+event.Response.Error.Message, 300))
 		}
 	}
-	return nil, fmt.Errorf("backend stream ended before the response completed")
+	return nil, transientError{fmt.Errorf("backend stream ended before the response completed")}
 }

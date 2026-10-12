@@ -303,10 +303,12 @@ func TestBackendToolLoop(t *testing.T) {
 }
 
 // fakeConn feeds scripted events and records what the session writes.
+// fakeConn keeps the box's "still running" notes apart from what else it wrote.
 type fakeConn struct {
-	events chan []byte
-	mu     sync.Mutex
-	wrote  []map[string]any
+	events  chan []byte
+	mu      sync.Mutex
+	wrote   []map[string]any
+	running []map[string]any
 }
 
 func (c *fakeConn) Read(ctx context.Context) ([]byte, error) {
@@ -324,7 +326,11 @@ func (c *fakeConn) Write(_ context.Context, event []byte) error {
 	var parsed map[string]any
 	json.Unmarshal(event, &parsed)
 	c.mu.Lock()
-	c.wrote = append(c.wrote, parsed)
+	if content, _ := parsed["content"].(string); parsed["type"] == "session.thinking.append" && strings.Contains(content, "running on the box") {
+		c.running = append(c.running, parsed)
+	} else {
+		c.wrote = append(c.wrote, parsed)
+	}
 	c.mu.Unlock()
 	return nil
 }

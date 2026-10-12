@@ -15,13 +15,15 @@ type Recall struct {
 	updates   []recalledUpdate
 }
 
-// Exchange is one delegation: what Lemon said, what the backend's tools returned, and its reply.
+// Exchange is one delegation: what Lemon said, what the backend's tools returned, and its reply, or
+// the error it failed with.
 type Exchange struct {
 	At      time.Time
 	Asked   string
 	Fetched []Fetched
 	Said    string
 	Details string
+	Error   string
 }
 
 // Fetched is one tool call the backend made while answering.
@@ -124,6 +126,10 @@ func (e Exchange) brief(now time.Time) string {
 			tool += " " + args
 		}
 		fmt.Fprintf(&b, "\n%s returned: %s", tool, fetched.Result)
+	}
+	if e.Error != "" {
+		fmt.Fprintf(&b, "\nThis request failed on the box, and Lemon was told: %s", e.Error)
+		return b.String()
 	}
 	fmt.Fprintf(&b, "\nYou answered: %s", e.Said)
 	if e.Details != "" {

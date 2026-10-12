@@ -153,11 +153,24 @@ func (s *Session) delegate(id string) {
 		input = append(input, seedMessage(message.Role, text))
 	}
 	input = append(input, seedMessage("developer", "Handle the latest thing Lemon asked for in the transcript above. Reply with what to say to him now."))
+	stop := func() {}
+	if s.Agent == "carla" {
+		stop = s.running()
+	}
 	reply, err := s.backend.Answer(s.ctx, input)
+	stop()
 	if err != nil {
-		s.append("session.commentary.append", id, "Something went wrong on the box: "+err.Error())
+		log.Printf("live: %s delegation failed after %s: %v", s.Agent, span(time.Since(now)), err)
+		said := Failure(err, reply.Fetched)
+		s.recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Error: said})
+		s.append("session.commentary.append", id, said)
 		return
 	}
+	var tools []string
+	for _, call := range reply.Fetched {
+		tools = append(tools, call.Tool)
+	}
+	log.Printf("live: %s delegation answered after %s, tools [%s]: %s", s.Agent, span(time.Since(now)), strings.Join(tools, " "), truncate(reply.Say, 300))
 	s.recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Said: reply.Say, Details: reply.Details})
 	if s.watch != nil {
 		s.watch("session.delegation.answered", reply.Say, 0, 0)
@@ -166,6 +179,53 @@ func (s *Session) delegate(id string) {
 		s.append("session.thinking.append", "", "Facts behind your next answer, as of "+now.Format("15:04")+", for follow-ups; not to read out: "+reply.Details)
 	}
 	s.append("session.commentary.append", id, reply.Say)
+}
+
+// runningEvery is how often the voice model hears that a delegation is still running.
+var runningEvery = 8 * time.Second
+
+// running tells the voice model quietly, now and every runningEvery until stop, that the request is
+// running and has not failed: it hears nothing else while the backend works, and fills that silence.
+// stop returns once no note can follow the result.
+func (s *Session) running() (stop func()) {
+	s.append("session.thinking.append", "", "Lemon's latest request is running on the box. Nothing has failed. Its result arrives as an update; until then the only true status is that it is running.")
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		ticker := time.NewTicker(runningEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				s.append("session.thinking.append", "", "Still running on the box. Nothing has failed.")
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
+}
+
+// Failure is what a failed delegation tells Lemon: the error, whether the box already resent it, and
+// what the tools that ran before it did, so nothing is reported as started that was not.
+func Failure(err error, fetched []Fetched) string {
+	said := "That request failed on the box: " + strings.TrimRight(err.Error(), ".") + "."
+	if Transient(err) {
+		said += " The box already resent it, and it failed every time."
+	}
+	if len(fetched) == 0 {
+		return said + " No tool ran, so nothing was started or changed."
+	}
+	var ran []string
+	for _, call := range fetched {
+		ran = append(ran, call.Tool+" returned "+truncate(call.Result, 200))
+	}
+	return said + " Before it failed: " + strings.Join(ran, "; ") + "."
 }
 
 // carla opens Carla's backend requests: the clock, how long Lemon was away, the dispatcher, and
