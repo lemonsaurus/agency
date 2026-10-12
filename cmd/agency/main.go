@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -272,12 +274,31 @@ func runLaunch(controllerPane string) {
 // after the session so it never collides with a local interactive Agency.
 func runServe() {
 	cfg := loadConfig()
+	requireServeTmux()
 	d := startDaemon(cfg, true, "")
 	defer d.close()
 
 	log.Printf("Serving session %q headless.", cfg.Session.Name)
 	<-d.ctx.Done()
 	log.Println("Shutting down.")
+}
+
+// requireServeTmux exits on tmux older than 3.5, which segfaults creating
+// windows under the cloud conf's window-size manual.
+func requireServeTmux() {
+	out, err := exec.Command("tmux", "-V").Output()
+	if err != nil {
+		log.Fatalf("tmux -V: %v", err)
+	}
+	version := strings.TrimSpace(string(out))
+	var major, minor int
+	if m := regexp.MustCompile(`(\d+)\.(\d+)`).FindStringSubmatch(version); m != nil {
+		major, _ = strconv.Atoi(m[1])
+		minor, _ = strconv.Atoi(m[2])
+	}
+	if major < 3 || major == 3 && minor < 5 {
+		log.Fatalf("agency serve needs tmux 3.5 or newer, found %q", version)
+	}
 }
 
 // runCloud points the ordinary CLI at the headless server. The IPC socket is
