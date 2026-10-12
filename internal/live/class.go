@@ -25,6 +25,7 @@ const (
 	moveOn       = "Nothing is pending. Go straight on to the next step now."
 	waitForHim   = "You just asked him something and he is formulating his answer. Stop talking and wait in silence; he needs at least eight seconds."
 	talkToHim    = "Lemon is talking to you about the lesson, not answering. Answer him, let the open sentence go, and adapt to what he said."
+	askAgain     = "You were stopped in the middle of your question, and Lemon is pointing that out. Ask that question again in full, then wait for his answer."
 	repeated     = "You already said that this call. Don't repeat yourself: say or ask something new."
 	sayAgain     = "Lemon didn't catch the phrase and is asking in English. That is not an answer. Repeat the English phrase slowly and clearly, or confirm it, then wait for his Spanish."
 	// Dead air after Rosa's turn, with nothing asked of Lemon, before the box nudges her on.
@@ -122,7 +123,9 @@ type Class struct {
 	askedAt    time.Time       // when her last turn ended on a question to him
 	waitStep   int             // how far up the wait ladder the silence has gone
 	waitTimer  *time.Timer
-	waited     bool // she was told to wait in this silence
+	waited     bool   // she was told to wait in this silence
+	stopped    bool   // her turn was stopped by waitForHim, so it may have ended mid-question
+	heldTurn   string // what she said over his unfinished answer, judged once his words catch up
 	// onHarder asks the planner to jump ahead when he says it's too easy.
 	onHarder  func()
 	idleTimer *time.Timer
@@ -402,6 +405,9 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	if c.held && c.floor == "rosa" {
+		c.heldTurn = c.turn
+	}
 	if c.floor != "lemon" && !c.held {
 		c.overlap = c.floor == "rosa" && startMS < c.rosaEnd+300
 		c.fresh = c.cue(c.turn)
@@ -416,7 +422,7 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 		c.tries++
 		c.previous = words(c.attempt)
 		c.attemptID++
-		c.attempt, c.verdict, c.intervened, c.tookOver, c.called = "", "", false, false, false
+		c.attempt, c.verdict, c.intervened, c.tookOver, c.called, c.heldTurn = "", "", false, false, false, ""
 		c.thinkMS = 0
 		if c.rosaEnd > 0 {
 			c.thinkMS = startMS - c.rosaEnd
@@ -451,6 +457,17 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			c.verdict = verdict
 			c.record("verdict", map[string]any{"t": endMS, "target": c.key(c.armed), "verdict": verdict, "said": truncate(c.attempt, 300)})
 		}
+		if verdict == verdictMeta && c.stopped {
+			// He is pointing out that she was cut off: she asks again and the target stays.
+			c.stopped = false
+			c.record("reask", map[string]any{"target": c.key(c.armed), "said": truncate(c.attempt, 300)})
+			if c.holding {
+				c.release(askAgain)
+			} else {
+				c.send("session.instructions.append", askAgain)
+			}
+			return
+		}
 		if verdict == verdictMeta {
 			// He is talking about the lesson, not answering: she answers him and the target goes for good.
 			c.outcomes[c.key(c.armed)] = "dropped"
@@ -458,6 +475,9 @@ func (c *Class) heard(text string, startMS, endMS int64) {
 			if c.holding {
 				c.release(talkToHim)
 			}
+			return
+		}
+		if c.takeLate() {
 			return
 		}
 		// The first hesitation after a prompt holds her before she can start anything else.
@@ -604,10 +624,11 @@ func (c *Class) closeGap() {
 }
 
 func (c *Class) said(text string, startMS, endMS int64) {
-	// Her question, then a pause, then her voice again: she is filling his think time.
-	if c.floor == "rosa" && !c.askedAt.IsZero() && startMS-c.rosaEnd >= 1000 && time.Since(c.askedAt) < waitLadder[0].after && !c.waited && c.waitStep == 0 {
-		c.waited = true
-		c.record("wait", map[string]any{"rosa": truncate(text, 200)})
+	// Her question, then a pause, then a new sentence: she is filling his think time. A lowercase
+	// start is the same sentence going on after a breath.
+	if c.floor == "rosa" && !c.askedAt.IsZero() && startMS-c.rosaEnd >= 1000 && time.Since(c.askedAt) < waitLadder[0].after && !c.waited && c.waitStep == 0 && !continues(text) {
+		c.waited, c.stopped = true, true
+		c.record("wait", map[string]any{"rosa": truncate(text, 200), "gap_ms": startMS - c.rosaEnd})
 		c.send("session.instructions.append", waitForHim)
 	}
 	c.turn += text
@@ -642,7 +663,7 @@ func (c *Class) said(text string, startMS, endMS int64) {
 		return
 	}
 	if c.floor != "rosa" {
-		c.floor = "rosa"
+		c.floor, c.stopped = "rosa", false
 		c.record("rosa", map[string]any{"t": startMS, "gap_ms": startMS - c.lemonEnd, "verdict": c.verdict})
 		if c.armed != nil && c.attempt != "" {
 			switch c.verdict {
@@ -932,6 +953,43 @@ func (c *Class) settle(id int) {
 	c.send("session.instructions.append", holdFloor)
 }
 
+// takeLate judges his answer by what she said over it when his words arrived after she had already
+// answered: her acceptance, or her saying the sentence after his miss, finishes the target. It
+// reports whether it did.
+func (c *Class) takeLate() bool {
+	if c.armed == nil || c.heldTurn == "" || (c.verdict != verdictAttempt && c.verdict != verdictRight) {
+		return false
+	}
+	held, key, target := c.heldTurn, c.key(c.armed), c.target(*c.armed)
+	turn := words(held)
+	misses := c.misses[key]
+	if c.verdict == verdictAttempt {
+		misses++
+	}
+	var outcome string
+	switch {
+	case accepts(turn) && (misses > 1 || c.hinted[key] || says(turn, target.ES)):
+		outcome = "helped"
+	case accepts(turn):
+		outcome = "alone"
+	case misses > 0 && target.ES != "" && says(turn, target.ES):
+		outcome = "shown"
+	default:
+		return false
+	}
+	c.misses[key], c.heldTurn = misses, ""
+	c.record("late", map[string]any{"target": key, "outcome": outcome, "said": truncate(c.attempt, 300), "rosa": truncate(held, 200)})
+	if target.ES == "" {
+		c.armed, c.verdict = nil, ""
+	} else {
+		c.resolve(*c.armed, outcome)
+	}
+	if c.holding {
+		c.release(releaseFloor)
+	}
+	return true
+}
+
 // holdUntilQuiet releases the hold once Lemon has said nothing new for holdLimit.
 func (c *Class) holdUntilQuiet() {
 	if c.holdTimer != nil {
@@ -948,7 +1006,9 @@ func (c *Class) holdUntilQuiet() {
 		if c.armed != nil && c.verdict == verdictPartial && settled(c.attempt, c.target(*c.armed)) {
 			c.verdict = verdictAttempt
 			c.record("verdict", map[string]any{"t": c.lemonEnd, "target": c.key(c.armed), "verdict": c.verdict, "said": truncate(c.attempt, 300)})
-			c.release(releaseFloor)
+			if !c.takeLate() {
+				c.release(releaseFloor)
+			}
 			return
 		}
 		c.release(c.where(releaseFloor))

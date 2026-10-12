@@ -866,3 +866,113 @@ func TestRosaRollsALongCall(t *testing.T) {
 	second.Close()
 	time.Sleep(100 * time.Millisecond)
 }
+
+func TestImprovisedWaitsForThePhrase(t *testing.T) {
+	if _, ok := improvised("Now let's grab a piece of that. In your own Spanish, how would you say"); ok {
+		t.Error(`"how would you say" counted as a question before the phrase`)
+	}
+	if prompt, ok := improvised("Okay, how would you say, my son made it?"); !ok || prompt != "my son made it" {
+		t.Errorf("prompt=%q ok=%v", prompt, ok)
+	}
+	if prompt, ok := improvised("Good. How would you say it?"); !ok || prompt != "" {
+		t.Errorf("prompt=%q ok=%v", prompt, ok)
+	}
+}
+
+// The 12 October call: a breath before the phrase, or a lowercase tail after the question mark, is her
+// still asking, and stopping her there cut the question off.
+func TestClassLetsHerFinishHerQuestion(t *testing.T) {
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	drained := func() string {
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+	drained()
+	out("Oh wow! A space cow. Now let's grab a piece of that. In your own Spanish, how would you say", 1000)
+	out(" My son made it?", 2500)
+	if text := drained(); strings.Contains(text, waitForHim) || class.stopped {
+		t.Fatalf("stopped before the phrase: %s", text)
+	}
+	class = newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	drained()
+	out("Okay, now from what you've got, how would you say, my son made it?", 6000)
+	out(" in whatever words.", 7500)
+	if text := drained(); strings.Contains(text, waitForHim) || class.stopped {
+		t.Fatalf("stopped mid-sentence: %s", text)
+	}
+	out(" Dale, che, you're right there.", 9000)
+	if text := drained(); !strings.Contains(text, waitForHim) || !class.stopped {
+		t.Fatalf("filling his think time not stopped: %s", text)
+	}
+}
+
+// When the box stopped her mid-question and he says so, she asks it again and the target stays.
+func TestClassReasksWhenHeSaysSheWasCutOff(t *testing.T) {
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	class.SetPlan(testPlan())
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	drained := func() string {
+		text := ""
+		for len(class.outbox) > 0 {
+			text += (<-class.outbox).content + "\n"
+		}
+		return text
+	}
+	out("So, how would you say my son made it?", 1000)
+	out(" Dale, che.", 2500)
+	drained()
+	in("So", 5000)
+	in(" you got cut off there", 5200)
+	if text := drained(); !strings.Contains(text, askAgain) || strings.Contains(text, talkToHim) {
+		t.Fatalf("notes=%s", text)
+	}
+	if class.armed == nil || class.adhoc.EN != "my son made it" || class.outcomes["adhoc"] == "dropped" {
+		t.Fatalf("the cut-off question was let go: armed %v outcomes %v", class.armed, class.outcomes)
+	}
+	out("Sorry. How would you say my son made it?", 7000)
+	in("Mi hijo lo hizo", 10000)
+	if class.verdict != verdictAttempt || class.stopped {
+		t.Fatalf("verdict %s stopped %v", class.verdict, class.stopped)
+	}
+}
+
+// The 12 October call: his "No" arrived first, she answered and took the sentence, and the rest of
+// his words arrived seven seconds later. That sentence is finished and never asked again.
+func TestClassTakesHisLateAnswerSheAccepted(t *testing.T) {
+	class := newClass("ls_test", testGraph(t, t.TempDir()), OpenLearner(""), "", time.Now())
+	plan := testPlan()
+	plan.Items[0].Targets = []Sentence{{EN: "I don't want to try to read it", ES: "no quiero intentar leerlo"}}
+	class.SetPlan(plan)
+	out := func(text string, ms int64) { class.watch("session.output_transcript.delta", text, ms, ms+100) }
+	in := func(text string, ms int64) { class.watch("session.input_transcript.delta", text, ms, ms+100) }
+	out("Now, how would you say I don't want to try to read it?", 1000)
+	in("No", 3000)
+	if class.verdict != verdictPartial || !class.holding {
+		t.Fatalf("verdict %s holding %v", class.verdict, class.holding)
+	}
+	holdLimit = 300 * time.Millisecond
+	defer func() { holdLimit = 8 * time.Second }()
+	out("Yes, no quiero intentar leerlo. Here's something fun.", 3800)
+	in(" quiero leerlo", 10000)
+	time.Sleep(holdLimit + 200*time.Millisecond)
+	class.mu.Lock()
+	armed, outcome, holding := class.armed, class.outcomes["1:t02-es/1"], class.holding
+	class.mu.Unlock()
+	if armed != nil || outcome != "shown" || holding {
+		t.Fatalf("her answer to his late words was lost: armed %v outcome %q holding %v", armed, outcome, holding)
+	}
+	out("Read this aloud: vivir.", 12000)
+	in("Vivir", 13000)
+	out("Now, how would you say I don't want to try to read it?", 15000)
+	in("No quiero intentar leerlo", 17000)
+	if class.key(class.armed) == "1:t02-es/1" || class.outcomes["1:t02-es/1"] != "shown" {
+		t.Fatalf("a finished sentence was armed again: %v %v", class.armed, class.outcomes)
+	}
+}

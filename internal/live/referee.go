@@ -184,6 +184,10 @@ func improvised(turn string) (string, bool) {
 		sentence := " " + strings.Join(words(sentences[i]), " ") + " "
 		for _, lead := range []string{" how would you say ", " how do you say ", " how d you say ", " how would you translate "} {
 			if at := strings.LastIndex(sentence, lead); at >= 0 {
+				// "How would you say" with the phrase still to come is not a question yet.
+				if strings.TrimSpace(sentence[at+len(lead):]) == "" {
+					return "", false
+				}
 				return prompted(sentence[at+len(lead):]), true
 			}
 		}
@@ -558,4 +562,13 @@ func backchannel(turn []string) bool {
 // says reports whether Rosa's turn contains the Spanish answer itself.
 func says(turn []string, answer string) bool {
 	return contains(turn, answer)
+}
+
+// continues is whether a piece of her speech carries on the sentence before it rather than starting a
+// new one: the transcript capitalises sentence starts.
+func continues(text string) bool {
+	for _, r := range strings.TrimSpace(text) {
+		return unicode.IsLower(r)
+	}
+	return false
 }
