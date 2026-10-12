@@ -801,3 +801,19 @@ func TestCodexTokenCachesUntilNearExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVoiceSaysWordsFromThePronunciationHandbook(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "live.md"), []byte("live rules"), 0o600)
+	os.WriteFile(filepath.Join(dir, "backend.md"), []byte("backend rules"), 0o600)
+	m := NewManager(&fakeBox{transcripts: map[string][]json.RawMessage{}}, "key", func() (string, error) { return "persona", nil }, dir, filepath.Join(dir, "memory.jsonl"))
+	live, _, err := m.instructions("Irish")
+	if err != nil || live != "persona\n\nlive rules\n\nSpeak Irish English with a natural, contemporary Irish accent throughout." {
+		t.Fatalf("without a handbook: %q %v", live, err)
+	}
+	os.WriteFile(filepath.Join(dir, "pronunciation.md"), []byte("# Pronunciation\n\nJournalia: shur-NAHL-ya.\n"), 0o600)
+	live, backend, _ := m.instructions("Irish")
+	if live != "persona\n\nlive rules\n\n# Pronunciation\n\nJournalia: shur-NAHL-ya.\n\nSpeak Irish English with a natural, contemporary Irish accent throughout." || strings.Contains(backend, "shur") {
+		t.Fatalf("live=%q backend=%q", live, backend)
+	}
+}

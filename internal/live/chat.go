@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -62,29 +61,18 @@ type ChatSync struct {
 	Messages []ChatMessage `json:"messages"`
 }
 
-// Chat is texting with Rosa: the messages, her pace, voice notes in her call voice, photos from her
-// day, and texting first now and then. It shares her learner memory, canon and call transcript.
+// Chat is texting with Rosa: her pace, voice notes in her call voice, photos from her day, and
+// texting first now and then. It shares her learner memory, canon and call transcript.
 type Chat struct {
+	*Thread
 	rosa *Rosa
-	dir  string // media files
-	path string
 	// Backend is her texting model with chat tools; Record renders a voice note in her voice; Take
-	// draws a photo; Wake tells the phone to sync; Zone is Lemon's; Calling is whether she is on a
-	// call with him.
+	// draws a photo; Zone is Lemon's; Calling is whether she is on a call with him.
 	Backend func() *Backend
 	Record  func(ctx context.Context, script string) (VoiceNote, error)
 	Take    func(ctx context.Context, scene string, look []byte) ([]byte, error)
-	Hear    func(ctx context.Context, path string) (string, error)
-	Wake    func()
 	Zone    func() *time.Location
 	Calling func() bool
-
-	mu       sync.Mutex
-	messages []ChatMessage
-	state    chatState
-	doing    string
-	polled   time.Time
-	kick     chan struct{}
 }
 
 var chatFormat = json.RawMessage(`{"type":"json_schema","name":"texts","strict":true,"schema":{"type":"object","properties":{
@@ -114,144 +102,7 @@ var ChatSchema = func() json.RawMessage {
 }()
 
 func OpenChat(rosa *Rosa) *Chat {
-	c := &Chat{rosa: rosa, dir: filepath.Join(rosa.dir, "chat"), path: filepath.Join(rosa.dir, "chat.jsonl"), kick: make(chan struct{}, 1),
-		Zone: func() *time.Location { return time.Local }, Calling: func() bool { return false }}
-	data, _ := os.ReadFile(c.path)
-	for _, line := range strings.Split(string(data), "\n") {
-		var message ChatMessage
-		if strings.TrimSpace(line) != "" && json.Unmarshal([]byte(line), &message) == nil && message.ID != 0 {
-			c.messages = append(c.messages, message)
-		}
-	}
-	if raw, err := os.ReadFile(c.statePath()); err == nil {
-		json.Unmarshal(raw, &c.state)
-	}
-	return c
-}
-
-func (c *Chat) statePath() string { return filepath.Join(c.rosa.dir, "chat-state.json") }
-
-// save writes the messages and state; the caller holds the lock.
-func (c *Chat) save() {
-	c.messages = tail(c.messages, chatKeep)
-	var b strings.Builder
-	for _, message := range c.messages {
-		data, _ := json.Marshal(message)
-		b.Write(data)
-		b.WriteByte('\n')
-	}
-	if err := os.WriteFile(c.path+".tmp", []byte(b.String()), 0o600); err == nil {
-		os.Rename(c.path+".tmp", c.path)
-	}
-	state, _ := json.Marshal(c.state)
-	if err := os.WriteFile(c.statePath()+".tmp", state, 0o600); err == nil {
-		os.Rename(c.statePath()+".tmp", c.statePath())
-	}
-}
-
-// add appends a message as the next change; the caller holds the lock.
-func (c *Chat) add(message ChatMessage) ChatMessage {
-	c.state.Next++
-	c.state.Rev++
-	message.ID, message.Rev, message.At = c.state.Next, c.state.Rev, time.Now().UnixMilli()
-	c.messages = append(c.messages, message)
-	c.save()
-	return message
-}
-
-// Sync returns what changed after rev and marks the phone as looking at the chat.
-func (c *Chat) Sync(rev int64) ChatSync {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.polled = time.Now()
-	sync := ChatSync{Rev: c.state.Rev, Doing: c.doing, Seen: c.state.Seen, Messages: []ChatMessage{}}
-	sync.Online = c.doing != "" || time.Since(time.UnixMilli(c.state.Seen)) < chatOnline
-	for _, message := range c.messages {
-		if message.Rev > rev {
-			sync.Messages = append(sync.Messages, message)
-		}
-	}
-	sync.Messages = tail(sync.Messages, chatSync)
-	return sync
-}
-
-// Send files a message from Lemon and wakes Rosa.
-func (c *Chat) Send(text string) (ChatMessage, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ChatMessage{}, fmt.Errorf("write something first")
-	}
-	c.mu.Lock()
-	message := c.add(ChatMessage{From: "lemon", Kind: "text", Text: truncate(text, 4000)})
-	c.polled = time.Now()
-	c.mu.Unlock()
-	c.poke()
-	return message, nil
-}
-
-// Dir is where voice notes and photos live; his voice notes are written there before SendVoice.
-func (c *Chat) Dir() string { return c.dir }
-
-// SendVoice files a voice note from Lemon, transcribed so she can read what he said, and wakes Rosa.
-func (c *Chat) SendVoice(ctx context.Context, path string, seconds float64, peaks []float64) (ChatMessage, error) {
-	if filepath.Dir(filepath.Clean(path)) != c.dir {
-		return ChatMessage{}, fmt.Errorf("voice notes live in %s", c.dir)
-	}
-	if _, err := os.Stat(path); err != nil {
-		return ChatMessage{}, err
-	}
-	text := ""
-	if c.Hear != nil {
-		heard, err := c.Hear(ctx, path)
-		if err != nil {
-			log.Printf("rosa chat: transcription failed: %v", err)
-		}
-		text = heard
-	}
-	c.mu.Lock()
-	message := c.add(ChatMessage{From: "lemon", Kind: "voice", Text: truncate(text, 4000), Media: path, Seconds: seconds, Peaks: tail(peaks, 64)})
-	c.polled = time.Now()
-	c.mu.Unlock()
-	c.poke()
-	return message, nil
-}
-
-// React sets who's emoji on a message; empty removes it.
-func (c *Chat) React(id int, who, emoji string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.messages {
-		if c.messages[i].ID != id {
-			continue
-		}
-		if c.messages[i].Reactions == nil {
-			c.messages[i].Reactions = map[string]string{}
-		}
-		if emoji == "" {
-			delete(c.messages[i].Reactions, who)
-		} else {
-			c.messages[i].Reactions[who] = truncate(emoji, 16)
-		}
-		c.state.Rev++
-		c.messages[i].Rev = c.state.Rev
-		c.save()
-		return nil
-	}
-	return fmt.Errorf("no message %d", id)
-}
-
-func (c *Chat) poke() {
-	select {
-	case c.kick <- struct{}{}:
-	default:
-	}
-}
-
-func (c *Chat) setDoing(doing string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.doing = doing
-	c.state.Seen = time.Now().UnixMilli()
+	return &Chat{Thread: OpenThread(rosa.dir, "rosa"), rosa: rosa, Zone: func() *time.Location { return time.Local }, Calling: func() bool { return false }}
 }
 
 // Run answers his messages and texts first now and then, until ctx ends.
@@ -274,21 +125,6 @@ func (c *Chat) Run(ctx context.Context) {
 	}
 }
 
-// waiting is the newest message of his she has not answered, 0 when there is none.
-func (c *Chat) waiting() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := len(c.messages) - 1; i >= 0; i-- {
-		if c.messages[i].From == "lemon" {
-			if c.messages[i].ID > c.state.Handled {
-				return c.messages[i].ID
-			}
-			return 0
-		}
-	}
-	return 0
-}
-
 // reply reads his messages at a human pace, composes, and sends.
 func (c *Chat) reply(ctx context.Context) {
 	c.mu.Lock()
@@ -298,38 +134,11 @@ func (c *Chat) reply(ctx context.Context) {
 	if away {
 		pause = time.Duration(6+rand.IntN(25)) * time.Second
 	}
-	start := time.Now()
 	// He often sends several in a row: read once he has stopped for a moment.
-	for {
-		c.mu.Lock()
-		last := time.UnixMilli(c.messages[len(c.messages)-1].At)
-		c.mu.Unlock()
-		wait := paced(max(time.Until(start.Add(pause)), time.Until(last.Add(chatSettle))))
-		if wait <= 0 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
+	if !c.settle(ctx, pause) {
+		return
 	}
-	c.mu.Lock()
-	upto := 0
-	now := time.Now().UnixMilli()
-	for i := range c.messages {
-		if c.messages[i].From == "lemon" {
-			upto = c.messages[i].ID
-			if c.messages[i].Read == 0 {
-				c.state.Rev++
-				c.messages[i].Read, c.messages[i].Rev = now, c.state.Rev
-			}
-		}
-	}
-	c.state.Handled = upto
-	c.doing, c.state.Seen = "typing", now
-	c.save()
-	c.mu.Unlock()
+	c.read()
 	c.answer(ctx, "Reply to Lemon's latest messages now.")
 }
 
@@ -401,43 +210,6 @@ func (c *Chat) answer(ctx context.Context, note string) {
 	}
 }
 
-func (c *Chat) sleep(ctx context.Context, d time.Duration) {
-	if d = paced(d); d <= 0 {
-		return
-	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(d):
-	}
-}
-
-func (c *Chat) fromLemon(id int) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, message := range c.messages {
-		if message.ID == id {
-			return message.From == "lemon"
-		}
-	}
-	return false
-}
-
-// deliver adds one of her messages and wakes the phone unless the chat is open on it.
-func (c *Chat) deliver(message ChatMessage) {
-	if message.Text == "" && message.Media == "" {
-		return
-	}
-	c.mu.Lock()
-	c.add(message)
-	c.state.Seen = time.Now().UnixMilli()
-	c.save()
-	open := time.Since(c.polled) < chatPolling
-	c.mu.Unlock()
-	if !open && c.Wake != nil {
-		go c.Wake()
-	}
-}
-
 // voice records a voice note in her call voice; if that fails she types it instead.
 func (c *Chat) voice(ctx context.Context, script string) {
 	script = strings.TrimSpace(script)
@@ -502,19 +274,10 @@ func (c *Chat) snapped(ctx context.Context, scene string, selfie bool, caption s
 	return nil
 }
 
-func (c *Chat) store(kind, ext string, data []byte) (string, error) {
-	os.MkdirAll(c.dir, 0o700)
-	path := filepath.Join(c.dir, fmt.Sprintf("%s-%d%s", kind, time.Now().UnixMilli(), ext))
-	return path, os.WriteFile(path, data, 0o600)
-}
-
-// input is everything she knows when she picks up her phone: the clock, her last call with him, his
 // learner memory, her canon, the waiting plan, and the chat so far.
 func (c *Chat) input(now time.Time, closing string) []map[string]any {
 	r := c.rosa
-	c.mu.Lock()
-	history := tail(append([]ChatMessage(nil), c.messages...), chatSeed)
-	c.mu.Unlock()
+	history := c.history(chatSeed)
 	note := "It is " + clock(now) + ". You are texting with Lemon on WhatsApp."
 	if c.Calling() {
 		note += " You are on a call with him right now as well."

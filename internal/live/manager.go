@@ -29,6 +29,7 @@ type Manager struct {
 	reminders  *Reminders
 	rosa       *Rosa
 	chat       *Chat
+	carlaChat  *CarlaChat
 	client     *http.Client
 	API        string
 	// Codex signs the voice backend's requests with Lemon's ChatGPT login.
@@ -90,14 +91,30 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 	m.chat.Hear = func(ctx context.Context, path string) (string, error) {
 		return Transcribe(ctx, m.client, m.API, m.key, path)
 	}
+	m.carlaChat = OpenCarlaChat(filepath.Join(filepath.Dir(memoryPath), "carla"))
+	m.carlaChat.State, m.carlaChat.Recall, m.carlaChat.Zone = m.state, m.recall, m.reminders.Zone
+	m.carlaChat.Hear, m.carlaChat.Wake = m.chat.Hear, func() { m.reminders.Wake("carla") }
+	m.carlaChat.Backend = func() (*Backend, error) {
+		instructions, err := m.chatInstructions()
+		if err != nil {
+			return nil, err
+		}
+		return m.backend(instructions, CarlaChatSchema, m.text), nil
+	}
+	m.dispatcher.Texted = func(update Update) {
+		m.recall.Note(update.Content, time.Now())
+		m.carlaChat.Report(update)
+	}
 	return m
 }
 
-// StartChat runs Rosa's texting until ctx ends; photos need the ChatGPT login in Codex.
+// StartChat runs Rosa's and Carla's texting until ctx ends; Rosa's photos need the ChatGPT login in
+// Codex.
 func (m *Manager) StartChat(ctx context.Context) {
 	camera := &Photographer{Client: &http.Client{}, URL: ImagesURL, Auth: m.Codex.Get}
 	m.chat.Take = camera.Take
 	go m.chat.Run(ctx)
+	go m.carlaChat.Run(ctx)
 }
 
 type startRequest struct {
@@ -205,10 +222,26 @@ func (m *Manager) instructions(accent string) (string, string, error) {
 		return "", "", fmt.Errorf("cannot read voice/backend.md from ~/.agents")
 	}
 	spoken := ""
+	if words, err := os.ReadFile(filepath.Join(m.prompts, "pronunciation.md")); err == nil {
+		spoken = "\n\n" + strings.TrimSpace(string(words))
+	}
 	if strings.TrimSpace(accent) != "" {
-		spoken = fmt.Sprintf("\n\nSpeak %s English with a natural, contemporary %s accent throughout.", accent, accent)
+		spoken += fmt.Sprintf("\n\nSpeak %s English with a natural, contemporary %s accent throughout.", accent, accent)
 	}
 	return persona + "\n\n" + strings.TrimSpace(string(live)) + spoken, persona + "\n\n# Voice backend\n\n" + strings.TrimSpace(string(backend)), nil
+}
+
+// chatInstructions are Carla's voice backend prompt with the texting rules after it.
+func (m *Manager) chatInstructions() (string, error) {
+	_, backend, err := m.instructions("")
+	if err != nil {
+		return "", err
+	}
+	chat, err := os.ReadFile(filepath.Join(m.prompts, "chat.md"))
+	if err != nil {
+		return "", fmt.Errorf("cannot read voice/chat.md from ~/.agents")
+	}
+	return backend + "\n\n# Texting\n\n" + strings.TrimSpace(string(chat)), nil
 }
 
 // dial attaches the sideband to a Live session.
@@ -304,6 +337,33 @@ func (m *Manager) call(ctx context.Context, name, arguments string) (any, error)
 		return nil, fmt.Errorf("state must be off")
 	}
 	return m.turnOff(), nil
+}
+
+// text runs Carla's chat tools: reminders on the box, the rest through the dispatcher, whose updates
+// come back to the chat. Only the tools the chat offers run.
+func (m *Manager) text(ctx context.Context, name, arguments string) (any, error) {
+	if !carlaChatTools[name] {
+		return nil, fmt.Errorf("unknown tool: %s", name)
+	}
+	if name != "remind" {
+		return m.dispatcher.CallFrom(ctx, true, name, arguments)
+	}
+	var args toolArgs
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments")
+	}
+	return m.reminders.Add(args.At, args.Text, time.Now().In(m.reminders.Zone()))
+}
+
+// thread is the chat with agent; Rosa's when none is named, as phones before Carla's chat send.
+func (m *Manager) thread(agent string) (*Thread, error) {
+	switch agent {
+	case "", "rosa":
+		return m.chat.Thread, nil
+	case "carla":
+		return m.carlaChat.Thread, nil
+	}
+	return nil, fmt.Errorf("unknown agent %q", agent)
 }
 
 // turnOff asks the phone to end the call once the goodbye is said.
@@ -424,28 +484,30 @@ func (m *Manager) Handle(ctx context.Context, payload string) (string, error) {
 			return "", err
 		}
 		return result["result"].(string), nil
-	case "chat-sync":
-		data, _ := json.Marshal(m.chat.Sync(request.Rev))
-		return string(data), nil
-	case "chat-send":
-		message, err := m.chat.Send(request.Text)
+	case "chat-sync", "chat-send", "chat-voice", "chat-react":
+		thread, err := m.thread(request.Agent)
 		if err != nil {
 			return "", err
 		}
-		data, _ := json.Marshal(message)
-		return string(data), nil
-	case "chat-voice":
-		message, err := m.chat.SendVoice(ctx, request.Media, request.Seconds, request.Peaks)
+		var reply any
+		switch request.Op {
+		case "chat-sync":
+			reply = thread.Sync(request.Rev)
+		case "chat-send":
+			reply, err = thread.Send(request.Text)
+		case "chat-voice":
+			reply, err = thread.SendVoice(ctx, request.Media, request.Seconds, request.Peaks)
+		case "chat-react":
+			if err := thread.React(request.ID, "lemon", request.Emoji); err != nil {
+				return "", err
+			}
+			return "ok", nil
+		}
 		if err != nil {
 			return "", err
 		}
-		data, _ := json.Marshal(message)
+		data, _ := json.Marshal(reply)
 		return string(data), nil
-	case "chat-react":
-		if err := m.chat.React(request.ID, "lemon", request.Emoji); err != nil {
-			return "", err
-		}
-		return "ok", nil
 	case "close":
 		m.mu.Lock()
 		session := m.session

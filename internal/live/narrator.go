@@ -42,6 +42,8 @@ type Narrator struct {
 	Asked   string
 	Mode    Mode
 	Done    bool
+	// Texted is work Lemon asked for in the chat; its updates go there.
+	Texted bool
 
 	seen         map[string]bool
 	started      bool

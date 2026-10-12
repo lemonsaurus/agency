@@ -16,6 +16,8 @@ type Dispatcher struct {
 	Diary   string // the box's activity.jsonl
 	discord *Discord
 	emit    func(Update)
+	// Texted takes the updates of instructions Lemon texted, for the chat instead of the call.
+	Texted func(Update)
 
 	mu        sync.Mutex
 	narrators map[string]*Narrator
@@ -35,6 +37,7 @@ type Ticket struct {
 	State  string    `json:"state"` // queued, started, failed, done
 	Error  string    `json:"error,omitempty"`
 	At     time.Time `json:"at"`
+	Texted bool      `json:"texted,omitempty"`
 	paneID string
 }
 
@@ -71,8 +74,14 @@ type toolArgs struct {
 	At          string `json:"at"`
 }
 
-// Call runs one tool and returns its JSON result. Every call returns within a few seconds.
+// Call runs one tool for the voice call and returns its JSON result. Every call returns within a few
+// seconds.
 func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, error) {
+	return d.CallFrom(ctx, false, name, arguments)
+}
+
+// CallFrom is Call for the call or, texted, for the chat: the work it starts reports back there.
+func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments string) (any, error) {
 	var args toolArgs
 	if arguments != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -111,7 +120,7 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 		if err != nil {
 			return nil, err
 		}
-		return d.enqueue(pane, args.Text, ParseMode(args.Mode)), nil
+		return d.enqueue(pane, args.Text, ParseMode(args.Mode), texted), nil
 	case "ask_project":
 		project, err := d.project(args.ProjectPath)
 		if err != nil {
@@ -141,7 +150,7 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 			}
 			pane = &Pane{Dir: project.Path, before: existing}
 		}
-		return d.enqueue(*pane, args.Text, ParseMode(args.Mode)), nil
+		return d.enqueue(*pane, args.Text, ParseMode(args.Mode), texted), nil
 	case "check_pane":
 		pane, err := d.pane(ctx, args.PaneID)
 		if err != nil {
@@ -166,7 +175,7 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 			return nil, err
 		}
 		mode := ParseMode(args.Mode)
-		d.follow(pane, "", mode)
+		d.follow(pane, "", mode, texted)
 		if mode == Narrate {
 			return map[string]any{"result": "Narrating " + pane.Title() + " from here on."}, nil
 		}
@@ -245,13 +254,13 @@ func (d *Dispatcher) project(path string) (Project, error) {
 }
 
 // enqueue records the ticket and starts delivering it; the caller gets a one-line status now.
-func (d *Dispatcher) enqueue(pane Pane, text string, mode Mode) map[string]any {
+func (d *Dispatcher) enqueue(pane Pane, text string, mode Mode, texted bool) map[string]any {
 	if strings.TrimSpace(text) == "" {
 		return map[string]any{"error": "nothing to send"}
 	}
 	d.mu.Lock()
 	d.nextID++
-	ticket := &Ticket{ID: d.nextID, Pane: pane.ID, Title: pane.Title(), Text: text, Mode: mode, State: "queued", At: time.Now(), paneID: pane.ID}
+	ticket := &Ticket{ID: d.nextID, Pane: pane.ID, Title: pane.Title(), Text: text, Mode: mode, State: "queued", At: time.Now(), Texted: texted, paneID: pane.ID}
 	d.tickets = append(d.tickets, ticket)
 	if len(d.tickets) > 50 {
 		d.tickets = d.tickets[1:]
@@ -302,22 +311,33 @@ func (d *Dispatcher) deliver(ticket *Ticket, pane Pane) {
 	d.mu.Lock()
 	ticket.State = "started"
 	d.mu.Unlock()
-	d.follow(ready, ticket.Text, ticket.Mode)
+	d.follow(ready, ticket.Text, ticket.Mode, ticket.Texted)
 }
 
 func (d *Dispatcher) fail(ticket *Ticket, reason string) {
 	d.mu.Lock()
 	ticket.State, ticket.Error = "failed", reason
 	d.mu.Unlock()
-	d.emit(Update{true, fmt.Sprintf("Could not hand the instruction to %s: %s.", ticket.Title, reason)})
+	d.send(ticket.Texted, Update{true, fmt.Sprintf("Could not hand the instruction to %s: %s.", ticket.Title, reason)})
 }
 
-func (d *Dispatcher) follow(pane Pane, asked string, mode Mode) {
+// send routes an update to the chat when Lemon texted the instruction, otherwise to the call.
+func (d *Dispatcher) send(texted bool, update Update) {
+	if texted && d.Texted != nil {
+		d.Texted(update)
+		return
+	}
+	d.emit(update)
+}
+
+func (d *Dispatcher) follow(pane Pane, asked string, mode Mode, texted bool) {
 	d.mu.Lock()
 	if existing, ok := d.narrators[pane.ID]; ok && asked == "" {
-		existing.Mode = mode
+		existing.Mode, existing.Texted = mode, texted
 	} else {
-		d.narrators[pane.ID] = NewNarrator(pane.Title(), asked, mode)
+		narrator := NewNarrator(pane.Title(), asked, mode)
+		narrator.Texted = texted
+		d.narrators[pane.ID] = narrator
 	}
 	start := !d.polling
 	d.polling = true
@@ -348,7 +368,7 @@ func (d *Dispatcher) narrate() {
 				continue
 			}
 			for _, update := range narrator.Digest(ParseTranscript(raw), time.Now()) {
-				d.emit(update)
+				d.send(narrator.Texted, update)
 			}
 			if narrator.Done {
 				d.mu.Lock()

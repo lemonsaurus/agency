@@ -174,10 +174,20 @@ func runActivity(cfg *config.Config) {
 // runLive relays one voice request from the phone to the daemon.
 func runLive(sessionName string, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close")
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud live start <json>|status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|remind [<when> <text>...]|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close; chat ops take --agent rosa|carla first")
 		os.Exit(1)
 	}
 	request := map[string]any{"op": args[0]}
+	// Chat ops may name the agent first; Rosa's chat when they don't.
+	agent := "rosa"
+	if strings.HasPrefix(args[0], "chat-") && len(args) > 2 && args[1] == "--agent" {
+		if agent = args[2]; agent != "rosa" && agent != "carla" {
+			fmt.Fprintln(os.Stderr, "Error: --agent is rosa or carla")
+			os.Exit(1)
+		}
+		request["agent"] = agent
+		args = append([]string{args[0]}, args[3:]...)
+	}
 	switch args[0] {
 	case "start", "discord":
 		if len(args) != 2 {
@@ -218,7 +228,7 @@ func runLive(sessionName string, args []string) {
 			os.Exit(1)
 		}
 		home, _ := os.UserHomeDir()
-		dir := filepath.Join(home, ".agents", "run", "agency", "rosa", "chat")
+		dir := filepath.Join(home, ".agents", "run", "agency", agent, "chat")
 		os.MkdirAll(dir, 0o700)
 		path := filepath.Join(dir, fmt.Sprintf("lemon-%d.m4a", time.Now().UnixMilli()))
 		if err := os.WriteFile(path, audio, 0o600); err != nil {
