@@ -26,6 +26,9 @@ type Backend struct {
 	Instructions string
 	Schema       json.RawMessage
 	Tools        func(ctx context.Context, name, arguments string) (any, error)
+	// Mutates names the tools that change something; one answer runs each with the same arguments
+	// at most once, whatever the model asks.
+	Mutates func(name string) bool
 }
 
 // Reply is the backend's answer: what to say now, the facts behind it for follow-ups, and what its
@@ -117,6 +120,12 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 				}
 			case "function_call":
 				calls++
+				if b.Mutates != nil && b.Mutates(output.Name) && ran(fetched, output.Name, output.Arguments) {
+					item, _ := json.Marshal(map[string]any{"type": "function_call_output", "call_id": output.CallID,
+						"output": `{"error":"This exact call already ran in this answer and was not repeated. Use its result above."}`})
+					items = append(items, item)
+					continue
+				}
 				result, err := b.Tools(ctx, output.Name, output.Arguments)
 				var payload []byte
 				var lookup LookupError
@@ -167,6 +176,16 @@ func reason(raw string, parts ...any) string {
 		return "the endpoint gave no reason: " + truncate(raw, 200)
 	}
 	return truncate(strings.Join(said, ": "), 300)
+}
+
+// ran is whether this answer already ran the tool with these arguments.
+func ran(fetched []Fetched, name, arguments string) bool {
+	for _, call := range fetched {
+		if call.Tool == name && call.Arguments == arguments {
+			return true
+		}
+	}
+	return false
 }
 
 // send is request, resent after each of retryDelays while the endpoint fails on its side.

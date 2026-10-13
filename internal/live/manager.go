@@ -101,7 +101,9 @@ func NewManager(box Box, key string, persona func() (string, error), promptDir, 
 		if err != nil {
 			return nil, err
 		}
-		return m.backend(instructions, CarlaChatSchema, m.text), nil
+		backend := m.backend(instructions, CarlaChatSchema, m.text)
+		backend.Mutates = Mutates
+		return backend, nil
 	}
 	m.dispatcher.Texted = func(update Update) {
 		m.recall.Note(update.Content, time.Now())
@@ -196,7 +198,9 @@ func (m *Manager) Start(ctx context.Context, request startRequest) (string, erro
 		m.adopt(m.rosa.Session(answer.Session.ID, conn, m.backend(backend, RosaSchema, m.rosa.Call), zone, m.turnOff, roll))
 		return string(reply), nil
 	}
-	session := NewSession(answer.Session.ID, conn, m.memory, m.recall, m.backend(backend, Schema, m.call), m.state)
+	carla := m.backend(backend, Schema, m.call)
+	carla.Mutates = Mutates
+	session := NewSession(answer.Session.ID, conn, m.memory, m.recall, carla, m.state)
 	session.Zone = zone
 	m.mu.Lock()
 	m.switches = request.Switches

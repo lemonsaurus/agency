@@ -84,6 +84,9 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 // failed, and looking again is safe.
 var lookups = map[string]bool{"activity": true, "list_panes": true, "check_pane": true, "read_pane": true, "tickets": true, "discord_recent": true}
 
+// Mutates is whether a tool of Carla's changes something: every tool that is not a lookup.
+func Mutates(name string) bool { return !lookups[name] }
+
 // LookupError is a read that failed: the lookup, never the work it looked at.
 type LookupError struct{ error }
 

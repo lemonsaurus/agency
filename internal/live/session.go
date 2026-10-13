@@ -181,24 +181,73 @@ func (s *Session) delegate(id string) {
 
 // runningNote is the one quiet note the voice model gets while a delegation runs; repeated notes
 // come out of it as spoken "still going" filler.
-const runningNote = "Lemon's latest request is running; its result arrives as an update. Until then there is nothing new to say about it: no status, no \"still going\", and nothing has failed."
+const runningNote = "Lemon's latest request is running; its result arrives as an update. Until then there is nothing new to say about it."
 
-// Failure is what a failed delegation tells Lemon: that only the backend's reply failed, the exact
-// error, whether the box resent it, and what each tool did before it, so a failed lookup or reply is
-// never taken for failed work or a failed box.
+// Failure is what a delegation whose reply failed tells Lemon. What its tools did comes first: a
+// queued instruction is done, a failed lookup changed nothing, and a failed change may still have
+// taken effect and was not repeated. Then the reply's own error, and that only the reply request was
+// resent, never an instruction.
 func Failure(err error, fetched []Fetched) string {
-	said := "My reply to that failed, not the work or the box: " + strings.TrimRight(err.Error(), ".") + "."
-	if Transient(err) {
-		said += fmt.Sprintf(" The box resent it %d times and it failed each time.", len(retryDelays))
-	}
-	if len(fetched) == 0 {
-		return said + " No tool ran, so nothing was started or changed."
-	}
-	var ran []string
+	var done, failed []string
 	for _, call := range fetched {
-		ran = append(ran, call.Tool+" returned "+truncate(call.Result, 200))
+		var result map[string]any
+		json.Unmarshal([]byte(call.Result), &result)
+		message, isError := result["error"].(string)
+		switch {
+		case !isError && lookups[call.Tool]:
+		case !isError:
+			done = append(done, outcome(call.Tool, result, call.Result))
+		case lookups[call.Tool]:
+			failed = append(failed, "the "+call.Tool+" lookup failed and changed nothing: "+firstSentence(message))
+		default:
+			failed = append(failed, call.Tool+" failed: "+firstSentence(message)+"; it may still have taken effect, so it was not repeated")
+		}
 	}
-	return said + " Before it failed: " + strings.Join(ran, "; ") + ". Those results stand."
+	var said []string
+	if len(done) > 0 {
+		said = append(said, "Done before my reply failed: "+strings.Join(done, "; ")+".")
+	}
+	if len(failed) > 0 {
+		said = append(said, capitalize(strings.Join(failed, "; "))+".")
+	}
+	said = append(said, "My reply failed: "+strings.TrimRight(err.Error(), ". ")+".")
+	if Transient(err) {
+		said = append(said, fmt.Sprintf("The box resent only the reply request, %d times, never an instruction.", len(retryDelays)))
+	}
+	switch {
+	case len(fetched) == 0:
+		said = append(said, "No tool ran, so nothing was started or changed.")
+	case len(done) > 0 && len(failed) == 0:
+		said = append(said, "Nothing needs sending again.")
+	}
+	return strings.Join(said, " ")
+}
+
+// outcome says what a change that went through did, from its result.
+func outcome(tool string, result map[string]any, raw string) string {
+	if pane, ok := result["pane"].(string); ok {
+		if ticket, ok := result["ticket"].(float64); ok {
+			return fmt.Sprintf("%s has the instruction queued as ticket %d", pane, int(ticket))
+		}
+	}
+	if said, ok := result["result"].(string); ok {
+		return strings.TrimRight(said, ".")
+	}
+	return tool + " returned " + truncate(raw, 200)
+}
+
+func firstSentence(text string) string {
+	if i := strings.Index(text, ". "); i >= 0 {
+		return text[:i]
+	}
+	return strings.TrimRight(text, ".")
+}
+
+func capitalize(text string) string {
+	if text == "" {
+		return text
+	}
+	return strings.ToUpper(text[:1]) + text[1:]
 }
 
 // carla opens Carla's backend requests: the clock, how long Lemon was away, the dispatcher, and

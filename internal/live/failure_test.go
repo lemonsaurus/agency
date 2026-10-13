@@ -100,7 +100,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 	recall := &Recall{}
 	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m",
 		Tools: func(context.Context, string, string) (any, error) {
-			return map[string]string{"status": "Journalia is queued"}, nil
+			return map[string]any{"pane": "Journalia", "ticket": 6, "status": "Journalia is queued; it starts as soon as the session is ready and progress arrives on its own. Do not wait or poll."}, nil
 		}}
 	session := NewSession("ls_1", conn, OpenMemory(""), recall, backend, func() string { return "Dispatcher state." })
 	go session.Run()
@@ -123,7 +123,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 
 	delegate("check vanta in journalia", "item_1")
 	started := written(1)[0]["content"].(string)
-	if started != "My reply to that failed, not the work or the box: backend failed: Our servers are currently overloaded. Please try again later. The box resent it 2 times and it failed each time. Before it failed: ask_project returned {\"status\":\"Journalia is queued\"}. Those results stand." {
+	if started != "Done before my reply failed: Journalia has the instruction queued as ticket 6. My reply failed: backend failed: Our servers are currently overloaded. Please try again later. The box resent only the reply request, 2 times, never an instruction. Nothing needs sending again." {
 		t.Fatalf("said=%q", started)
 	}
 
@@ -144,7 +144,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 	mu.Lock()
 	last := inputs[len(inputs)-1]
 	mu.Unlock()
-	if !strings.Contains(last, `save how to say journalia\nThe backend's reply to this request failed, and Lemon was told: My reply to that failed, not the work or the box: backend failed: Our servers are currently overloaded`) ||
+	if !strings.Contains(last, `save how to say journalia\nThe backend's reply to this request failed, and Lemon was told: My reply failed: backend failed: Our servers are currently overloaded`) ||
 		!strings.Contains(last, "No tool ran, so nothing was started or changed.") {
 		t.Fatalf("the next delegation cannot see the failure: %s", last)
 	}
@@ -274,5 +274,107 @@ func TestToolErrorsSayWhatFailed(t *testing.T) {
 	}
 	if !strings.Contains(outputs[1], "tmux timed out. Do not retry automatically; it may have taken effect.") {
 		t.Fatalf("mutation=%s", outputs[1])
+	}
+}
+
+// 13 Oct: ask_project queued the work, then the reply request failed with an empty error event, and
+// the call heard "That request failed on the box" over a successful enqueue. A queued instruction is
+// done; only the reply failed, only the reply request was resent, and the tool ran once.
+func TestQueuedThenReplyFailureIsSaidAsDone(t *testing.T) {
+	instantRetries(t)
+	var mu sync.Mutex
+	failing := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input json.RawMessage `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case !strings.Contains(string(body.Input), "function_call_output"):
+			respond(w, `[{"type":"function_call","call_id":"c1","name":"ask_project","arguments":"{\"project_path\":\"/home/lemon/git/ee/quill\",\"text\":\"fix it\",\"mode\":\"narrate\"}"}]`)
+		case failing:
+			fmt.Fprint(w, "data: {\"type\":\"error\",\"sequence_number\":7}\n\n")
+		default:
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"Queued in quill.\",\"details\":\"\"}"}]}]`)
+		}
+	}))
+	defer server.Close()
+	box := &fakeBox{transcripts: map[string][]json.RawMessage{}}
+	d := NewDispatcher(box, NewDiscord(func(Update) {}), func(Update) {})
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Tools: d.Call, Mutates: Mutates}
+
+	reply, err := backend.Answer(context.Background(), nil)
+	if err == nil || len(reply.Fetched) != 1 {
+		t.Fatalf("reply=%+v err=%v", reply, err)
+	}
+	said := Failure(err, reply.Fetched)
+	want := "Done before my reply failed: quill has the instruction queued as ticket 1. My reply failed: backend failed: the endpoint gave no reason: {\"type\":\"error\",\"sequence_number\":7}. The box resent only the reply request, 2 times, never an instruction. Nothing needs sending again."
+	if said != want {
+		t.Fatalf("said=%q", said)
+	}
+	if strings.Contains(said, "on the box") || len(box.spawned) != 1 {
+		t.Fatalf("said=%q spawned=%v", said, box.spawned)
+	}
+
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	reply, err = backend.Answer(context.Background(), nil)
+	if err != nil || reply.Say != "Queued in quill." || !strings.Contains(reply.Fetched[0].Result, `"status":"quill is queued`) {
+		t.Fatalf("a queued enqueue is a plain answer: reply=%+v err=%v", reply, err)
+	}
+}
+
+// One answer runs a change with the same arguments once, even when the model asks again.
+func TestAnswerNeverRepeatsAChange(t *testing.T) {
+	call := `{"type":"function_call","call_id":"c%d","name":"%s","arguments":"{\"pane_id\":\"%%1\",\"text\":\"go\",\"mode\":\"narrate\"}"}`
+	var outputs []string
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []map[string]any `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		outputs = nil
+		for _, item := range body.Input {
+			if item["type"] == "function_call_output" {
+				outputs = append(outputs, item["output"].(string))
+			}
+		}
+		requests++
+		switch requests {
+		case 1, 2:
+			respond(w, "["+fmt.Sprintf(call, requests, "ask_pane")+","+fmt.Sprintf(call, 10+requests, "check_pane")+"]")
+		default:
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"ok\",\"details\":\"\"}"}]}]`)
+		}
+	}))
+	defer server.Close()
+	ran := map[string]int{}
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m", Mutates: Mutates,
+		Tools: func(_ context.Context, name, _ string) (any, error) {
+			ran[name]++
+			return map[string]string{"result": "ok"}, nil
+		}}
+	reply, err := backend.Answer(context.Background(), nil)
+	if err != nil || ran["ask_pane"] != 1 || ran["check_pane"] != 2 || len(reply.Fetched) != 3 {
+		t.Fatalf("ran=%v fetched=%+v err=%v", ran, reply.Fetched, err)
+	}
+	if len(outputs) != 4 || !strings.Contains(outputs[2], "already ran in this answer and was not repeated") {
+		t.Fatalf("outputs=%v", outputs)
+	}
+}
+
+// A failed lookup changed nothing; a failed change may have taken effect and is not repeated.
+func TestFailureScopesEachTool(t *testing.T) {
+	said := Failure(fmt.Errorf("backend returned HTTP 400: bad input"), []Fetched{
+		{"check_pane", `{"pane_id":"carla-mobile"}`, `{"error":"no open session has the id or task name \"carla-mobile\"; call list_panes for the current ones. Only this lookup failed: nothing changed and no session's work failed. Looking again is safe."}`},
+		{"spawn_pane", `{}`, `{"error":"tmux timed out. Do not retry automatically; it may have taken effect."}`},
+	})
+	want := `The check_pane lookup failed and changed nothing: no open session has the id or task name "carla-mobile"; call list_panes for the current ones; spawn_pane failed: tmux timed out; it may still have taken effect, so it was not repeated. My reply failed: backend returned HTTP 400: bad input.`
+	if said != want {
+		t.Fatalf("said=%q", said)
 	}
 }
