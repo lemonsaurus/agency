@@ -88,7 +88,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 		inputs = append(inputs, string(body.Input))
 		switch {
 		case healthy:
-			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"The first try failed on the box: the backend was overloaded.\",\"details\":\"\"}"}]}]`)
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"My first reply failed: the backend was overloaded.\",\"details\":\"\"}"}]}]`)
 		case toolFirst && !strings.Contains(string(body.Input), "function_call_output"):
 			respond(w, `[{"type":"function_call","call_id":"c1","name":"ask_project","arguments":"{\"project_path\":\"/home/lemon/git/journalia/journalia\"}"}]`)
 		default:
@@ -123,7 +123,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 
 	delegate("check vanta in journalia", "item_1")
 	started := written(1)[0]["content"].(string)
-	if started != "That request failed on the box: backend failed: Our servers are currently overloaded. Please try again later. The box already resent it, and it failed every time. Before it failed: ask_project returned {\"status\":\"Journalia is queued\"}." {
+	if started != "My reply to that failed, not the work or the box: backend failed: Our servers are currently overloaded. Please try again later. The box resent it 2 times and it failed each time. Before it failed: ask_project returned {\"status\":\"Journalia is queued\"}. Those results stand." {
 		t.Fatalf("said=%q", started)
 	}
 
@@ -144,7 +144,7 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 	mu.Lock()
 	last := inputs[len(inputs)-1]
 	mu.Unlock()
-	if !strings.Contains(last, `save how to say journalia\nThis request failed on the box, and Lemon was told: That request failed on the box: backend failed: Our servers are currently overloaded`) ||
+	if !strings.Contains(last, `save how to say journalia\nThe backend's reply to this request failed, and Lemon was told: My reply to that failed, not the work or the box: backend failed: Our servers are currently overloaded`) ||
 		!strings.Contains(last, "No tool ran, so nothing was started or changed.") {
 		t.Fatalf("the next delegation cannot see the failure: %s", last)
 	}
@@ -155,12 +155,10 @@ func TestFailedDelegationIsSaidPreciselyAndRecalled(t *testing.T) {
 	<-session.Closed
 }
 
-// While a delegation runs, the voice model hears that it is running and has not failed, before any
-// result and never after it; Rosa's planner delegations get no such notes.
-func TestRunningDelegationIsNeverSilence(t *testing.T) {
-	saved := runningEvery
-	runningEvery = 20 * time.Millisecond
-	defer func() { runningEvery = saved }()
+// While a delegation runs, the voice model hears once and quietly that it is running, before the
+// result, and nothing more: repeated notes became spoken "still going" filler. Rosa's planner
+// delegations get no note.
+func TestRunningDelegationGetsOneQuietNote(t *testing.T) {
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
@@ -175,7 +173,7 @@ func TestRunningDelegationIsNeverSilence(t *testing.T) {
 		go session.Run()
 		conn.events <- []byte(`{"type":"session.input_transcript.delta","delta":"leave it ready in the pane"}`)
 		conn.events <- []byte(`{"type":"session.delegation.created","delegation":{"id":"item_1","target":"client"}}`)
-		time.Sleep(550 * time.Millisecond) // past the delegation's 400 ms wait for late transcript
+		time.Sleep(1500 * time.Millisecond) // a long wait for the backend
 		release <- struct{}{}
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 			conn.mu.Lock()
@@ -185,7 +183,6 @@ func TestRunningDelegationIsNeverSilence(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(60 * time.Millisecond)
 		conn.events <- []byte(`{"type":"session.closed","reason":"close_requested"}`)
 		<-session.Closed
 		conn.mu.Lock()
@@ -200,15 +197,82 @@ func TestRunningDelegationIsNeverSilence(t *testing.T) {
 			}
 			continue
 		}
-		if len(running) < 3 || !strings.Contains(running[0]["content"].(string), "Nothing has failed.") || running[0]["delegation_id"] != nil {
+		if len(running) != 1 || running[0]["delegation_id"] != nil {
 			t.Fatalf("running=%v", running)
 		}
-		// box_N counts every write; no note may follow the result.
-		var last, result int
-		fmt.Sscanf(running[len(running)-1]["event_id"].(string), "box_%d", &last)
+		var note, result int
+		fmt.Sscanf(running[0]["event_id"].(string), "box_%d", &note)
 		fmt.Sscanf(wrote[0]["event_id"].(string), "box_%d", &result)
-		if last > result {
-			t.Fatalf("a running note followed the result: note %d, result %d", last, result)
+		if note > result {
+			t.Fatalf("the running note followed the result: note %d, result %d", note, result)
 		}
+	}
+}
+
+// The endpoint's failure events carry their reason in several places; an empty one is logged raw.
+func TestBackendFailureNamesWhatTheEndpointSaid(t *testing.T) {
+	instantRetries(t)
+	for event, want := range map[string]string{
+		`{"type":"error","error":{"type":"server_error","code":"server_is_overloaded","message":"Try again later."}}`: "backend failed: server_error: server_is_overloaded: Try again later.",
+		`{"type":"error","code":"rate_limit_exceeded","message":"Slow down."}`:                                        "backend failed: rate_limit_exceeded: Slow down.",
+		`{"type":"response.failed","response":{"error":{"code":"server_error","message":""}}}`:                        "backend failed: server_error",
+		`{"type":"error","sequence_number":4}`:                                                                        `backend failed: the endpoint gave no reason: {"type":"error","sequence_number":4}`,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "data: %s\n\n", event)
+		}))
+		backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m"}
+		_, err := backend.Answer(context.Background(), nil)
+		server.Close()
+		if err == nil || err.Error() != want || !Transient(err) {
+			t.Errorf("%s: err=%v", event, err)
+		}
+	}
+}
+
+// A failed lookup tells the backend model that only the lookup failed and looking again is safe; a
+// failed mutation says not to retry.
+func TestToolErrorsSayWhatFailed(t *testing.T) {
+	var outputs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []map[string]any `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		outputs = nil
+		for _, item := range body.Input {
+			if item["type"] == "function_call_output" {
+				outputs = append(outputs, item["output"].(string))
+			}
+		}
+		switch len(outputs) {
+		case 0:
+			respond(w, `[{"type":"function_call","call_id":"c1","name":"check_pane","arguments":"{\"pane_id\":\"carla-mobile\"}"}]`)
+		case 1:
+			respond(w, `[{"type":"function_call","call_id":"c2","name":"close_pane","arguments":"{\"pane_id\":\"%1\"}"}]`)
+		default:
+			respond(w, `[{"type":"message","content":[{"type":"output_text","text":"{\"say\":\"ok\",\"details\":\"\"}"}]}]`)
+		}
+	}))
+	defer server.Close()
+	d := NewDispatcher(&fakeBox{panes: []Pane{{ID: "%1", Label: "Voice Architecture Reassessment", Bridge: true}}}, NewDiscord(func(Update) {}), func(Update) {})
+	backend := &Backend{Client: server.Client(), URL: server.URL, Auth: testAuth, Model: "m",
+		Tools: func(ctx context.Context, name, arguments string) (any, error) {
+			if name == "close_pane" {
+				return nil, fmt.Errorf("tmux timed out")
+			}
+			return d.Call(ctx, name, arguments)
+		}}
+	if _, err := backend.Answer(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) < 2 {
+		t.Fatalf("outputs=%v", outputs)
+	}
+	if !strings.Contains(outputs[0], `no open session has the id or task name \"carla-mobile\"`) || !strings.Contains(outputs[0], "Only this lookup failed: nothing changed and no session's work failed. Looking again is safe.") {
+		t.Fatalf("lookup=%s", outputs[0])
+	}
+	if !strings.Contains(outputs[1], "tmux timed out. Do not retry automatically; it may have taken effect.") {
+		t.Fatalf("mutation=%s", outputs[1])
 	}
 }

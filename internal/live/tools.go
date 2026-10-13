@@ -22,6 +22,7 @@ type Dispatcher struct {
 	mu        sync.Mutex
 	narrators map[string]*Narrator
 	owned     map[string]string // project path → pane the phone opened there
+	names     map[string]string // lowercase name a session went by before Pi relabeled it → pane
 	tickets   []*Ticket
 	nextID    int
 	polling   bool
@@ -38,23 +39,22 @@ type Ticket struct {
 	Error  string    `json:"error,omitempty"`
 	At     time.Time `json:"at"`
 	Texted bool      `json:"texted,omitempty"`
-	paneID string
 }
 
 func NewDispatcher(box Box, discord *Discord, emit func(Update)) *Dispatcher {
-	return &Dispatcher{box: box, discord: discord, emit: emit, narrators: map[string]*Narrator{}, owned: map[string]string{}}
+	return &Dispatcher{box: box, discord: discord, emit: emit, narrators: map[string]*Narrator{}, owned: map[string]string{}, names: map[string]string{}}
 }
 
 // Schema is the function list the backend model sees.
 var Schema = json.RawMessage(`[
 {"type":"function","name":"activity","description":"What every session on the box has been doing in the last 12 hours, from the diary all sessions write: state (working, idle, stopped, failed, closed), their latest prompts, narrated steps and answers, most recently active first. Call this first whenever Lemon asks how things are going, what is happening, or what everyone is doing.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
-{"type":"function","name":"list_panes","description":"List open sessions with their task names and status, plus the projects on the box where a session can be opened.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
+{"type":"function","name":"list_panes","description":"List open sessions with their id, task name, status and model, plus the projects on the box where a session can be opened.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"ask_project","description":"Ask a question or give an instruction inside a project. Reuses the phone's own session in that project or opens one. Queued and returned at once; the session's progress and answer arrive in the conversation on their own. Use this by default for anything project-related; no permission needed. Never automatically retry.","parameters":{"type":"object","properties":{"project_path":{"type":"string"},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"],"description":"narrate: Lemon is focused on this and wants to hear progress. background: he asked to set it up and move on; only the finish is announced."}},"required":["project_path","text","mode"],"additionalProperties":false}},
-{"type":"function","name":"ask_pane","description":"Send Lemon's instruction to a specific existing session he named. Queued and returned at once; progress and answer arrive in the conversation on their own. Never automatically retry.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","text","mode"],"additionalProperties":false}},
-{"type":"function","name":"check_pane","description":"Check in on a session: whether it is working or idle, what it is doing now, and its last answer.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"}},"required":["pane_id"],"additionalProperties":false}},
-{"type":"function","name":"follow_pane","description":"Switch how a running session reaches the conversation: narrate progress, or background until it finishes.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","mode"],"additionalProperties":false}},
-{"type":"function","name":"read_pane","description":"Read what is currently on a session's screen without sending anything.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"}},"required":["pane_id"],"additionalProperties":false}},
-{"type":"function","name":"close_pane","description":"Close a session when Lemon asks for it. Its work stops.","parameters":{"type":"object","properties":{"pane_id":{"type":"string"}},"required":["pane_id"],"additionalProperties":false}},
+{"type":"function","name":"ask_pane","description":"Send Lemon's instruction to a specific existing session he named. Queued and returned at once; progress and answer arrive in the conversation on their own. Never automatically retry.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","text","mode"],"additionalProperties":false}},
+{"type":"function","name":"check_pane","description":"Check in on a session: whether it is working or idle, its model, what it is doing now, and its last answer.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."}},"required":["pane_id"],"additionalProperties":false}},
+{"type":"function","name":"follow_pane","description":"Switch how a running session reaches the conversation: narrate progress, or background until it finishes.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","mode"],"additionalProperties":false}},
+{"type":"function","name":"read_pane","description":"Read what is currently on a session's screen without sending anything.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."}},"required":["pane_id"],"additionalProperties":false}},
+{"type":"function","name":"close_pane","description":"Close a session when Lemon asks for it. Its work stops.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."}},"required":["pane_id"],"additionalProperties":false}},
 {"type":"function","name":"spawn_pane","description":"Open a named session for a project when Lemon asks for one to keep.","parameters":{"type":"object","properties":{"project_path":{"type":"string"},"label":{"type":"string"}},"required":["project_path","label"],"additionalProperties":false}},
 {"type":"function","name":"tickets","description":"What the dispatcher is doing: queued, running and finished instructions to sessions.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"discord_recent","description":"Recent Discord messages the phone was notified about: id, sender, place, text, and whether a reply can still be sent.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
@@ -80,8 +80,25 @@ func (d *Dispatcher) Call(ctx context.Context, name, arguments string) (any, err
 	return d.CallFrom(ctx, false, name, arguments)
 }
 
+// lookups are the tools that only read. Their failures are LookupErrors: nothing changed, no work
+// failed, and looking again is safe.
+var lookups = map[string]bool{"activity": true, "list_panes": true, "check_pane": true, "read_pane": true, "tickets": true, "discord_recent": true}
+
+// LookupError is a read that failed: the lookup, never the work it looked at.
+type LookupError struct{ error }
+
+func (e LookupError) Unwrap() error { return e.error }
+
 // CallFrom is Call for the call or, texted, for the chat: the work it starts reports back there.
 func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments string) (any, error) {
+	result, err := d.call(ctx, texted, name, arguments)
+	if err != nil && lookups[name] {
+		return nil, LookupError{err}
+	}
+	return result, err
+}
+
+func (d *Dispatcher) call(ctx context.Context, texted bool, name, arguments string) (any, error) {
 	var args toolArgs
 	if arguments != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -106,13 +123,16 @@ func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments 
 		if err != nil {
 			return nil, err
 		}
+		models := modelsOf(ctx, d.box, panes)
 		var listed []map[string]any
-		for _, pane := range panes {
+		for i, pane := range panes {
 			status := "ready"
 			if !pane.Bridge {
 				status = "starting; instructions wait until it is ready"
 			}
-			listed = append(listed, map[string]any{"id": pane.ID, "name": pane.Title(), "project": pane.Dir, "status": status})
+			fields := map[string]any{"id": pane.ID, "name": pane.Title(), "project": pane.Dir, "status": status}
+			models[i].into(fields)
+			listed = append(listed, fields)
 		}
 		return map[string]any{"panes": listed, "projects": projects}, nil
 	case "ask_pane":
@@ -161,7 +181,8 @@ func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments 
 			return nil, err
 		}
 		glance := GlanceAt(ParseTranscript(raw), updateLimit)
-		result := map[string]any{"pane": pane.Title(), "state": glance.State}
+		result := map[string]any{"pane": pane.Title(), "pane_id": pane.ID, "state": glance.State}
+		modelOf(ctx, d.box, pane).into(result)
 		if glance.Doing != "" {
 			result["current"] = glance.Doing
 		}
@@ -218,6 +239,9 @@ func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments 
 		}
 		return map[string]any{"result": args.Label + " is starting in " + project.Name + "."}, nil
 	case "tickets":
+		if panes, err := d.box.Panes(ctx); err == nil {
+			d.rename(panes)
+		}
 		return map[string]any{"tickets": d.Tickets()}, nil
 	case "discord_recent":
 		return map[string]any{"messages": d.discord.Recent()}, nil
@@ -227,17 +251,67 @@ func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments 
 	return nil, fmt.Errorf("unknown tool: %s", name)
 }
 
-func (d *Dispatcher) pane(ctx context.Context, id string) (Pane, error) {
+// pane resolves a session by its id, its task name, or a name it went by before Pi relabeled it.
+func (d *Dispatcher) pane(ctx context.Context, ref string) (Pane, error) {
 	panes, err := d.box.Panes(ctx)
 	if err != nil {
-		return Pane{}, err
+		return Pane{}, fmt.Errorf("could not list the sessions: %v", err)
 	}
+	d.rename(panes)
+	ref = strings.TrimSpace(ref)
+	var named []Pane
 	for _, pane := range panes {
-		if pane.ID == id {
+		if pane.ID == ref {
+			return pane, nil
+		}
+		if strings.EqualFold(pane.Title(), ref) {
+			named = append(named, pane)
+		}
+	}
+	if len(named) == 1 {
+		return named[0], nil
+	}
+	if len(named) > 1 {
+		var ids []string
+		for _, pane := range named {
+			ids = append(ids, pane.ID)
+		}
+		return Pane{}, fmt.Errorf("%d open sessions are called %q (ids %s); ask Lemon which one he means", len(named), ref, strings.Join(ids, ", "))
+	}
+	d.mu.Lock()
+	renamed := d.names[strings.ToLower(ref)]
+	starting := 0
+	for _, ticket := range d.tickets {
+		if ticket.Pane == "" && ticket.State == "queued" && strings.EqualFold(ticket.Title, ref) {
+			starting = ticket.ID
+		}
+	}
+	d.mu.Unlock()
+	for _, pane := range panes {
+		if pane.ID == renamed {
 			return pane, nil
 		}
 	}
-	return Pane{}, fmt.Errorf("that session is no longer open; list sessions again")
+	if starting != 0 {
+		return Pane{}, fmt.Errorf("the session for ticket %d is still starting and has no id yet; check again in a few seconds", starting)
+	}
+	return Pane{}, fmt.Errorf("no open session has the id or task name %q; call list_panes for the current ones", ref)
+}
+
+// rename follows Pi's relabeling: tickets take each pane's current task name, and the name they had
+// keeps resolving to the pane.
+func (d *Dispatcher) rename(panes []Pane) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, pane := range panes {
+		title := pane.Title()
+		for _, ticket := range d.tickets {
+			if ticket.Pane == pane.ID && ticket.Title != title {
+				d.names[strings.ToLower(ticket.Title)] = pane.ID
+				ticket.Title = title
+			}
+		}
+	}
 }
 
 func (d *Dispatcher) project(path string) (Project, error) {
@@ -260,7 +334,7 @@ func (d *Dispatcher) enqueue(pane Pane, text string, mode Mode, texted bool) map
 	}
 	d.mu.Lock()
 	d.nextID++
-	ticket := &Ticket{ID: d.nextID, Pane: pane.ID, Title: pane.Title(), Text: text, Mode: mode, State: "queued", At: time.Now(), Texted: texted, paneID: pane.ID}
+	ticket := &Ticket{ID: d.nextID, Pane: pane.ID, Title: pane.Title(), Text: text, Mode: mode, State: "queued", At: time.Now(), Texted: texted}
 	d.tickets = append(d.tickets, ticket)
 	if len(d.tickets) > 50 {
 		d.tickets = d.tickets[1:]
@@ -271,7 +345,11 @@ func (d *Dispatcher) enqueue(pane Pane, text string, mode Mode, texted bool) map
 	if mode == Background {
 		status = pane.Title() + " is queued in the background; you will be told when it finishes."
 	}
-	return map[string]any{"pane": pane.Title(), "ticket": ticket.ID, "status": status}
+	result := map[string]any{"pane": pane.Title(), "ticket": ticket.ID, "status": status}
+	if pane.ID != "" {
+		result["pane_id"] = pane.ID
+	}
+	return result
 }
 
 // deliver waits for the pane's bridge, sends the prompt detached, then follows the pane.
@@ -299,7 +377,7 @@ func (d *Dispatcher) deliver(ticket *Ticket, pane Pane) {
 		}
 	}
 	d.mu.Lock()
-	ticket.paneID = ready.ID
+	ticket.Pane = ready.ID
 	if pane.ID == "" {
 		d.owned[ready.Dir] = ready.ID
 	}
@@ -360,6 +438,19 @@ func (d *Dispatcher) narrate() {
 			return
 		}
 		d.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if panes, err := d.box.Panes(ctx); err == nil {
+			d.rename(panes)
+			d.mu.Lock()
+			for _, pane := range panes {
+				if narrator := current[pane.ID]; narrator != nil && narrator.Session != pane.Title() {
+					d.names[strings.ToLower(narrator.Session)] = pane.ID
+					narrator.Session = pane.Title()
+				}
+			}
+			d.mu.Unlock()
+		}
+		cancel()
 		for id, narrator := range current {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			raw, err := d.box.Transcript(ctx, id, 40)
@@ -374,7 +465,7 @@ func (d *Dispatcher) narrate() {
 				d.mu.Lock()
 				delete(d.narrators, id)
 				for _, ticket := range d.tickets {
-					if ticket.paneID == id && ticket.State == "started" {
+					if ticket.Pane == id && ticket.State == "started" {
 						ticket.State = "done"
 					}
 				}

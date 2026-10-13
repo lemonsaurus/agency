@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -118,9 +119,13 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 				calls++
 				result, err := b.Tools(ctx, output.Name, output.Arguments)
 				var payload []byte
-				if err != nil {
-					payload, _ = json.Marshal(map[string]string{"error": err.Error() + ". Do not retry automatically."})
-				} else {
+				var lookup LookupError
+				switch {
+				case errors.As(err, &lookup):
+					payload, _ = json.Marshal(map[string]string{"error": err.Error() + ". Only this lookup failed: nothing changed and no session's work failed. Looking again is safe."})
+				case err != nil:
+					payload, _ = json.Marshal(map[string]string{"error": err.Error() + ". Do not retry automatically; it may have taken effect."})
+				default:
 					payload, _ = json.Marshal(result)
 				}
 				fetched = append(fetched, Fetched{output.Name, output.Arguments, string(payload)})
@@ -133,6 +138,35 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 		}
 	}
 	return "", fetched, fmt.Errorf("the backend kept calling tools without answering")
+}
+
+type endpointError struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// reason is every code and message a failure event carries, or the raw event when it carries none.
+func reason(raw string, parts ...any) string {
+	var found []string
+	for _, part := range parts {
+		switch part := part.(type) {
+		case string:
+			found = append(found, part)
+		case endpointError:
+			found = append(found, part.Type, part.Code, part.Message)
+		}
+	}
+	var said []string
+	for _, part := range found {
+		if part = strings.TrimSpace(part); part != "" && !slices.Contains(said, part) {
+			said = append(said, part)
+		}
+	}
+	if len(said) == 0 {
+		return "the endpoint gave no reason: " + truncate(raw, 200)
+	}
+	return truncate(strings.Join(said, ": "), 300)
 }
 
 // send is request, resent after each of retryDelays while the endpoint fails on its side.
@@ -217,11 +251,14 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage, format j
 		var event struct {
 			Type     string          `json:"type"`
 			Item     json.RawMessage `json:"item"`
+			Code     string          `json:"code"`
 			Message  string          `json:"message"`
+			Error    endpointError   `json:"error"`
 			Response struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
+				Error             endpointError `json:"error"`
+				IncompleteDetails struct {
+					Reason string `json:"reason"`
+				} `json:"incomplete_details"`
 			} `json:"response"`
 		}
 		if json.Unmarshal([]byte(data), &event) != nil {
@@ -237,9 +274,11 @@ func (b *Backend) request(ctx context.Context, input []json.RawMessage, format j
 		case "response.completed":
 			return outputs, nil
 		case "response.failed", "error":
-			return nil, transientError{fmt.Errorf("backend failed: %s", truncate(event.Message+event.Response.Error.Message, 300))}
+			log.Printf("live: backend %s event: %s", event.Type, truncate(data, 2000))
+			return nil, transientError{fmt.Errorf("backend failed: %s", reason(data, event.Code, event.Message, event.Error, event.Response.Error))}
 		case "response.incomplete":
-			return nil, fmt.Errorf("backend failed: %s", truncate(event.Message+event.Response.Error.Message, 300))
+			log.Printf("live: backend %s event: %s", event.Type, truncate(data, 2000))
+			return nil, fmt.Errorf("backend failed: response incomplete: %s", reason(data, event.Response.IncompleteDetails.Reason, event.Response.Error))
 		}
 	}
 	return nil, transientError{fmt.Errorf("backend stream ended before the response completed")}

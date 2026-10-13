@@ -30,13 +30,15 @@ type ActivityEntry struct {
 }
 
 // SessionActivity is one session's recent diary. State is working, idle, stopped or failed, from the
-// last entry; open sessions with no entries in the window fall back to their transcript.
+// last entry; open sessions with no entries in the window fall back to their transcript. The model
+// comes from each open session's bridge.
 type SessionActivity struct {
-	Session      string          `json:"session"`
-	PaneID       string          `json:"pane_id,omitempty"`
-	Project      string          `json:"project"`
-	Open         bool            `json:"open"`
-	State        string          `json:"state"`
+	Session string `json:"session"`
+	PaneID  string `json:"pane_id,omitempty"`
+	Project string `json:"project"`
+	Open    bool   `json:"open"`
+	State   string `json:"state"`
+	ModelInfo
 	LastActivity string          `json:"last_activity,omitempty"`
 	Entries      []ActivityEntry `json:"entries,omitempty"`
 	LastAnswer   string          `json:"last_answer,omitempty"`
@@ -79,13 +81,19 @@ func Activity(ctx context.Context, box Box, path string, now time.Time, window t
 	var wait sync.WaitGroup
 	for _, pane := range panes {
 		session := byPane[pane.ID]
-		if session != nil {
+		diarized := session != nil
+		if diarized {
 			session.Open, session.PaneID, session.Session = true, pane.ID, pane.Title()
-			continue
+		} else {
+			session = &SessionActivity{Session: pane.Title(), PaneID: pane.ID, Project: project(pane.Dir), Open: true, State: "starting"}
+			order = append(order, session)
 		}
-		session = &SessionActivity{Session: pane.Title(), PaneID: pane.ID, Project: project(pane.Dir), Open: true, State: "starting"}
-		order = append(order, session)
-		if !pane.Bridge {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			session.ModelInfo = modelOf(ctx, box, pane)
+		}()
+		if diarized || !pane.Bridge {
 			continue
 		}
 		wait.Add(1)
@@ -110,6 +118,7 @@ func Activity(ctx context.Context, box Box, path string, now time.Time, window t
 	for _, session := range order {
 		if !session.Open {
 			session.State = "closed after " + session.State
+			session.ModelInfo = unavailableModel("the session is closed")
 		}
 		if session.at > 0 {
 			session.LastActivity = ago(now.Sub(time.UnixMilli(session.at)))

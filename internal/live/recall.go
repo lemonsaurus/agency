@@ -128,7 +128,7 @@ func (e Exchange) brief(now time.Time) string {
 		fmt.Fprintf(&b, "\n%s returned: %s", tool, fetched.Result)
 	}
 	if e.Error != "" {
-		fmt.Fprintf(&b, "\nThis request failed on the box, and Lemon was told: %s", e.Error)
+		fmt.Fprintf(&b, "\nThe backend's reply to this request failed, and Lemon was told: %s", e.Error)
 		return b.String()
 	}
 	fmt.Fprintf(&b, "\nYou answered: %s", e.Said)

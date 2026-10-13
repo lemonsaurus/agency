@@ -116,6 +116,21 @@ func (b *liveBox) Screen(ctx context.Context, paneID string, lines int) (string,
 	return b.tc.CapturePaneContent(ctx, paneID, lines)
 }
 
+func (b *liveBox) Model(ctx context.Context, paneID string) (string, string, error) {
+	path, err := ipc.BridgePath(b.socket, paneID)
+	if err != nil {
+		return "", "", err
+	}
+	reply, err := ipc.Model(ctx, path, ipc.ModelRequest{ID: requestID()})
+	if err != nil {
+		return "", "", err
+	}
+	if reply.Error != nil {
+		return "", "", fmt.Errorf("%s", reply.Error.Message)
+	}
+	return reply.Model, reply.Thinking, nil
+}
+
 func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.Manager {
 	home, _ := os.UserHomeDir()
 	key, err := privateKey("OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY"), filepath.Join(home, ".pi", "agent", "private.env"))

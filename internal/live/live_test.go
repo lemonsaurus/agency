@@ -188,6 +188,7 @@ type fakeBox struct {
 	spawned     []string
 	sent        []string
 	transcripts map[string][]json.RawMessage
+	models      map[string]string // pane → provider/model; others have none selected
 }
 
 func (b *fakeBox) Panes(context.Context) ([]Pane, error) {
@@ -219,6 +220,14 @@ func (b *fakeBox) Transcript(_ context.Context, paneID string, _ int) ([]json.Ra
 	return b.transcripts[paneID], nil
 }
 func (b *fakeBox) Screen(context.Context, string, int) (string, error) { return "screen", nil }
+func (b *fakeBox) Model(_ context.Context, paneID string) (string, string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if model, ok := b.models[paneID]; ok {
+		return model, "high", nil
+	}
+	return "", "", fmt.Errorf("No model selected in the target pane")
+}
 
 func TestDispatcherQueuesAndNarrates(t *testing.T) {
 	box := &fakeBox{transcripts: map[string][]json.RawMessage{}}
@@ -258,6 +267,50 @@ func TestDispatcherQueuesAndNarrates(t *testing.T) {
 	}
 	if _, err := d.Call(context.Background(), "ask_pane", `{"pane_id":"%99","text":"x","mode":"narrate"}`); err == nil {
 		t.Fatal("asked an unknown pane")
+	}
+}
+
+// 13 Oct: ask_project opened an unlabeled pane, the backend knew it as "carla-mobile", Pi relabeled
+// it, and check_pane("carla-mobile") said the session was no longer open while it was working.
+func TestSessionsResolveByIDTaskNameAndEarlierName(t *testing.T) {
+	box := &fakeBox{transcripts: map[string][]json.RawMessage{}, models: map[string]string{"%10": "openai-codex/gpt-5.5"}}
+	d := NewDispatcher(box, NewDiscord(func(Update) {}), func(Update) {})
+	queued, err := d.Call(context.Background(), "ask_project", `{"project_path":"/home/lemon/git/ee/quill","text":"research","mode":"narrate"}`)
+	if err != nil || queued.(map[string]any)["pane"] != "quill" {
+		t.Fatalf("queued=%v err=%v", queued, err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && d.Tickets()[0].Pane == ""; time.Sleep(50 * time.Millisecond) {
+	}
+	box.mu.Lock()
+	box.panes[0].Label = "Voice Architecture Reassessment"
+	box.mu.Unlock()
+	for _, ref := range []string{"quill", "%10", "voice architecture reassessment"} {
+		result, err := d.Call(context.Background(), "check_pane", `{"pane_id":"`+ref+`"}`)
+		checked, _ := result.(map[string]any)
+		if err != nil || checked["pane"] != "Voice Architecture Reassessment" || checked["pane_id"] != "%10" || *checked["model"].(*string) != "openai-codex/gpt-5.5" || checked["thinking"] != "high" {
+			t.Fatalf("%s: result=%v err=%v", ref, result, err)
+		}
+	}
+	if tickets := d.Tickets(); tickets[0].Title != "Voice Architecture Reassessment" || tickets[0].Pane != "%10" {
+		t.Fatalf("tickets=%+v", tickets)
+	}
+	listed, _ := d.Call(context.Background(), "list_panes", `{}`)
+	if pane := listed.(map[string]any)["panes"].([]map[string]any)[0]; *pane["model"].(*string) != "openai-codex/gpt-5.5" {
+		t.Fatalf("listed=%v", pane)
+	}
+	_, err = d.Call(context.Background(), "check_pane", `{"pane_id":"carla-mobile"}`)
+	var lookup LookupError
+	if !errors.As(err, &lookup) || !strings.Contains(err.Error(), `no open session has the id or task name "carla-mobile"`) {
+		t.Fatalf("err=%v", err)
+	}
+	box.mu.Lock()
+	box.panes = append(box.panes, Pane{ID: "%11", Label: "Voice Architecture Reassessment", Bridge: true})
+	box.mu.Unlock()
+	if _, err := d.Call(context.Background(), "read_pane", `{"pane_id":"Voice Architecture Reassessment"}`); err == nil || !strings.Contains(err.Error(), "2 open sessions are called") {
+		t.Fatalf("ambiguous err=%v", err)
+	}
+	if _, err := d.Call(context.Background(), "close_pane", `{"pane_id":"carla-mobile"}`); err == nil || errors.As(err, &lookup) {
+		t.Fatalf("a mutation's failure is not a lookup: %v", err)
 	}
 }
 
@@ -303,7 +356,7 @@ func TestBackendToolLoop(t *testing.T) {
 }
 
 // fakeConn feeds scripted events and records what the session writes.
-// fakeConn keeps the box's "still running" notes apart from what else it wrote.
+// fakeConn keeps the box's running note apart from what else it wrote.
 type fakeConn struct {
 	events  chan []byte
 	mu      sync.Mutex
@@ -326,7 +379,7 @@ func (c *fakeConn) Write(_ context.Context, event []byte) error {
 	var parsed map[string]any
 	json.Unmarshal(event, &parsed)
 	c.mu.Lock()
-	if content, _ := parsed["content"].(string); parsed["type"] == "session.thinking.append" && strings.Contains(content, "running on the box") {
+	if parsed["type"] == "session.thinking.append" && parsed["content"] == runningNote {
 		c.running = append(c.running, parsed)
 	} else {
 		c.wrote = append(c.wrote, parsed)
@@ -717,10 +770,11 @@ func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
 		`{"at":9900000,"pane":"%2","label":"Gone","cwd":"/home/lemon/git/x/y","kind":"answered","text":"shipped"}`,
 	}
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
-	box := &fakeBox{panes: []Pane{{ID: "%1", Label: "Grant Coverage", Bridge: true}, {ID: "%3", Label: "Quiet", Dir: "/home/lemon/git/q/r", Bridge: true}},
-		transcripts: map[string][]json.RawMessage{"%3": {json.RawMessage(`{"role":"assistant","at":5000000,"blocks":[{"type":"text","text":"all done"}]}`)}}}
+	box := &fakeBox{panes: []Pane{{ID: "%1", Label: "Grant Coverage", Bridge: true}, {ID: "%3", Label: "Quiet", Dir: "/home/lemon/git/q/r", Bridge: true}, {ID: "%4", Label: "Booting", Command: "pi"}},
+		transcripts: map[string][]json.RawMessage{"%3": {json.RawMessage(`{"role":"assistant","at":5000000,"blocks":[{"type":"text","text":"all done"}]}`)}},
+		models:      map[string]string{"%1": "anthropic/claude-opus-4-8"}}
 	sessions, err := Activity(context.Background(), box, path, now, time.Hour)
-	if err != nil || len(sessions) != 3 {
+	if err != nil || len(sessions) != 4 {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
 	}
 	gone, grant, quiet := sessions[0], sessions[1], sessions[2]
@@ -732,6 +786,18 @@ func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
 	}
 	if quiet.State != "idle" || quiet.LastAnswer != "all done" || quiet.Project != "q/r" {
 		t.Fatalf("quiet=%+v", quiet)
+	}
+	// Every session states its model, or null with why the bridge could not say.
+	data, _ := json.Marshal(sessions)
+	for _, want := range []string{
+		`"session":"Gone","project":"x/y","open":false,"state":"closed after idle","model":null,"model_unavailable":"the session is closed"`,
+		`"session":"Grant Coverage","pane_id":"%1","project":"hm/brood","open":true,"state":"working","model":"anthropic/claude-opus-4-8","thinking":"high"`,
+		`"session":"Quiet","pane_id":"%3","project":"q/r","open":true,"state":"idle","model":null,"model_unavailable":"the session's bridge did not say: No model selected in the target pane"`,
+		`"session":"Booting","pane_id":"%4","project":"","open":true,"state":"starting","model":null,"model_unavailable":"the session is still starting"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("missing %s in %s", want, data)
+		}
 	}
 }
 
