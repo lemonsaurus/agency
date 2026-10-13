@@ -116,19 +116,19 @@ func (b *liveBox) Screen(ctx context.Context, paneID string, lines int) (string,
 	return b.tc.CapturePaneContent(ctx, paneID, lines)
 }
 
-func (b *liveBox) Model(ctx context.Context, paneID string) (string, string, error) {
+func (b *liveBox) Model(ctx context.Context, paneID string) (live.PaneModel, error) {
 	path, err := ipc.BridgePath(b.socket, paneID)
 	if err != nil {
-		return "", "", err
+		return live.PaneModel{}, err
 	}
 	reply, err := ipc.Model(ctx, path, ipc.ModelRequest{ID: requestID()})
 	if err != nil {
-		return "", "", err
+		return live.PaneModel{}, err
 	}
 	if reply.Error != nil {
-		return "", "", fmt.Errorf("%s", reply.Error.Message)
+		return live.PaneModel{}, fmt.Errorf("%s", reply.Error.Message)
 	}
-	return reply.Model, reply.Thinking, nil
+	return live.PaneModel{Selected: reply.Model, Answered: reply.Answered, Thinking: reply.Thinking}, nil
 }
 
 func newLiveManager(tc *tmux.Client, mgr *session.Manager, socket string) *live.Manager {

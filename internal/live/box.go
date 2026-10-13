@@ -20,14 +20,24 @@ type Box interface {
 	Send(ctx context.Context, paneID, text string) error
 	Transcript(ctx context.Context, paneID string, limit int) ([]json.RawMessage, error)
 	Screen(ctx context.Context, paneID string, lines int) (string, error)
-	// Model is the provider/model the pane's Pi runs now, and its thinking level, from its bridge.
-	Model(ctx context.Context, paneID string) (model, thinking string, err error)
+	// Model is what the pane's Pi bridge says about its model.
+	Model(ctx context.Context, paneID string) (PaneModel, error)
 }
 
-// ModelInfo is a session's model in status JSON. Model is null when the bridge could not say,
-// with the reason in ModelUnavailable.
+// PaneModel is a pane's selected provider/model, which may be a router like jev/Auto, the
+// provider/model that wrote its latest answer (nil from bridges that predate it, empty before the
+// first answer), and its thinking level.
+type PaneModel struct {
+	Selected string
+	Answered *string
+	Thinking string
+}
+
+// ModelInfo is a session's model in status JSON: Model is the one that actually answered last, null
+// with the reason in ModelUnavailable when the bridge cannot say.
 type ModelInfo struct {
 	Model            *string `json:"model"`
+	SelectedModel    string  `json:"selected_model,omitempty"`
 	Thinking         string  `json:"thinking,omitempty"`
 	ModelUnavailable string  `json:"model_unavailable,omitempty"`
 }
@@ -43,11 +53,20 @@ func modelOf(ctx context.Context, box Box, pane Pane) ModelInfo {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	model, thinking, err := box.Model(ctx, pane.ID)
+	model, err := box.Model(ctx, pane.ID)
 	if err != nil {
 		return unavailableModel("the session's bridge did not say: " + err.Error())
 	}
-	return ModelInfo{Model: &model, Thinking: thinking}
+	info := ModelInfo{SelectedModel: model.Selected, Thinking: model.Thinking}
+	switch {
+	case model.Answered == nil:
+		info.ModelUnavailable = "the session's Pi predates reporting the model that answered; /reload it"
+	case *model.Answered == "":
+		info.ModelUnavailable = "the session has not answered yet"
+	default:
+		info.Model = model.Answered
+	}
+	return info
 }
 
 // modelsOf asks every pane's bridge at once.
@@ -67,6 +86,9 @@ func modelsOf(ctx context.Context, box Box, panes []Pane) []ModelInfo {
 
 func (m ModelInfo) into(fields map[string]any) {
 	fields["model"] = m.Model
+	if m.SelectedModel != "" {
+		fields["selected_model"] = m.SelectedModel
+	}
 	if m.Thinking != "" {
 		fields["thinking"] = m.Thinking
 	}

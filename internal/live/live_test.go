@@ -188,7 +188,7 @@ type fakeBox struct {
 	spawned     []string
 	sent        []string
 	transcripts map[string][]json.RawMessage
-	models      map[string]string // pane → provider/model; others have none selected
+	models      map[string]PaneModel // panes without one have none selected
 }
 
 func (b *fakeBox) Panes(context.Context) ([]Pane, error) {
@@ -220,13 +220,17 @@ func (b *fakeBox) Transcript(_ context.Context, paneID string, _ int) ([]json.Ra
 	return b.transcripts[paneID], nil
 }
 func (b *fakeBox) Screen(context.Context, string, int) (string, error) { return "screen", nil }
-func (b *fakeBox) Model(_ context.Context, paneID string) (string, string, error) {
+func (b *fakeBox) Model(_ context.Context, paneID string) (PaneModel, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if model, ok := b.models[paneID]; ok {
-		return model, "high", nil
+		return model, nil
 	}
-	return "", "", fmt.Errorf("No model selected in the target pane")
+	return PaneModel{}, fmt.Errorf("No model selected in the target pane")
+}
+
+func answered(model string) PaneModel {
+	return PaneModel{Selected: "jev/Auto", Answered: &model, Thinking: "high"}
 }
 
 func TestDispatcherQueuesAndNarrates(t *testing.T) {
@@ -273,7 +277,7 @@ func TestDispatcherQueuesAndNarrates(t *testing.T) {
 // 13 Oct: ask_project opened an unlabeled pane, the backend knew it as "carla-mobile", Pi relabeled
 // it, and check_pane("carla-mobile") said the session was no longer open while it was working.
 func TestSessionsResolveByIDTaskNameAndEarlierName(t *testing.T) {
-	box := &fakeBox{transcripts: map[string][]json.RawMessage{}, models: map[string]string{"%10": "openai-codex/gpt-5.5"}}
+	box := &fakeBox{transcripts: map[string][]json.RawMessage{}, models: map[string]PaneModel{"%10": answered("openai-codex/gpt-5.5")}}
 	d := NewDispatcher(box, NewDiscord(func(Update) {}), func(Update) {})
 	queued, err := d.Call(context.Background(), "ask_project", `{"project_path":"/home/lemon/git/ee/quill","text":"research","mode":"narrate"}`)
 	if err != nil || queued.(map[string]any)["pane"] != "quill" {
@@ -287,17 +291,31 @@ func TestSessionsResolveByIDTaskNameAndEarlierName(t *testing.T) {
 	for _, ref := range []string{"quill", "%10", "voice architecture reassessment"} {
 		result, err := d.Call(context.Background(), "check_pane", `{"pane_id":"`+ref+`"}`)
 		checked, _ := result.(map[string]any)
-		if err != nil || checked["pane"] != "Voice Architecture Reassessment" || checked["pane_id"] != "%10" || *checked["model"].(*string) != "openai-codex/gpt-5.5" || checked["thinking"] != "high" {
+		if err != nil || checked["pane"] != "Voice Architecture Reassessment" || checked["pane_id"] != "%10" || *checked["model"].(*string) != "openai-codex/gpt-5.5" || checked["selected_model"] != "jev/Auto" || checked["thinking"] != "high" {
 			t.Fatalf("%s: result=%v err=%v", ref, result, err)
 		}
 	}
 	if tickets := d.Tickets(); tickets[0].Title != "Voice Architecture Reassessment" || tickets[0].Pane != "%10" {
 		t.Fatalf("tickets=%+v", tickets)
 	}
+	box.mu.Lock()
+	box.panes = append(box.panes, Pane{ID: "%12", Label: "Fresh", Bridge: true}, Pane{ID: "%13", Label: "Booting", Command: "pi"})
+	box.models["%12"] = PaneModel{Selected: "anthropic/claude-haiku-5-5", Answered: new(string)}
+	box.mu.Unlock()
 	listed, _ := d.Call(context.Background(), "list_panes", `{}`)
-	if pane := listed.(map[string]any)["panes"].([]map[string]any)[0]; *pane["model"].(*string) != "openai-codex/gpt-5.5" {
-		t.Fatalf("listed=%v", pane)
+	data, _ := json.Marshal(listed)
+	for _, want := range []string{
+		`"id":"%10","model":"openai-codex/gpt-5.5","name":"Voice Architecture Reassessment","project":"/home/lemon/git/ee/quill","selected_model":"jev/Auto","status":"ready","thinking":"high"`,
+		`"id":"%12","model":null,"model_unavailable":"the session has not answered yet","name":"Fresh","project":"","selected_model":"anthropic/claude-haiku-5-5","status":"ready"`,
+		`"id":"%13","model":null,"model_unavailable":"the session is still starting","name":"Booting"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("missing %s in %s", want, data)
+		}
 	}
+	box.mu.Lock()
+	box.panes = box.panes[:1]
+	box.mu.Unlock()
 	_, err = d.Call(context.Background(), "check_pane", `{"pane_id":"carla-mobile"}`)
 	var lookup LookupError
 	if !errors.As(err, &lookup) || !strings.Contains(err.Error(), `no open session has the id or task name "carla-mobile"`) {
@@ -772,7 +790,7 @@ func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 	box := &fakeBox{panes: []Pane{{ID: "%1", Label: "Grant Coverage", Bridge: true}, {ID: "%3", Label: "Quiet", Dir: "/home/lemon/git/q/r", Bridge: true}, {ID: "%4", Label: "Booting", Command: "pi"}},
 		transcripts: map[string][]json.RawMessage{"%3": {json.RawMessage(`{"role":"assistant","at":5000000,"blocks":[{"type":"text","text":"all done"}]}`)}},
-		models:      map[string]string{"%1": "anthropic/claude-opus-4-8"}}
+		models:      map[string]PaneModel{"%1": answered("anthropic/claude-opus-5-5"), "%3": {Selected: "jev/Auto"}}}
 	sessions, err := Activity(context.Background(), box, path, now, time.Hour)
 	if err != nil || len(sessions) != 4 {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
@@ -791,8 +809,8 @@ func TestActivityReadsDiaryAndFallsBack(t *testing.T) {
 	data, _ := json.Marshal(sessions)
 	for _, want := range []string{
 		`"session":"Gone","project":"x/y","open":false,"state":"closed after idle","model":null,"model_unavailable":"the session is closed"`,
-		`"session":"Grant Coverage","pane_id":"%1","project":"hm/brood","open":true,"state":"working","model":"anthropic/claude-opus-4-8","thinking":"high"`,
-		`"session":"Quiet","pane_id":"%3","project":"q/r","open":true,"state":"idle","model":null,"model_unavailable":"the session's bridge did not say: No model selected in the target pane"`,
+		`"session":"Grant Coverage","pane_id":"%1","project":"hm/brood","open":true,"state":"working","model":"anthropic/claude-opus-5-5","selected_model":"jev/Auto","thinking":"high"`,
+		`"session":"Quiet","pane_id":"%3","project":"q/r","open":true,"state":"idle","model":null,"selected_model":"jev/Auto","model_unavailable":"the session's Pi predates reporting the model that answered; /reload it"`,
 		`"session":"Booting","pane_id":"%4","project":"","open":true,"state":"starting","model":null,"model_unavailable":"the session is still starting"`,
 	} {
 		if !strings.Contains(string(data), want) {

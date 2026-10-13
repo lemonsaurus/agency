@@ -192,6 +192,7 @@ type ModelRequest struct {
 type ModelReply struct {
 	ID       string    `json:"id"`
 	Model    string    `json:"model,omitempty"`
+	Answered *string   `json:"answered,omitempty"` // provider/model of the latest answer; absent from older bridges
 	Thinking string    `json:"thinking,omitempty"`
 	Models   []string  `json:"models,omitempty"`
 	Error    *AskError `json:"error,omitempty"`
