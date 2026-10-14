@@ -816,6 +816,33 @@ func TestPruneDead(t *testing.T) {
 	}
 }
 
+func TestResolveRequesterAdoptsPaneCreatedAfterStartup(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 200 && ancestor == 100 || pid == 300 && ancestor == 101 }
+	if err := mgr.AdoptOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// tmux's new-window binding made these panes after the daemon started: one with a role option, one without.
+	mock.listOutput = "1\tphone\t%7\t0\tnode\t/tmp\t1\t100\tcontroller\t\t%7\n1\tphone\t%8\t1\tzsh\t/tmp\t0\t101\t\t\t"
+	req, err := mgr.ResolveRequester(context.Background(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.PaneID != "%7" || req.Role != control.RoleController || req.RootID != "%7" {
+		t.Fatalf("unexpected requester: %+v", req)
+	}
+	if mgr.PaneCount() != 1 {
+		t.Fatalf("expected the adopted pane to be tracked, got %d panes", mgr.PaneCount())
+	}
+	if _, err := mgr.ResolveRequester(context.Background(), 300); err == nil || !strings.Contains(err.Error(), "has no agency role") {
+		t.Fatalf("a pane without a role option must stay rejected, got %v", err)
+	}
+	if again, err := mgr.ResolveRequester(context.Background(), 200); err != nil || again.PaneID != "%7" || mgr.PaneCount() != 1 {
+		t.Fatalf("second lookup should reuse the tracked pane: %+v %v", again, err)
+	}
+}
+
 func TestResolveRequesterFromTmuxServer(t *testing.T) {
 	mock := &testMock{listOutput: "1\tjournalia\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0"}
 	mgr := newTestManager(mock)

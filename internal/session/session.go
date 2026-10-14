@@ -404,6 +404,12 @@ func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Reques
 			continue
 		}
 		tracked := m.panes[pane.ID]
+		// tmux's own new-window bindings create panes the daemon never saw; their role lives in tmux options.
+		if tracked == nil && pane.CloudWindow == "" && pane.Role != "" {
+			if _, err := control.ParseRole(pane.Role); err == nil {
+				tracked = m.adoptPane(ctx, pane, "")
+			}
+		}
 		if tracked == nil || tracked.Role == "" {
 			return control.Requester{}, fmt.Errorf("pane %s has no agency role", pane.ID)
 		}
@@ -993,88 +999,96 @@ func (m *Manager) AdoptOrphans(ctx context.Context) error {
 			continue
 		}
 
-		color := paneColors[m.colorIndex%len(paneColors)]
-		m.colorIndex++
-
-		agencyCommand := pane.Command
-		if pane.AgencyCommand != "" {
-			if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.AgencyCommand); decodeErr == nil {
-				agencyCommand = string(decoded)
-			}
-		}
-		agentType := m.registry.DetectType(agencyCommand)
-		var displayName string
-		if agentType != "" {
-			agent, _ := m.registry.Get(agentType)
-			folder := folderLabel(pane.CWD)
-			if folder != "" {
-				displayName = fmt.Sprintf("%s %s@%s", agent.Icon, agentType, folder)
-			} else {
-				m.counters[agentType]++
-				displayName = fmt.Sprintf("%s %s #%d", agent.Icon, agentType, m.counters[agentType])
-			}
-		} else {
-			folder := folderLabel(pane.CWD)
-			if folder != "" {
-				displayName = fmt.Sprintf(">_ %s@%s", pane.Command, folder)
-			} else {
-				m.counters["terminal"]++
-				displayName = fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
-			}
-		}
-
-		m.stylePaneLabel(ctx, pane.ID, folderLabel(pane.CWD), color)
-
-		role, err := control.ParseRole(pane.Role)
-		if err != nil {
-			if pane.ID == controllerID {
-				role = control.RoleController
-			} else {
-				role = control.RoleManager
-			}
-		}
-		parentID := pane.ParentID
-		rootID := pane.RootID
-		if role == control.RoleController {
-			parentID = ""
-			rootID = pane.ID
-		} else {
-			if parentID == "" {
-				parentID = controllerID
-			}
-			if rootID == "" {
-				rootID = controllerID
-			}
-		}
-
-		pendingPromotion := ""
-		if pane.PendingPromotion != "" {
-			if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.PendingPromotion); decodeErr == nil {
-				pendingPromotion = string(decoded)
-			}
-		}
-		tracked := &TrackedPane{
-			PaneID:           pane.ID,
-			WindowName:       pane.WindowName,
-			AgentType:        agentType,
-			AgentName:        displayName,
-			TaskLabel:        pane.TaskLabel,
-			Command:          agencyCommand,
-			Status:           status.StatusIdle,
-			Role:             role,
-			ParentID:         parentID,
-			RootID:           rootID,
-			PendingPromotion: pendingPromotion,
-		}
-		m.panes[pane.ID] = tracked
-		m.stylePaneControl(ctx, tracked)
-
-		if m.poller != nil {
-			m.poller.Track(pane.ID, agentType)
-		}
+		m.adoptPane(ctx, pane, controllerID)
 	}
 
 	return nil
+}
+
+// adoptPane starts tracking a tmux pane Agency did not spawn, taking its role from the pane's
+// tmux options. A pane without a valid role becomes the controller when it is controllerID, else a manager.
+// The caller holds m.mu.
+func (m *Manager) adoptPane(ctx context.Context, pane tmux.PaneInfo, controllerID string) *TrackedPane {
+	color := paneColors[m.colorIndex%len(paneColors)]
+	m.colorIndex++
+
+	agencyCommand := pane.Command
+	if pane.AgencyCommand != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.AgencyCommand); decodeErr == nil {
+			agencyCommand = string(decoded)
+		}
+	}
+	agentType := m.registry.DetectType(agencyCommand)
+	var displayName string
+	if agentType != "" {
+		agent, _ := m.registry.Get(agentType)
+		folder := folderLabel(pane.CWD)
+		if folder != "" {
+			displayName = fmt.Sprintf("%s %s@%s", agent.Icon, agentType, folder)
+		} else {
+			m.counters[agentType]++
+			displayName = fmt.Sprintf("%s %s #%d", agent.Icon, agentType, m.counters[agentType])
+		}
+	} else {
+		folder := folderLabel(pane.CWD)
+		if folder != "" {
+			displayName = fmt.Sprintf(">_ %s@%s", pane.Command, folder)
+		} else {
+			m.counters["terminal"]++
+			displayName = fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
+		}
+	}
+
+	m.stylePaneLabel(ctx, pane.ID, folderLabel(pane.CWD), color)
+
+	role, err := control.ParseRole(pane.Role)
+	if err != nil {
+		if pane.ID == controllerID {
+			role = control.RoleController
+		} else {
+			role = control.RoleManager
+		}
+	}
+	parentID := pane.ParentID
+	rootID := pane.RootID
+	if role == control.RoleController {
+		parentID = ""
+		rootID = pane.ID
+	} else {
+		if parentID == "" {
+			parentID = controllerID
+		}
+		if rootID == "" {
+			rootID = controllerID
+		}
+	}
+
+	pendingPromotion := ""
+	if pane.PendingPromotion != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(pane.PendingPromotion); decodeErr == nil {
+			pendingPromotion = string(decoded)
+		}
+	}
+	tracked := &TrackedPane{
+		PaneID:           pane.ID,
+		WindowName:       pane.WindowName,
+		AgentType:        agentType,
+		AgentName:        displayName,
+		TaskLabel:        pane.TaskLabel,
+		Command:          agencyCommand,
+		Status:           status.StatusIdle,
+		Role:             role,
+		ParentID:         parentID,
+		RootID:           rootID,
+		PendingPromotion: pendingPromotion,
+	}
+	m.panes[pane.ID] = tracked
+	m.stylePaneControl(ctx, tracked)
+
+	if m.poller != nil {
+		m.poller.Track(pane.ID, agentType)
+	}
+	return tracked
 }
 
 // BroadcastKeys sends keystrokes to all tracked agent panes (skips
