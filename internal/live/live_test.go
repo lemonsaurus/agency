@@ -913,12 +913,12 @@ func TestVoiceSaysWordsFromThePronunciationHandbook(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "backend.md"), []byte("backend rules"), 0o600)
 	m := NewManager(&fakeBox{transcripts: map[string][]json.RawMessage{}}, "key", func() (string, error) { return "persona", nil }, dir, filepath.Join(dir, "memory.jsonl"))
 	live, _, err := m.instructions("Irish")
-	if err != nil || live != "persona\n\nlive rules\n\nSpeak Irish English with a natural, contemporary Irish accent throughout." {
+	if err != nil || live != "persona\n\nlive rules\n\nSpeak Irish English with a natural, contemporary Irish accent throughout. The accent is for English only: when you say words or sentences in another language, use that language's native pronunciation, never the Irish accent." {
 		t.Fatalf("without a handbook: %q %v", live, err)
 	}
 	os.WriteFile(filepath.Join(dir, "pronunciation.md"), []byte("# Pronunciation\n\nJournalia: shur-NAHL-ya.\n"), 0o600)
 	live, backend, _ := m.instructions("Irish")
-	if live != "persona\n\nlive rules\n\n# Pronunciation\n\nJournalia: shur-NAHL-ya.\n\nSpeak Irish English with a natural, contemporary Irish accent throughout." || strings.Contains(backend, "shur") {
+	if live != "persona\n\nlive rules\n\n# Pronunciation\n\nJournalia: shur-NAHL-ya.\n\nSpeak Irish English with a natural, contemporary Irish accent throughout. The accent is for English only: when you say words or sentences in another language, use that language's native pronunciation, never the Irish accent." || strings.Contains(backend, "shur") {
 		t.Fatalf("live=%q backend=%q", live, backend)
 	}
 }

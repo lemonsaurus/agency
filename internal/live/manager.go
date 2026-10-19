@@ -235,7 +235,7 @@ func (m *Manager) instructions(accent string) (string, string, error) {
 		spoken = "\n\n" + strings.TrimSpace(string(words))
 	}
 	if strings.TrimSpace(accent) != "" {
-		spoken += fmt.Sprintf("\n\nSpeak %s English with a natural, contemporary %s accent throughout.", accent, accent)
+		spoken += fmt.Sprintf("\n\nSpeak %s English with a natural, contemporary %s accent throughout. The accent is for English only: when you say words or sentences in another language, use that language's native pronunciation, never the %s accent.", accent, accent, accent)
 	}
 	return persona + "\n\n" + strings.TrimSpace(string(live)) + spoken, persona + "\n\n# Voice backend\n\n" + strings.TrimSpace(string(backend)), nil
 }
