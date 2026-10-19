@@ -574,6 +574,7 @@ func TestManagerStartAttachesSideband(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "live.md"), []byte("live rules"), 0o600)
 	os.WriteFile(filepath.Join(dir, "backend.md"), []byte("backend rules"), 0o600)
+	os.WriteFile(filepath.Join(dir, "pronunciation.md"), []byte("# Pronunciation\n\nSay Journalia as \"shur-NAHL-yuh\", IPA /ʃʊrˈnɑːljə/ (Norwegian).\n"), 0o600)
 	m := NewManager(&fakeBox{transcripts: map[string][]json.RawMessage{}}, "key", func() (string, error) { return "persona", nil }, dir, filepath.Join(dir, "memory.jsonl"))
 	m.API = server.URL
 	m.client = server.Client()
@@ -583,6 +584,9 @@ func TestManagerStartAttachesSideband(t *testing.T) {
 		t.Fatalf("reply=%q err=%v switches=%v", reply, err, m.switches)
 	}
 	session := created["session"].(map[string]any)
+	if !strings.Contains(session["instructions"].(string), `Say Journalia as "shur-NAHL-yuh", IPA /ʃʊrˈnɑːljə/ (Norwegian).`) {
+		t.Fatalf("handbook missing from the session instructions: %v", session["instructions"])
+	}
 	if session["delegation"].(map[string]any)["type"] != "client" || !strings.Contains(session["instructions"].(string), "New Zealand") || !strings.HasPrefix(session["instructions"].(string), "persona\n\nlive rules") {
 		t.Fatalf("session=%v", session)
 	}
