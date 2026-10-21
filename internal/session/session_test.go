@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lemonsaurus/agency/internal/agents"
@@ -109,7 +110,7 @@ func TestSpawnAgent(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 
@@ -167,7 +168,7 @@ func TestHumanSpawnCreatesControllerInFirstWindow(t *testing.T) {
 	mgr := newTestManager(mock)
 	human := control.Requester{Role: control.RoleController, Human: true}
 
-	if err := mgr.SpawnAgent(context.Background(), human, control.RoleController, "claude", "/tmp/project", "", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), human, control.RoleController, "claude", "/tmp/project", "", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 	splitCall := mock.findCall("split-window")
@@ -185,7 +186,7 @@ func TestHumanSpawnHonorsRequestedWindow(t *testing.T) {
 	mgr := newTestManager(mock)
 	human := control.Requester{Role: control.RoleController, Human: true}
 
-	if err := mgr.SpawnCommandWindow(context.Background(), human, control.RoleController, "journalia", "/usr/bin/zsh", "/tmp/project", ""); err != nil {
+	if _, err := mgr.SpawnCommandWindow(context.Background(), human, control.RoleController, "journalia", "/usr/bin/zsh", "/tmp/project", ""); err != nil {
 		t.Fatalf("SpawnCommandWindow failed: %v", err)
 	}
 	splitCall := mock.findCall("split-window")
@@ -201,7 +202,7 @@ func TestSpawnAgentWithDir(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/project", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/project", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgent with dir failed: %v", err)
 	}
 
@@ -225,7 +226,7 @@ func TestSpawnAgentPrompt(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "Fix Lemon's bug"); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "Fix Lemon's bug"); err != nil {
 		t.Fatalf("SpawnAgent with prompt failed: %v", err)
 	}
 
@@ -244,10 +245,10 @@ func TestSpawnTwoPanes(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", "", "Test task", ""); err != nil {
 		t.Fatalf("second spawn: %v", err)
 	}
 
@@ -257,23 +258,56 @@ func TestSpawnTwoPanes(t *testing.T) {
 	}
 }
 
+func TestParallelSpawnsReturnTheirOwnPanes(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+	manager := control.Requester{PaneID: "%1", Role: control.RoleManager, RootID: "%0"}
+
+	const spawns = 4
+	ids := make([]string, spawns)
+	errs := make([]error, spawns)
+	var wg sync.WaitGroup
+	for i := range spawns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ids[i], errs[i] = mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", "", fmt.Sprintf("Lane %d", i), "")
+		}()
+	}
+	wg.Wait()
+
+	labels := map[string]string{}
+	for _, pane := range mgr.ListPanes() {
+		labels[pane.PaneID] = pane.TaskLabel
+	}
+	for i, id := range ids {
+		if errs[i] != nil {
+			t.Fatalf("spawn %d: %v", i, errs[i])
+		}
+		if want := fmt.Sprintf("Lane %d", i); labels[id] != want {
+			t.Errorf("spawn %d returned %s labeled %q, want %q", i, id, labels[id], want)
+		}
+		delete(labels, id)
+	}
+}
+
 func TestSpawnLimits(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 	mgr.cfg.Session.MaxManagers = 1
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err == nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", ""); err == nil {
 		t.Fatal("expected manager limit error")
 	}
 
 	mgr.cfg.Session.MaxWorkersPerManager = 1
 	manager := control.Requester{PaneID: "%1", Role: control.RoleManager, RootID: "%0"}
-	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", "", "Test task", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", "", "Test task", ""); err == nil {
+	if _, err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "claude", "", "Test task", ""); err == nil {
 		t.Fatal("expected worker limit error")
 	}
 }
@@ -282,7 +316,7 @@ func TestSpawnUnknownAgent(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "nonexistent", "", "Test task", "")
+	_, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "nonexistent", "", "Test task", "")
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -292,7 +326,7 @@ func TestSpawnCommand(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnCommand(context.Background(), testController, control.RoleWorker, "htop", "", "Test task"); err != nil {
+	if _, err := mgr.SpawnCommand(context.Background(), testController, control.RoleWorker, "htop", "", "Test task"); err != nil {
 		t.Fatalf("SpawnCommand failed: %v", err)
 	}
 
@@ -309,7 +343,7 @@ func TestSpawnAgentWindow(t *testing.T) {
 	mock := &testMock{windowInfoOutput: "200\t50\t1"}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgentWindow failed: %v", err)
 	}
 
@@ -335,7 +369,7 @@ func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
 	}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "/tmp/project", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgentWindow failed: %v", err)
 	}
 
@@ -361,11 +395,11 @@ func TestSpawnAgentWindowReusesExistingWindow(t *testing.T) {
 func TestReplaceManagerTransfersChildren(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/manager", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/tmp/manager", "Test task", ""); err != nil {
 		t.Fatal(err)
 	}
 	manager := control.Requester{PaneID: "%1", Role: control.RoleManager, RootID: "%0"}
-	if err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "codex", "/tmp/worker", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), manager, control.RoleWorker, "codex", "/tmp/worker", "Test task", ""); err != nil {
 		t.Fatal(err)
 	}
 	mock.listOutput = "1\twork\t%1\t0\tclaude\t/tmp/manager\t1\t101\tmanager\t%0\t%0\t\n1\twork\t%2\t1\tcodex\t/tmp/worker\t0\t102\tworker\t%1\t%0\t"
@@ -627,7 +661,7 @@ func TestKillPane(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
 	panes := mgr.ListPanes()
 	if len(panes) != 1 {
 		t.Fatalf("expected 1 pane, got %d", len(panes))
@@ -647,7 +681,7 @@ func TestKillWindow(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "", "Test task", "")
 	if mgr.PaneCount() != 1 {
 		t.Fatalf("expected 1 pane, got %d", mgr.PaneCount())
 	}
@@ -664,7 +698,7 @@ func TestRenameWindow(t *testing.T) {
 	mock := &testMock{windowOutput: "@1\t1\tcasts-review"}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgentWindow(context.Background(), testController, control.RoleManager, "casts-review", "claude", "", "Test task", "")
 	mock.listOutput = "1\thammerbound\t%1\t0\tpi\t/tmp\t1\t123"
 	if err := mgr.RenameWindow(context.Background(), "casts-review", "hammerbound"); err != nil {
 		t.Fatalf("RenameWindow failed: %v", err)
@@ -701,8 +735,8 @@ func TestKillAll(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "codex", "", "Test task", "")
 	if mgr.PaneCount() != 2 {
 		t.Fatalf("expected 2 panes, got %d", mgr.PaneCount())
 	}
@@ -782,10 +816,10 @@ func TestPruneDead(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "claude", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "claude", "", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "codex", "", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleWorker, "codex", "", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 	if mgr.PaneCount() != 2 {
@@ -917,7 +951,7 @@ func TestSpawnAgentFolderLabel(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	if err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/home/user/myproject", "Test task", ""); err != nil {
+	if _, err := mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/home/user/myproject", "Test task", ""); err != nil {
 		t.Fatalf("SpawnAgent failed: %v", err)
 	}
 
@@ -954,9 +988,9 @@ func TestPaletteColors(t *testing.T) {
 	mgr := newTestManager(mock)
 
 	// Spawn 3 panes — each should get a different color.
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/a", "Test task", "")
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/b", "Test task", "")
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/c", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/a", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/b", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "/proj/c", "Test task", "")
 
 	// Each pane gets its own set-option calls. Collect all @agent_color values.
 	colors := map[string]bool{}
@@ -976,9 +1010,9 @@ func TestInstanceCounters(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
 
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
-	_ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
+	_, _ = mgr.SpawnAgent(context.Background(), testController, control.RoleManager, "claude", "", "Test task", "")
 
 	panes := mgr.ListPanes()
 	if len(panes) != 3 {

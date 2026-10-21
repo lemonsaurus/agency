@@ -112,45 +112,45 @@ func (m *Manager) Live(ctx context.Context, payload string) (string, error) {
 	return m.LiveHandler(ctx, payload)
 }
 
-// SpawnAgent spawns a new pane running the named agent. A nonempty prompt is
-// the agent's first message.
-func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) error {
+// SpawnAgent spawns a new pane running the named agent and returns its pane
+// id. A nonempty prompt is the agent's first message.
+func (m *Manager) SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) (string, error) {
 	agent, ok := m.registry.Get(name)
 	if !ok {
-		return fmt.Errorf("unknown agent type: %q", name)
+		return "", fmt.Errorf("unknown agent type: %q", name)
 	}
 	return m.spawnPane(ctx, requester, role, "", name, agent.Command, dir, label, prompt)
 }
 
-func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) error {
+func (m *Manager) SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) (string, error) {
 	agent, ok := m.registry.Get(name)
 	if !ok {
-		return fmt.Errorf("unknown agent type: %q", name)
+		return "", fmt.Errorf("unknown agent type: %q", name)
 	}
 	return m.spawnPane(ctx, requester, role, windowName, name, agent.Command, dir, label, prompt)
 }
 
-// SpawnCommand spawns a pane running an arbitrary command.
-func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error {
+// SpawnCommand spawns a pane running an arbitrary command and returns its pane id.
+func (m *Manager) SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) (string, error) {
 	return m.spawnPane(ctx, requester, role, "", "", command, dir, label, "")
 }
 
-func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error {
+func (m *Manager) SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) (string, error) {
 	return m.spawnPane(ctx, requester, role, windowName, "", command, dir, label, "")
 }
 
-func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir, label, prompt string) error {
+func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, role control.Role, windowName, agentType, command, dir, label, prompt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := control.ValidateTaskLabel(label, !requester.Human); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateWindowName(windowName); err != nil {
-		return err
+		return "", err
 	}
 	if err := m.checkSpawnLimit(requester, role); err != nil {
-		return err
+		return "", err
 	}
 	parentID := requester.PaneID
 	rootID := requester.RootID
@@ -180,7 +180,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	} else if windowName != "" {
 		exists, existsErr := m.tmux.WindowExists(ctx, windowName)
 		if existsErr != nil {
-			return fmt.Errorf("checking window: %w", existsErr)
+			return "", fmt.Errorf("checking window: %w", existsErr)
 		}
 		if exists {
 			paneID, err = m.tmux.SplitWindowInWindow(ctx, windowName, spawnCommand, dir)
@@ -193,12 +193,12 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 		paneID, err = m.tmux.SplitWindow(ctx, spawnCommand, dir)
 	}
 	if err != nil {
-		return fmt.Errorf("spawning pane: %w", err)
+		return "", fmt.Errorf("spawning pane: %w", err)
 	}
 	if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_task_label", label); err != nil {
 		_ = m.tmux.KillPane(ctx, paneID)
 		m.Deaths.Record(deaths.Event{Kind: deaths.KindKilled, Pane: paneID, Label: label, Role: string(role), Dir: dir, Command: command, Note: "spawn rolled back"})
-		return fmt.Errorf("storing task label: %w", err)
+		return "", fmt.Errorf("storing task label: %w", err)
 	}
 	if group != "" {
 		_ = m.tmux.SetPaneOption(ctx, paneID, "@agency_group", group)
@@ -234,7 +234,7 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 
 	_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, paneID)
 
-	return nil
+	return paneID, nil
 }
 
 // displayName builds the label "icon agenttype@foldername", or falls back to

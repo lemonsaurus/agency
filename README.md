@@ -114,7 +114,7 @@ Inside the session, use `Prefix+a` (`Ctrl+Space, a`) to open the command palette
 ```
 agency                              Launch session (or reattach if one exists)
 agency --migrate-controller <pane>   Migrate a legacy session under the selected controller
-agency spawn <agent> [dir...]       Spawn one pane per directory
+agency spawn <agent> [dir...]       Spawn one pane per directory, printing each pane id
 agency spawn --cmd "htop" [dir]     Spawn an arbitrary command
 agency spawn --role <role> --label "task" ...  Programmatic manager or worker spawn
 agency spawn --prompt "text" ...               Start the agent on a first prompt

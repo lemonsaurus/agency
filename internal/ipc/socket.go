@@ -18,10 +18,10 @@ import (
 type Handler interface {
 	Capabilities() control.Capabilities
 	ResolveRequester(ctx context.Context, pid int) (control.Requester, error)
-	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) error
-	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) error
-	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) error
-	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) error
+	SpawnAgent(ctx context.Context, requester control.Requester, role control.Role, name, dir, label, prompt string) (string, error)
+	SpawnAgentWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, name, dir, label, prompt string) (string, error)
+	SpawnCommand(ctx context.Context, requester control.Requester, role control.Role, command, dir, label string) (string, error)
+	SpawnCommandWindow(ctx context.Context, requester control.Requester, role control.Role, windowName, command, dir, label string) (string, error)
 	TaskLabel(ctx context.Context, requester control.Requester, paneID string, label *string) (string, error)
 	InitTaskLabel(ctx context.Context, requester control.Requester, label string) (string, error)
 	KillPane(ctx context.Context, requester control.Requester, paneID string) error
@@ -279,10 +279,10 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		if strings.HasPrefix(arg, "cmd:") {
 			command, dir := splitDirSuffix(strings.TrimPrefix(arg, "cmd:"))
-			return "", s.handler.SpawnCommand(s.ctx, requester, role, command, dir, "")
+			return s.handler.SpawnCommand(s.ctx, requester, role, command, dir, "")
 		}
 		name, dir := splitDirSuffix(arg)
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "", "")
+		return s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "", "")
 	case "spawn-role", "spawn-window":
 		requester, err := s.requester(pid)
 		if err != nil {
@@ -307,17 +307,17 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 				return "", fmt.Errorf("prompt needs an agent, not a command")
 			}
 			if payload.Window != "" {
-				return "", s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir, payload.Label)
+				return s.handler.SpawnCommandWindow(s.ctx, requester, role, payload.Window, payload.Command, payload.Dir, payload.Label)
 			}
-			return "", s.handler.SpawnCommand(s.ctx, requester, role, payload.Command, payload.Dir, payload.Label)
+			return s.handler.SpawnCommand(s.ctx, requester, role, payload.Command, payload.Dir, payload.Label)
 		}
 		if payload.Agent == "" {
 			return "", fmt.Errorf("agent or command is required")
 		}
 		if payload.Window != "" {
-			return "", s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
+			return s.handler.SpawnAgentWindow(s.ctx, requester, role, payload.Window, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
 		}
-		return "", s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
+		return s.handler.SpawnAgent(s.ctx, requester, role, payload.Agent, payload.Dir, payload.Label, payload.Prompt)
 	case "label", "label-if-empty":
 		requester, err := s.requester(pid)
 		if err != nil {

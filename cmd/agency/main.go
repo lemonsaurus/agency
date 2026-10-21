@@ -884,10 +884,11 @@ func runSpawn(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\nIs agency running? Try: agency\n", err)
 			os.Exit(1)
 		}
-		if resp != "ok" {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		if strings.HasPrefix(resp, "error: ") {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", strings.TrimPrefix(resp, "error: "))
 			os.Exit(1)
 		}
+		fmt.Println(resp)
 	}
 }
 

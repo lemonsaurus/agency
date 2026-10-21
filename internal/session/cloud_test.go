@@ -205,7 +205,7 @@ func TestBoxSpawnJoinsRequesterGroup(t *testing.T) {
 	mock := &testMock{listOutput: "1\tπ pi@a\t%0\t0\tpi\t/tmp\t1\t200\t\t\t\t\t\t@1\t\t\tjournalia\tcloud"}
 	mgr := newTestManager(mock)
 	mgr.WindowPerPane = true
-	if err := mgr.SpawnCommand(context.Background(), testController, control.RoleManager, "pi", "/tmp", "Task"); err != nil {
+	if _, err := mgr.SpawnCommand(context.Background(), testController, control.RoleManager, "pi", "/tmp", "Task"); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range mock.findCalls("set-option") {
@@ -225,7 +225,7 @@ func TestBoxRejectsTmuxIdsAsWindowNames(t *testing.T) {
 		if err := mgr.MovePane(ctx, "%0", name); err == nil {
 			t.Fatalf("moved into %q", name)
 		}
-		if err := mgr.SpawnCommandWindow(ctx, testController, control.RoleManager, name, "pi", "/tmp", "Task"); err == nil {
+		if _, err := mgr.SpawnCommandWindow(ctx, testController, control.RoleManager, name, "pi", "/tmp", "Task"); err == nil {
 			t.Fatalf("spawned into %q", name)
 		}
 	}

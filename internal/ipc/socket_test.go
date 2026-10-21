@@ -88,36 +88,36 @@ func (m *mockHandler) ResolveRequester(_ context.Context, _ int) (control.Reques
 
 func (m *mockHandler) Live(_ context.Context, payload string) (string, error) { return "live:" + payload, nil }
 
-func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label, prompt string) error {
+func (m *mockHandler) SpawnAgent(_ context.Context, _ control.Requester, role control.Role, name, dir, label, prompt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failNext {
 		m.failNext = false
-		return fmt.Errorf("spawn failed")
+		return "", fmt.Errorf("spawn failed")
 	}
 	m.spawns = append(m.spawns, spawnRecord{name: name, dir: dir, role: role, label: label, prompt: prompt})
-	return nil
+	return fmt.Sprintf("%%%d", len(m.spawns)+len(m.commands)), nil
 }
 
-func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir, label, prompt string) error {
+func (m *mockHandler) SpawnAgentWindow(_ context.Context, _ control.Requester, role control.Role, windowName, name, dir, label, prompt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.spawns = append(m.spawns, spawnRecord{window: windowName, name: name, dir: dir, role: role, label: label, prompt: prompt})
-	return nil
+	return fmt.Sprintf("%%%d", len(m.spawns)+len(m.commands)), nil
 }
 
-func (m *mockHandler) SpawnCommand(_ context.Context, _ control.Requester, role control.Role, command, dir, label string) error {
+func (m *mockHandler) SpawnCommand(_ context.Context, _ control.Requester, role control.Role, command, dir, label string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.commands = append(m.commands, commandRecord{command: command, dir: dir, role: role, label: label})
-	return nil
+	return fmt.Sprintf("%%%d", len(m.spawns)+len(m.commands)), nil
 }
 
-func (m *mockHandler) SpawnCommandWindow(_ context.Context, _ control.Requester, role control.Role, windowName, command, dir, label string) error {
+func (m *mockHandler) SpawnCommandWindow(_ context.Context, _ control.Requester, role control.Role, windowName, command, dir, label string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.commands = append(m.commands, commandRecord{window: windowName, command: command, dir: dir, role: role, label: label})
-	return nil
+	return fmt.Sprintf("%%%d", len(m.spawns)+len(m.commands)), nil
 }
 
 func (m *mockHandler) TaskLabel(_ context.Context, requester control.Requester, paneID string, label *string) (string, error) {
@@ -245,8 +245,8 @@ func TestServerSpawnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp != "ok" {
-		t.Errorf("expected 'ok', got %q", resp)
+	if resp != "%1" {
+		t.Errorf("expected pane id %%1, got %q", resp)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -268,8 +268,8 @@ func TestServerSpawnAgentWithDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp != "ok" {
-		t.Errorf("expected 'ok', got %q", resp)
+	if resp != "%1" {
+		t.Errorf("expected pane id %%1, got %q", resp)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -291,8 +291,8 @@ func TestServerSpawnCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp != "ok" {
-		t.Errorf("expected 'ok', got %q", resp)
+	if resp != "%1" {
+		t.Errorf("expected pane id %%1, got %q", resp)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -314,8 +314,8 @@ func TestServerSpawnCommandWithDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp != "ok" {
-		t.Errorf("expected 'ok', got %q", resp)
+	if resp != "%1" {
+		t.Errorf("expected pane id %%1, got %q", resp)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -337,8 +337,8 @@ func TestServerSpawnWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp != "ok" {
-		t.Errorf("expected 'ok', got %q", resp)
+	if resp != "%1" {
+		t.Errorf("expected pane id %%1, got %q", resp)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -684,8 +684,8 @@ func TestServerHandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if resp == "ok" {
-		t.Error("expected error response when handler fails")
+	if !strings.HasPrefix(resp, "error: ") {
+		t.Errorf("expected error response when handler fails, got %q", resp)
 	}
 }
 
