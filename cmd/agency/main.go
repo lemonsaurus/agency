@@ -1099,6 +1099,7 @@ type sendPayload struct {
 	Pane  string `json:"pane"`
 	Text  string `json:"text"`
 	Enter bool   `json:"enter"`
+	Again bool   `json:"again,omitempty"`
 }
 
 type movePayload struct {
@@ -1186,21 +1187,29 @@ func extractDirArg(args []string) (command []string, dir string) {
 }
 
 func runSend(args []string) {
-	enter := true
-	if len(args) > 0 && args[0] == "--no-enter" {
-		enter = false
+	enter, again := true, false
+	for len(args) > 0 && (args[0] == "--no-enter" || args[0] == "--again") {
+		enter = enter && args[0] != "--no-enter"
+		again = again || args[0] == "--again"
 		args = args[1:]
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: agency send [--no-enter] <pane-id> <text>")
+		fmt.Fprintln(os.Stderr, "Usage: agency send [--no-enter] [--again] <pane-id> <text>")
 		os.Exit(1)
 	}
-	payload, _ := json.Marshal(sendPayload{Pane: args[0], Text: strings.Join(args[1:], " "), Enter: enter})
+	payload, _ := json.Marshal(sendPayload{Pane: args[0], Text: strings.Join(args[1:], " "), Enter: enter, Again: again})
 	cfg := loadConfig()
 	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "send:"+string(payload))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	if at, ok := strings.CutPrefix(resp, ipc.AlreadySent); ok {
+		if t, err := time.Parse(time.RFC3339, at); err == nil {
+			at = t.Local().Format("15:04:05")
+		}
+		fmt.Printf("Already delivered to %s at %s; not sent again. Pass --again to send the identical text twice.\n", args[0], at)
+		return
 	}
 	if resp != "ok" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)

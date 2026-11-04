@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -77,6 +78,7 @@ type sendPayload struct {
 	Pane  string `json:"pane"`
 	Text  string `json:"text"`
 	Enter bool   `json:"enter"`
+	Again bool   `json:"again,omitempty"` // deliver even an identical message sent within ResendWindow
 }
 
 type movePayload struct {
@@ -101,6 +103,7 @@ type Server struct {
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
+	sends    sendLedger
 }
 
 // NewServer creates a socket server at the given path.
@@ -198,8 +201,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	fmt.Fprintln(conn, response)
 }
 
+// bridgeSendTimeout bounds the wait for a busy Pi to confirm a send.
+var bridgeSendTimeout = 10 * time.Second
+
 // deliver hands an agent's message to the target's Pi bridge, which queues it
-// without touching the editor. Panes without a bridge get typed text instead.
+// without touching the editor. It is false only when Pi never took the text,
+// so typing it instead cannot deliver it twice.
 func (s *Server) deliver(paneID, text string) bool {
 	path, err := BridgePath(s.path, paneID)
 	if err != nil {
@@ -207,9 +214,17 @@ func (s *Server) deliver(paneID, text string) bool {
 	}
 	id := make([]byte, 16)
 	rand.Read(id)
-	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, bridgeSendTimeout)
 	defer cancel()
-	return Send(ctx, path, SendRequest{ID: hex.EncodeToString(id), Text: text}) == nil
+	err = Send(ctx, path, SendRequest{ID: hex.EncodeToString(id), Text: text})
+	var refusal *BridgeRefusal
+	if errors.Is(err, ErrNoBridge) || errors.As(err, &refusal) {
+		return false
+	}
+	if err != nil {
+		log.Printf("ipc: send to %s: the Pi bridge took the message without confirming: %v", paneID, err)
+	}
+	return true
 }
 
 func (s *Server) requester(pid int) (control.Requester, error) {
@@ -406,10 +421,20 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		if payload.Pane == "" {
 			return "", fmt.Errorf("pane is required")
 		}
-		if !requester.Human && payload.Enter && s.deliver(payload.Pane, requester.From()+" "+payload.Text) {
-			return "", nil
+		send := func() error {
+			if !requester.Human && payload.Enter && s.deliver(payload.Pane, requester.From()+" "+payload.Text) {
+				return nil
+			}
+			return s.handler.SendText(s.ctx, requester, payload.Pane, payload.Text, payload.Enter)
 		}
-		return "", s.handler.SendText(s.ctx, requester, payload.Pane, payload.Text, payload.Enter)
+		if requester.Human || payload.Again {
+			return "", send()
+		}
+		at, err := s.sends.deliver(s.ctx, sendKey(requester.PaneID, payload.Pane, payload.Text, payload.Enter), send)
+		if err != nil || at.IsZero() {
+			return "", err
+		}
+		return AlreadySent + at.UTC().Format(time.RFC3339), nil
 	case "move":
 		requester, err := s.requester(pid)
 		if err != nil {

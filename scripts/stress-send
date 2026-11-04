@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# stress-send hammers `agency send` on a throwaway headless daemon and counts
+# what every message did: delivered once, delivered twice, or reported as
+# failed although it arrived. It exits nonzero when a message arrived twice,
+# never arrived, or finally failed although it arrived; timeouts that a retry
+# absorbed only warn, since a starved box makes some calls slow.
+#
+# Usage: scripts/stress-send [binary]
+#
+# The daemon, its tmux server, and every pane run in a CPU-quota scope, so a
+# small quota reproduces a box at load 15 without slowing anything else.
+#
+#   SENDERS=24       sender panes, each also polling whoami and list like Pi
+#   TARGETS=8        target panes; half run a fake Pi bridge
+#   MESSAGES=15      messages per sender
+#   VIEWS=24         grouped view sessions, as phones and desktops attach
+#   CPU_QUOTA=150%   systemd CPUQuota for the scope; empty runs unconfined
+#   SEND_TIMEOUT=10  seconds a caller waits, like the Pi tool and `timeout 10`
+#   RETRIES=3        attempts per message after a failed send, like callers do
+#   SLOW_BRIDGE=0.15 share of bridge requests that stall 4-8 s, like a busy Pi
+#   KEEP=1           keep the work directory
+
+set -euo pipefail
+
+: "${SENDERS:=24}" "${TARGETS:=8}" "${MESSAGES:=15}" "${VIEWS:=24}"
+: "${CPU_QUOTA=150%}" "${SEND_TIMEOUT:=10}" "${RETRIES:=3}" "${SLOW_BRIDGE:=0.15}" "${KEEP:=}"
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+bold=$'\e[1m' dim=$'\e[2m' red=$'\e[31m' green=$'\e[32m' yellow=$'\e[33m' cyan=$'\e[36m' reset=$'\e[0m'
+step() { printf '%s▸%s %s\n' "$cyan" "$reset" "$*"; }
+
+if [[ -n "$CPU_QUOTA" && -z "${STRESS_SEND_SCOPED:-}" ]]; then
+    step "entering a scope with CPUQuota=$CPU_QUOTA"
+    exec systemd-run --user --scope --quiet -p "CPUQuota=$CPU_QUOTA" \
+        env STRESS_SEND_SCOPED=1 "$0" "$@"
+fi
+
+work=$(mktemp -d /tmp/stress-send.XXXXXX)
+name="stress$$"
+socket="/tmp/agency-$name.sock"
+tmuxsock="agency-$name"
+mkdir -p "$work/bin" "$work/home/.config/agency" "$work/out"
+
+cleanup() {
+    [[ -n "${serve_pid:-}" ]] && kill "$serve_pid" 2>/dev/null || true
+    kill "$(tmux -L "$tmuxsock" display-message -p '#{pid}' 2>/dev/null)" 2>/dev/null || true
+    rm -f "$socket" "/tmp/agency-$name.lock"
+    if [[ -n "$KEEP" ]]; then
+        printf '%swork kept in %s%s\n' "$dim" "$work" "$reset"
+    else
+        rm -rf "$work" "/tmp/agency-$name.log"
+    fi
+}
+trap cleanup EXIT
+
+if [[ -n "${1:-}" ]]; then
+    cp "$1" "$work/bin/agency"
+    step "using $1"
+else
+    step "building agency"
+    (cd "$repo" && go build -o "$work/bin/agency" ./cmd/agency)
+fi
+
+cat >"$work/home/.config/agency/config.toml" <<EOF
+[session]
+name = "$name"
+max_panes = 400
+max_managers = 400
+
+[agents.shell]
+command = "bash"
+EOF
+
+export HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" PATH="$work/bin:$PATH"
+unset TMUX TMUX_PANE AGENCY_SOCKET AGENCY_TMUX_SOCKET AGENCY_ROLE AGENCY_PANE_ID
+
+bridge_dir="$HOME/.agents/run/agency/$(printf '%s' "$socket" | sha256sum | cut -c1-16)"
+mkdir -p "$bridge_dir"
+
+# A target pane logs every message it receives: typed lines from its tty, and
+# bridge `send:` requests when it plays a Pi with a bridge.
+cat >"$work/target.py" <<'EOF'
+import json, os, random, re, socket, sys, threading, time
+log, bridge, slow = sys.argv[1], sys.argv[2], float(sys.argv[3])
+if bridge != "-":
+    bridge = os.path.join(bridge, os.environ["TMUX_PANE"][1:] + ".sock")
+lock = threading.Lock()
+def record(how, text):
+    for msg in re.findall(r"stress-\d+-\d+", text):
+        with lock, open(log, "a") as f:
+            f.write(f"{msg} {how}\n")
+def serve(conn):
+    with conn:
+        line = conn.makefile().readline()
+        if not line.startswith("send:"):
+            conn.sendall(b'{"error":{"code":"invalid_request","message":"Invalid bridge request"}}\n')
+            return
+        request = json.loads(line[5:])
+        time.sleep(random.uniform(4, 8) if random.random() < slow else random.uniform(0, 0.3))
+        record("bridge", request["text"])
+        try:
+            conn.sendall((json.dumps({"id": request["id"], "accepted": True}) + "\n").encode())
+        except OSError:
+            pass
+if bridge != "-":
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(bridge)
+    server.listen(64)
+    threading.Thread(target=lambda: [threading.Thread(target=serve, args=(server.accept()[0],), daemon=True).start() for _ in iter(int, 1)], daemon=True).start()
+for line in sys.stdin:
+    record("typed", line)
+EOF
+
+cat >"$work/sender.sh" <<EOF
+#!/usr/bin/env bash
+id=\$1
+mapfile -t targets <"$work/targets"
+out="$work/out/sender-\$id"
+( while [[ ! -e "$work/out/stop" ]]; do agency whoami >/dev/null 2>&1; agency list --json >/dev/null 2>&1; sleep 0.5; done ) &
+while [[ ! -e "$work/out/go" ]]; do sleep 0.2; done
+for m in \$(seq 1 $MESSAGES); do
+    msg="stress-\$id-\$m"
+    target=\${targets[RANDOM % \${#targets[@]}]}
+    for attempt in \$(seq 1 $RETRIES); do
+        start=\$(date +%s%N)
+        timeout $SEND_TIMEOUT agency send "\$target" "relay \$msg" >/dev/null 2>"$work/out/err-\$id"
+        rc=\$?
+        echo "\$msg \$attempt \$rc \$(( (\$(date +%s%N) - start) / 1000000 ))" >>"\$out"
+        [[ \$rc == 0 ]] && break
+    done
+done
+touch "$work/out/done-\$id"
+exec sleep infinity
+EOF
+
+step "starting a headless daemon as session $name"
+agency serve >"$work/serve.out" 2>&1 &
+serve_pid=$!
+for _ in $(seq 100); do [[ -S "$socket" ]] && break; sleep 0.1; done
+[[ -S "$socket" ]] || { echo "${red}daemon did not start${reset}"; cat "$work/serve.out"; exit 1; }
+
+step "spawning $TARGETS targets and $SENDERS senders"
+: >"$work/targets"
+for t in $(seq 1 "$TARGETS"); do
+    bridge=-
+    (( t % 2 == 0 )) && bridge=$bridge_dir
+    agency spawn --label "Target $t" --cmd "exec python3 -u $work/target.py $work/out/target-$t $bridge $SLOW_BRIDGE" /tmp >>"$work/targets"
+done
+for s in $(seq 1 "$SENDERS"); do
+    agency spawn --label "Sender $s" --cmd "bash $work/sender.sh $s" /tmp >/dev/null
+done
+for v in $(seq 1 "$VIEWS"); do
+    tmux -L "$tmuxsock" new-session -d -t "$name" -s "view-$v"
+done
+rows=$(tmux -L "$tmuxsock" list-panes -a -F x | wc -l)
+step "$rows tmux pane rows across $((VIEWS + 1)) sessions; go"
+
+sleep 2
+touch "$work/out/go"
+began=$(date +%s)
+while (( $(ls "$work/out" | grep -c '^done-' || true) < SENDERS )); do
+    printf '\r  %s%d/%d senders done, %ss%s' "$dim" "$(ls "$work/out" | grep -c '^done-' || true)" "$SENDERS" "$(( $(date +%s) - began ))" "$reset"
+    sleep 1
+done
+printf '\r\e[K'
+touch "$work/out/stop"
+sleep 9  # stalled bridges log after their stall
+
+python3 - "$work/out" "$SEND_TIMEOUT" <<'EOF'
+import collections, glob, os, sys
+out, timeout = sys.argv[1], int(sys.argv[2])
+bold, red, green, yellow, dim, reset = "\x1b[1m", "\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[2m", "\x1b[0m"
+arrived = collections.Counter()
+for path in glob.glob(os.path.join(out, "target-*")):
+    for line in open(path):
+        arrived[line.split()[0]] += 1
+attempts, final, latency = collections.Counter(), {}, []
+for path in glob.glob(os.path.join(out, "sender-*")):
+    for line in open(path):
+        msg, attempt, rc, ms = line.split()
+        attempts[msg] = int(attempt)
+        final[msg] = rc
+        latency.append(int(ms))
+calls = sum(attempts.values())
+failed_calls = calls - len(final) + sum(rc != "0" for rc in final.values())
+lost = [m for m, rc in final.items() if arrived[m] == 0]
+dupes = [m for m in final if arrived[m] > 1]
+lied = [m for m, rc in final.items() if rc != "0" and arrived[m] > 0]
+retried = [m for m, n in attempts.items() if n > 1 and arrived[m] > 0]
+latency.sort()
+pct = lambda p: latency[min(len(latency) - 1, int(len(latency) * p))] / 1000
+def row(label, n, color=red):
+    print(f"  {label:<38}{color if n else green}{n:>6}{reset}")
+print(f"{bold}stress-send{reset}  {len(final)} messages, {calls} send calls")
+row("calls that failed or timed out", failed_calls, yellow)
+row("messages retried after a delivery", len(retried), yellow)
+row("messages delivered more than once", len(dupes))
+row("messages never delivered", len(lost))
+row("final failure although delivered", len(lied))
+print(f"  {'latency p50 / p95 / max':<38}{pct(.5):>5.1f}s {pct(.95):>5.1f}s {latency[-1]/1000:>5.1f}s")
+sys.exit(1 if dupes or lost or lied else 0)
+EOF

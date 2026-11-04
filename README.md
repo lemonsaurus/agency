@@ -123,6 +123,7 @@ agency label [--pane %N] -- "task"    Set a pane's task label (empty clears)
 agency whoami [--role]               Print current pane authority
 agency capabilities                 Print running daemon protocol and promotion shortcut
 agency replace [--cmd "..." dir]     Start a role-preserving successor
+agency send [--no-enter] [--again] <pane-id> <text>  Send text to a pane and press Enter
 agency request-promotion <reason>    Request worker promotion
 agency approve-promotion <pane>      Approve promotion (human tmux authority only)
 agency kill <pane-id>               Kill a specific pane
@@ -324,6 +325,8 @@ agency cloud kill %310
 
 `send` from an agent pane reaches a Pi pane through its bridge as a `[from <pane> <role>]` user message: it starts a turn when the pane is idle and queues as a follow-up when busy, leaving the editor alone. Panes without a bridge, and `send --no-enter`, get the attributed text typed in. A human's `send`, such as a pasted attachment path, lands as one bracketed paste with no attribution.
 
+An agent can retry a `send` safely. For two minutes, the same text from the same pane to the same target joins the delivery still in flight, or prints `Already delivered to %3 at 08:31:02; not sent again.` and exits 0. `--again` sends identical text twice on purpose. A Pi that is slow to confirm still gets the message once, never typed in a second time.
+
 `ask --detach` to a busy pane returns `accepted` at once; the bridge holds it until the turn ends, and `transcript` lists it under `queued`.
 
 The voice backend runs on the ChatGPT plan: `~/.agents/bin/codex-token.mjs` asks Pi for the openai-codex token. Only GPT-Live uses `OPENAI_API_KEY`.
@@ -513,7 +516,10 @@ make install    # build + install to ~/.local/bin/
 make uninstall  # remove all installed binaries
 go test ./...   # run tests
 go vet ./...    # static analysis
+scripts/stress-send [binary]  # load-test agency send on a throwaway daemon
 ```
+
+`scripts/stress-send` starts a headless daemon on its own tmux server inside a `CPUQuota` scope, spawns sender panes that also poll `whoami` and `list` like Pi does, and target panes that log every message, half of them behind a fake Pi bridge that sometimes stalls. Each sender retries a failed send the way callers do. It prints failed calls, absorbed retries, messages that arrived twice or never, and send latency. It exits nonzero when a message arrives twice, never arrives, or ends in failure although it arrived. Pass `~/.local/bin/agency` to measure the installed build; the header lists the knobs.
 
 To test the installer against your local checkout instead of cloning from GitHub:
 

@@ -119,24 +119,35 @@ type SendRequest struct {
 	Text string `json:"text"`
 }
 
+// ErrNoBridge means the pane has no Pi bridge listening, so it got nothing.
+var ErrNoBridge = errors.New("no Pi bridge")
+
+// BridgeRefusal is a bridge's explicit no, such as an old Pi without send.
+type BridgeRefusal struct{ AskError }
+
+func (r *BridgeRefusal) Error() string { return r.Code + ": " + r.Message }
+
 // Send hands text to a Pi pane as a user message without touching its editor:
 // it starts a turn when the pane is idle and follows the running turn otherwise.
+// ErrNoBridge and *BridgeRefusal mean Pi never took the text; any other error
+// comes after the bridge received it.
 func Send(ctx context.Context, socket string, request SendRequest) error {
 	reply, err := exchange(ctx, socket, "send", request.ID, request)
 	if err != nil {
 		return err
 	}
 	if reply.Error != nil {
-		return fmt.Errorf("%s: %s", reply.Error.Code, reply.Error.Message)
+		return &BridgeRefusal{*reply.Error}
 	}
 	return nil
 }
 
-// exchange sends one kind-prefixed request and reads an accepted or error reply.
+// exchange sends one kind-prefixed request and reads an accepted or error
+// reply. An error reply may lack the id: Pi rejects unparseable requests that way.
 func exchange(ctx context.Context, socket, kind, id string, request any) (AskReply, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	if err != nil {
-		return AskReply{}, fmt.Errorf("no Pi bridge")
+		return AskReply{}, ErrNoBridge
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -146,14 +157,17 @@ func exchange(ctx context.Context, socket, kind, id string, request any) (AskRep
 		return AskReply{}, err
 	}
 	if _, err := fmt.Fprintf(conn, "%s:%s\n", kind, data); err != nil {
-		return AskReply{}, err
+		return AskReply{}, ErrNoBridge
 	}
 	reader := bufio.NewScanner(conn)
 	if !reader.Scan() {
+		if ctx.Err() != nil {
+			return AskReply{}, fmt.Errorf("bridge did not reply: %w", ctx.Err())
+		}
 		return AskReply{}, fmt.Errorf("bridge disconnected before replying")
 	}
 	var reply AskReply
-	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != id || reply.Text != nil || reply.Accepted == (reply.Error != nil) {
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != id && (reply.ID != "" || reply.Error == nil) || reply.Text != nil || reply.Accepted == (reply.Error != nil) {
 		return AskReply{}, fmt.Errorf("invalid bridge reply")
 	}
 	return reply, nil

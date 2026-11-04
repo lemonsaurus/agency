@@ -130,6 +130,7 @@ agency spawn --cmd "aider"    Spawn arbitrary command
 agency spawn --role worker pi Make a programmatic child role explicit
 agency spawn --prompt "..." pi  Start the agent on a first prompt
 agency replace [--cmd ...]    Start a role-preserving successor
+agency send [--again] %3 "…"  Send text; an agent's identical retry is delivered once
 agency request-promotion ...  Request worker promotion
 agency approve-promotion %3   Human approval used by the tmux binding
 agency kill <pane-id>         Kill a specific pane
@@ -218,6 +219,8 @@ Workers request promotion with a reason. Agency sends a structured notice with t
 
 `agency capabilities` reports the running daemon's protocol, configured promotion shortcut, and `paneLabels: true`. Pi reports missing or outdated runtimes without suggesting promotion for a handoff.
 
+Agent sends are idempotent within `ipc.ResendWindow` (two minutes). The daemon keys each send by sender, target, Enter, and text: a retry joins the delivery in flight, or gets `already-sent <time>` back and delivers nothing. `again` opts out. Delivery to a Pi bridge falls back to typing only when no bridge listens or the bridge refuses; a slow confirmation counts as delivered. `scripts/stress-send` reproduces the overnight load (30 panes, load 15) on a throwaway daemon in a CPU-quota scope and counts duplicates and false failures.
+
 Approval rejects pane-process callers. Tmux-server ancestry and confirmation provide workflow authorization, not isolation from agents with unrestricted shell access.
 
 When agency launches, it starts a unix socket server at `/tmp/agency-{session}.sock`. It also sets the env var `AGENCY_SOCKET` in every spawned pane so agents know where to reach it.
@@ -231,6 +234,7 @@ The protocol is newline-delimited:
 - `replace:{"command":"handoff-pi","dir":"/tmp"}` starts a role-preserving successor with optional launch overrides
 - `promotion-request:{"reason":"need fanout"}` records and routes a request
 - `promotion-approve:%3` approves a pending worker from human tmux authority
+- `send:{"pane":"%3","text":"run the tests","enter":true,"again":false}` delivers text; see idempotency above
 - `kill:%3` kills pane `%3`
 - `layout:tiled` switches layout
 
