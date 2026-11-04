@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -256,15 +257,37 @@ func (m *Manager) displayName(agentType, command, dir string) string {
 	return fmt.Sprintf(">_ terminal #%d", m.counters["terminal"])
 }
 
+// paneProfile is the AppArmor profile Cloud Harness loads for panes. It allows
+// everything except signalling the systemd user manager or Agency.
+const paneProfile = "agency-pane"
+
+// apparmorProfiles holds one directory per loaded AppArmor profile.
+var apparmorProfiles = "/sys/kernel/security/apparmor/policy/profiles"
+
 func roleCommand(command string, role control.Role, parentID, rootID string) string {
 	rootValue := fmt.Sprintf("%q", rootID)
 	if role == control.RoleController {
 		rootValue = `"$(tmux display-message -p '#{pane_id}')"`
 	}
-	return fmt.Sprintf(
+	command = fmt.Sprintf(
 		`AGENCY_ROLE=%s AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%s %s`,
 		role, parentID, rootValue, command,
 	)
+	if !profileLoaded(paneProfile) {
+		return command
+	}
+	return "exec aa-exec -p " + paneProfile + ` -- "$SHELL" -c '` + strings.ReplaceAll(command, "'", `'\''`) + "'"
+}
+
+// profileLoaded reports whether AppArmor has the named profile loaded.
+func profileLoaded(name string) bool {
+	paths, _ := filepath.Glob(filepath.Join(apparmorProfiles, name+".*", "name"))
+	for _, path := range paths {
+		if loaded, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(loaded)) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) checkSpawnLimit(requester control.Requester, role control.Role) error {
