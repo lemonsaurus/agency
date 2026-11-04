@@ -8,28 +8,26 @@ import (
 	"strings"
 )
 
-func processDescendsFrom(pid, ancestor int) bool {
-	for pid > 1 {
-		if pid == ancestor {
-			return true
-		}
+// processLineage returns pid and every ancestor up to init.
+func processLineage(pid int) map[int]bool {
+	lineage := map[int]bool{}
+	for pid > 1 && !lineage[pid] {
+		lineage[pid] = true
 		data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 		if err != nil {
-			return false
+			break
 		}
 		end := strings.LastIndexByte(string(data), ')')
 		if end < 0 {
-			return false
+			break
 		}
 		fields := strings.Fields(string(data)[end+1:])
 		if len(fields) < 2 {
-			return false
+			break
 		}
-		parent, err := strconv.Atoi(fields[1])
-		if err != nil || parent == pid {
-			return false
+		if pid, err = strconv.Atoi(fields[1]); err != nil {
+			break
 		}
-		pid = parent
 	}
-	return false
+	return lineage
 }

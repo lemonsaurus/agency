@@ -7,11 +7,12 @@ import (
 	"testing"
 )
 
-func TestProcessDescendsFrom(t *testing.T) {
-	if !processDescendsFrom(os.Getpid(), os.Getppid()) {
-		t.Fatal("current process should descend from its parent")
+func TestProcessLineage(t *testing.T) {
+	lineage := processLineage(os.Getpid())
+	if !lineage[os.Getpid()] || !lineage[os.Getppid()] {
+		t.Fatalf("lineage %v should hold the process and its parent", lineage)
 	}
-	if processDescendsFrom(os.Getppid(), os.Getpid()) {
-		t.Fatal("parent process should not descend from its child")
+	if processLineage(os.Getppid())[os.Getpid()] {
+		t.Fatal("a parent's lineage should not hold its child")
 	}
 }

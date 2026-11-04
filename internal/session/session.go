@@ -66,7 +66,7 @@ type Manager struct {
 	counters       map[string]int          // instance counters per agent type (fallback when no dir)
 	colorIndex     int                     // cycles through paneColors
 	currentLayout  string                  // last applied layout name (for relayout)
-	processOwnedBy func(pid, ancestor int) bool
+	processLineage func(pid int) map[int]bool
 
 	shownMu   sync.Mutex
 	shownSink func(line string) // sends the host a shown set; nil without a host link
@@ -100,7 +100,7 @@ func NewManager(tmuxClient *tmux.Client, registry *agents.Registry, cfg *config.
 		cloud:          &cloud.Client{Host: cfg.Cloud.Host},
 		panes:          make(map[string]*TrackedPane),
 		counters:       make(map[string]int),
-		processOwnedBy: processDescendsFrom,
+		processLineage: processLineage,
 	}
 }
 
@@ -392,34 +392,46 @@ func (m *Manager) taskLabel(ctx context.Context, requester control.Requester, pa
 }
 
 func (m *Manager) ResolveRequester(ctx context.Context, pid int) (control.Requester, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	panes, err := m.tmux.ListPanes(ctx)
+	// Every agency call lands here, so the lookups stay outside the lock.
+	panes, err := m.tmux.PanePIDs(ctx)
 	if err != nil {
 		return control.Requester{}, err
 	}
+	lineage := m.processLineage(pid)
+	paneID := ""
 	for _, pane := range panes {
-		if !m.processOwnedBy(pid, pane.PID) {
-			continue
+		if lineage[pane.PID] {
+			paneID = pane.ID
+			break
 		}
-		tracked := m.panes[pane.ID]
+	}
+	var serverPID int
+	var serverErr error
+	if paneID == "" {
+		serverPID, serverErr = m.tmux.ServerPID(ctx)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if paneID != "" {
+		tracked := m.panes[paneID]
 		// tmux's own new-window bindings create panes the daemon never saw; their role lives in tmux options.
-		if tracked == nil && pane.CloudWindow == "" && pane.Role != "" {
-			if _, err := control.ParseRole(pane.Role); err == nil {
-				tracked = m.adoptPane(ctx, pane, "")
+		if tracked == nil {
+			if pane, err := m.paneInfo(ctx, paneID); err == nil && pane.CloudWindow == "" && pane.Role != "" {
+				if _, err := control.ParseRole(pane.Role); err == nil {
+					tracked = m.adoptPane(ctx, pane, "")
+				}
 			}
 		}
 		if tracked == nil || tracked.Role == "" {
-			return control.Requester{}, fmt.Errorf("pane %s has no agency role", pane.ID)
+			return control.Requester{}, fmt.Errorf("pane %s has no agency role", paneID)
 		}
-		return control.Requester{PaneID: pane.ID, Role: tracked.Role, RootID: tracked.RootID, PID: pid}, nil
+		return control.Requester{PaneID: paneID, Role: tracked.Role, RootID: tracked.RootID, PID: pid}, nil
 	}
 	// Keybindings, hooks, and popups run as children of the tmux server
 	// rather than of any pane. They act for the human: controller authority,
 	// whether or not a controller pane is still alive.
-	serverPID, err := m.tmux.ServerPID(ctx)
-	if m.OutsideIsHuman || err == nil && m.processOwnedBy(pid, serverPID) {
+	if m.OutsideIsHuman || serverErr == nil && lineage[serverPID] {
 		for _, pane := range panes {
 			tracked := m.panes[pane.ID]
 			if tracked != nil && tracked.Role == control.RoleController {

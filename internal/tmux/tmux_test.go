@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -301,6 +302,21 @@ func TestListPanes(t *testing.T) {
 	}
 	if panes[0].PID != 1234 {
 		t.Errorf("expected PID 1234, got %d", panes[0].PID)
+	}
+}
+
+func TestPanePIDsSkipsParkedViewers(t *testing.T) {
+	mock := NewMockCommander()
+	mock.Default = mockReturn{Output: "1234\t%0\tcloud\n9999\t%40\tpark-77\n1234\t%0\tview-77\nbad\t%2\tcloud"}
+	c := &Client{Cmd: mock, SessionName: "test"}
+
+	panes, err := c.PanePIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PaneInfo{{ID: "%0", PID: 1234, Session: "cloud"}, {ID: "%0", PID: 1234, Session: "view-77"}}
+	if !reflect.DeepEqual(panes, want) {
+		t.Fatalf("PanePIDs = %+v, want %+v", panes, want)
 	}
 }
 

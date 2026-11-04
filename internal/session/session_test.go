@@ -33,6 +33,9 @@ func (m *testMock) Run(_ context.Context, args ...string) (string, error) {
 		m.paneIDSeq++
 		return fmt.Sprintf("%%%d", m.paneIDSeq), nil
 	case "list-panes":
+		if args[len(args)-1] == "#{pane_pid}\t#{pane_id}\t#{session_name}" {
+			return panePIDs(m.listOutput), nil
+		}
 		return m.listOutput, nil
 	case "list-windows":
 		return m.windowOutput, nil
@@ -811,10 +814,32 @@ func TestTmuxLayout(t *testing.T) {
 	}
 }
 
+// panePIDs renders ListPanes test rows the way PanePIDs asks tmux for them.
+func panePIDs(listOutput string) string {
+	var rows []string
+	for _, line := range strings.Split(listOutput, "\n") {
+		if parts := strings.Split(line, "\t"); len(parts) >= 8 {
+			rows = append(rows, parts[7]+"\t"+parts[2]+"\t")
+		}
+	}
+	return strings.Join(rows, "\n")
+}
+
+// lineages fakes process ancestry: each pid maps to itself and its ancestors.
+func lineages(chains map[int][]int) func(int) map[int]bool {
+	return func(pid int) map[int]bool {
+		lineage := map[int]bool{pid: true}
+		for _, ancestor := range chains[pid] {
+			lineage[ancestor] = true
+		}
+		return lineage
+	}
+}
+
 func TestResolveRequesterFromProcessAncestry(t *testing.T) {
 	mock := &testMock{listOutput: "1\tjournalia\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0"}
 	mgr := newTestManager(mock)
-	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 200 && ancestor == 100 }
+	mgr.processLineage = lineages(map[int][]int{200: {200, 150, 100}})
 	if err := mgr.AdoptOrphans(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +896,7 @@ func TestPruneDead(t *testing.T) {
 func TestResolveRequesterAdoptsPaneCreatedAfterStartup(t *testing.T) {
 	mock := &testMock{}
 	mgr := newTestManager(mock)
-	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 200 && ancestor == 100 || pid == 300 && ancestor == 101 }
+	mgr.processLineage = lineages(map[int][]int{200: {200, 100}, 300: {300, 101}})
 	if err := mgr.AdoptOrphans(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -899,7 +924,7 @@ func TestResolveRequesterFromTmuxServer(t *testing.T) {
 	mock := &testMock{listOutput: "1\tjournalia\t%0\t0\tpi\t/tmp\t1\t100\tcontroller\t\t%0"}
 	mgr := newTestManager(mock)
 	// pid 300 descends from the tmux server (42), not from any pane.
-	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 300 && ancestor == 42 }
+	mgr.processLineage = lineages(map[int][]int{300: {300, 42}})
 	if err := mgr.AdoptOrphans(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +941,7 @@ func TestResolveRequesterFromTmuxServerWithoutControllerPane(t *testing.T) {
 	// Only a manager pane is alive; the controller pane was closed.
 	mock := &testMock{listOutput: "1\tjournalia\t%1\t0\tpi\t/tmp\t1\t100\tmanager\t%0\t%0"}
 	mgr := newTestManager(mock)
-	mgr.processOwnedBy = func(pid, ancestor int) bool { return pid == 300 && ancestor == 42 }
+	mgr.processLineage = lineages(map[int][]int{300: {300, 42}})
 	if err := mgr.AdoptOrphans(context.Background()); err != nil {
 		t.Fatal(err)
 	}

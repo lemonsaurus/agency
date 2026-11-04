@@ -482,6 +482,27 @@ func (c *Client) windowTarget(windowName string) string {
 	return c.SessionName + ":" + windowName
 }
 
+// PanePIDs lists every pane's ID and process ID in ListPanes order, leaving
+// out parked viewers like ListPanes does. Three formats instead of eighteen
+// keep requester lookups cheap for a busy tmux server.
+func (c *Client) PanePIDs(ctx context.Context) ([]PaneInfo, error) {
+	out, err := c.Cmd.Run(ctx, "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_id}\t#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	var panes []PaneInfo
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 || strings.HasPrefix(parts[2], ParkPrefix) {
+			continue
+		}
+		if pid, err := strconv.Atoi(parts[0]); err == nil {
+			panes = append(panes, PaneInfo{ID: parts[1], PID: pid, Session: parts[2]})
+		}
+	}
+	return panes, nil
+}
+
 func (c *Client) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 	format := "#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{pane_pid}\t#{@agency_role}\t#{@agency_parent}\t#{@agency_root}\t#{@agency_promotion}\t#{@agency_command}\t#{window_id}\t#{@agency_cloud}\t#{@agency_task_label}\t#{@agency_group}\t#{session_name}"
 	out, err := c.Cmd.Run(ctx,

@@ -2,6 +2,6 @@
 
 package session
 
-func processDescendsFrom(_, _ int) bool {
-	return false
+func processLineage(pid int) map[int]bool {
+	return map[int]bool{pid: true}
 }
