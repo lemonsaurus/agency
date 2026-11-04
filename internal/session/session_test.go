@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -728,6 +729,23 @@ func TestSendTextAttribution(t *testing.T) {
 	text := call[len(call)-1]
 	if !strings.HasPrefix(text, "[from %7 worker] give test steps") {
 		t.Errorf("expected attribution prefix, got %q", text)
+	}
+}
+
+func TestSendTextHumanPastes(t *testing.T) {
+	mock := &testMock{}
+	mgr := newTestManager(mock)
+
+	requester := control.Requester{PaneID: "%1", Role: control.RoleController, Human: true}
+	if err := mgr.SendText(context.Background(), requester, "%8", " /tmp/a.png ", false); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+	if call := mock.findCall("send-keys"); call != nil {
+		t.Errorf("human text must not be typed: %v", call)
+	}
+	want := []string{"set-buffer", "-b", "agency-paste-8", "--", " /tmp/a.png ", ";", "paste-buffer", "-p", "-d", "-b", "agency-paste-8", "-t", "%8"}
+	if call := mock.findCall("set-buffer"); !slices.Equal(call, want) {
+		t.Errorf("paste call = %q, want %q", call, want)
 	}
 }
 

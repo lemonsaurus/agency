@@ -136,6 +136,7 @@ agency cloud ask [--timeout 10m] <pane> <text>  Print the requested Pi turn's fi
 agency cloud projects --json         List directories under ~/git/*/*
 agency cloud models                  Every bridged pane's model and the models Pi offers
 agency cloud model <pane> [model]    Read or switch a pane's model: provider/id[:thinking]
+agency cloud interrupt <pane>        Press Escape in a pane to stop Pi's running turn
 agency cloud spend                   GPT-Live dollars this month (needs OPENAI_ADMIN_KEY)
 agency cloud live start <json>       Create a GPT-Live session the box drives: {voice, accent, sdp}
 agency cloud live status|said|discord|discord-done|close
@@ -320,6 +321,8 @@ agency cloud kill %310
 ```
 
 `list --json` adds `bridge: true` for panes whose Pi bridge socket exists; other panes need `/reload` before `ask` works.
+
+`send` from an agent pane reaches a Pi pane through its bridge as a `[from <pane> <role>]` user message: it starts a turn when the pane is idle and queues as a follow-up when busy, leaving the editor alone. Panes without a bridge, and `send --no-enter`, get the attributed text typed in. A human's `send`, such as a pasted attachment path, lands as one bracketed paste with no attribution.
 
 `ask --detach` to a busy pane returns `accepted` at once; the bridge holds it until the turn ends, and `transcript` lists it under `queued`.
 

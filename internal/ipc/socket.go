@@ -3,6 +3,8 @@ package ipc
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lemonsaurus/agency/internal/control"
 )
@@ -193,6 +196,20 @@ func (s *Server) handleConn(conn net.Conn) {
 		response = "ok"
 	}
 	fmt.Fprintln(conn, response)
+}
+
+// deliver hands an agent's message to the target's Pi bridge, which queues it
+// without touching the editor. Panes without a bridge get typed text instead.
+func (s *Server) deliver(paneID, text string) bool {
+	path, err := BridgePath(s.path, paneID)
+	if err != nil {
+		return false
+	}
+	id := make([]byte, 16)
+	rand.Read(id)
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+	return Send(ctx, path, SendRequest{ID: hex.EncodeToString(id), Text: text}) == nil
 }
 
 func (s *Server) requester(pid int) (control.Requester, error) {
@@ -388,6 +405,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		if payload.Pane == "" {
 			return "", fmt.Errorf("pane is required")
+		}
+		if !requester.Human && payload.Enter && s.deliver(payload.Pane, requester.From()+" "+payload.Text) {
+			return "", nil
 		}
 		return "", s.handler.SendText(s.ctx, requester, payload.Pane, payload.Text, payload.Enter)
 	case "move":

@@ -335,6 +335,9 @@ func runCloud(args []string) {
 	case "model":
 		runModel(args[1:])
 		return
+	case "interrupt":
+		runInterrupt(cfg.Session.Name, args[1:])
+		return
 	case "models":
 		runModels(cfg.Session.Name)
 		return
@@ -1201,6 +1204,18 @@ func runSend(args []string) {
 	}
 	if resp != "ok" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+}
+
+// runInterrupt presses Escape in a pane, which stops Pi's running turn.
+func runInterrupt(sessionName string, args []string) {
+	if len(args) != 1 || !regexp.MustCompile(`^%[0-9]+$`).MatchString(args[0]) {
+		fmt.Fprintln(os.Stderr, "Usage: agency cloud interrupt <pane-id>")
+		os.Exit(1)
+	}
+	if _, err := tmux.NewClient(sessionName, "").Cmd.Run(context.Background(), "send-keys", "-t", args[0], "Escape"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }

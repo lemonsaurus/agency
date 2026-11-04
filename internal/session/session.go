@@ -704,16 +704,15 @@ func (m *Manager) recordKill(requester control.Requester, paneID string, info tm
 	m.Deaths.Record(event)
 }
 
-// SendText delivers text to a pane, prefixed with the sender's pane id
-// and role so agents can tell relayed messages from human keystrokes.
-// The requester is resolved server-side from the caller's PID, so the
-// attribution cannot be forged or omitted.
+// SendText delivers text to a pane. A human's text lands as a plain paste;
+// an agent's is typed behind the sender's pane id and role. The requester is
+// resolved server-side from the caller's PID, so the attribution cannot be
+// forged or omitted.
 func (m *Manager) SendText(ctx context.Context, requester control.Requester, paneID, text string, enter bool) error {
-	label := string(requester.Role)
-	if requester.PaneID != "" {
-		label = requester.PaneID + " " + label
+	if requester.Human {
+		return m.tmux.PasteText(ctx, paneID, text, enter)
 	}
-	return m.tmux.SendText(ctx, paneID, fmt.Sprintf("[from %s] %s", label, text), enter)
+	return m.tmux.SendText(ctx, paneID, requester.From()+" "+text, enter)
 }
 
 // MovePane moves a pane into the named window.

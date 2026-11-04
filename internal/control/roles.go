@@ -53,6 +53,15 @@ func (r Requester) ChildRole(requested Role) (Role, error) {
 	return requested, nil
 }
 
+// From labels text an agent sends to another pane, so the receiver can tell it
+// from human input.
+func (r Requester) From() string {
+	if r.PaneID == "" {
+		return fmt.Sprintf("[from %s]", r.Role)
+	}
+	return fmt.Sprintf("[from %s %s]", r.PaneID, r.Role)
+}
+
 func (r Requester) CanKillPane(paneID string) bool {
 	return r.Role != RoleWorker || r.PaneID == paneID
 }

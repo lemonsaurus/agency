@@ -350,3 +350,76 @@ func TestModel(t *testing.T) {
 		}
 	}
 }
+
+func TestSendDeliversAgentTextThroughBridge(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		requester control.Requester
+		enter     bool
+		bridge    string // the bridge's reply; empty means no bridge
+		typed     bool
+	}{
+		{"agent to Pi", control.Requester{PaneID: "%2", Role: control.RoleWorker}, true, `{"id":"%s","accepted":true}`, false},
+		{"agent to old Pi", control.Requester{PaneID: "%2", Role: control.RoleWorker}, true, `{"error":{"code":"invalid_request","message":"Invalid bridge request"}}`, true},
+		{"agent to shell", control.Requester{PaneID: "%2", Role: control.RoleWorker}, true, "", true},
+		{"agent without Enter", control.Requester{PaneID: "%2", Role: control.RoleWorker}, false, `{"id":"%s","accepted":true}`, true},
+		{"human", control.Requester{PaneID: "%1", Role: control.RoleController, Human: true}, false, `{"id":"%s","accepted":true}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home, err := os.MkdirTemp("", "send-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(home) })
+			t.Setenv("HOME", home)
+			socket := filepath.Join(home, "daemon.sock")
+			handler := &mockHandler{requester: tt.requester}
+			server := NewServer(socket, handler)
+			if err := server.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { server.Close() })
+			received := make(chan string, 1)
+			if tt.bridge != "" {
+				path, _ := BridgePath(socket, "%9")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				listener, err := net.Listen("unix", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { listener.Close() })
+				go func() {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					defer conn.Close()
+					line, _ := bufio.NewReader(conn).ReadString('\n')
+					received <- line
+					var request SendRequest
+					json.Unmarshal([]byte(strings.TrimPrefix(line, "send:")), &request)
+					fmt.Fprintf(conn, tt.bridge+"\n", request.ID)
+				}()
+			}
+			payload, _ := json.Marshal(sendPayload{Pane: "%9", Text: "run the tests", Enter: tt.enter})
+			if _, err := SendMessage(socket, "send:"+string(payload)); err != nil {
+				t.Fatal(err)
+			}
+			handler.mu.Lock()
+			defer handler.mu.Unlock()
+			if typed := len(handler.sends) == 1 && handler.sends[0].text == "run the tests"; typed != tt.typed || len(handler.sends) > 1 {
+				t.Fatalf("typed sends = %+v, want typed %v", handler.sends, tt.typed)
+			}
+			if tt.typed {
+				return
+			}
+			line := <-received
+			var request SendRequest
+			if !strings.HasPrefix(line, "send:") || json.Unmarshal([]byte(strings.TrimPrefix(line, "send:")), &request) != nil || request.Text != "[from %2 worker] run the tests" {
+				t.Fatalf("bridge got %q", line)
+			}
+		})
+	}
+}

@@ -380,6 +380,19 @@ func (c *Client) SendText(ctx context.Context, paneID, text string, enter bool) 
 	return err
 }
 
+// PasteText pastes text into a pane as one bracketed paste, so the program
+// treats it as a paste rather than typed keys, and optionally presses Enter.
+func (c *Client) PasteText(ctx context.Context, paneID, text string, enter bool) error {
+	buffer := "agency-paste-" + strings.TrimPrefix(paneID, "%")
+	if _, err := c.Cmd.Run(ctx, "set-buffer", "-b", buffer, "--", text, ";", "paste-buffer", "-p", "-d", "-b", buffer, "-t", paneID); err != nil {
+		return err
+	}
+	if enter {
+		return c.SendText(ctx, paneID, "", true)
+	}
+	return nil
+}
+
 func (c *Client) DisplayMessage(ctx context.Context, paneID, message string) error {
 	_, err := c.Cmd.Run(ctx, "display-message", "-t", paneID, "-d", "6000", "--", message)
 	return err

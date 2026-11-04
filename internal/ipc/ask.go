@@ -111,6 +111,29 @@ type CommandRequest struct {
 // Command runs a slash command in an idle Pi pane. Pi refuses busy panes and
 // every command but handoff-cloud.
 func Command(ctx context.Context, socket string, request CommandRequest) (AskReply, error) {
+	return exchange(ctx, socket, "command", request.ID, request)
+}
+
+type SendRequest struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// Send hands text to a Pi pane as a user message without touching its editor:
+// it starts a turn when the pane is idle and follows the running turn otherwise.
+func Send(ctx context.Context, socket string, request SendRequest) error {
+	reply, err := exchange(ctx, socket, "send", request.ID, request)
+	if err != nil {
+		return err
+	}
+	if reply.Error != nil {
+		return fmt.Errorf("%s: %s", reply.Error.Code, reply.Error.Message)
+	}
+	return nil
+}
+
+// exchange sends one kind-prefixed request and reads an accepted or error reply.
+func exchange(ctx context.Context, socket, kind, id string, request any) (AskReply, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	if err != nil {
 		return AskReply{}, fmt.Errorf("no Pi bridge")
@@ -122,7 +145,7 @@ func Command(ctx context.Context, socket string, request CommandRequest) (AskRep
 	if err != nil {
 		return AskReply{}, err
 	}
-	if _, err := fmt.Fprintf(conn, "command:%s\n", data); err != nil {
+	if _, err := fmt.Fprintf(conn, "%s:%s\n", kind, data); err != nil {
 		return AskReply{}, err
 	}
 	reader := bufio.NewScanner(conn)
@@ -130,7 +153,7 @@ func Command(ctx context.Context, socket string, request CommandRequest) (AskRep
 		return AskReply{}, fmt.Errorf("bridge disconnected before replying")
 	}
 	var reply AskReply
-	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != request.ID || reply.Text != nil || reply.Accepted == (reply.Error != nil) {
+	if err := json.Unmarshal(reader.Bytes(), &reply); err != nil || reply.ID != id || reply.Text != nil || reply.Accepted == (reply.Error != nil) {
 		return AskReply{}, fmt.Errorf("invalid bridge reply")
 	}
 	return reply, nil
@@ -258,7 +281,7 @@ func (s *Server) handleAsk(conn net.Conn, reader io.Reader, payload string) {
 		return
 	}
 	if !requester.Human {
-		request.Text = fmt.Sprintf("[from %s %s] %s", requester.PaneID, requester.Role, request.Text)
+		request.Text = requester.From() + " " + request.Text
 	}
 	path, err := BridgePath(s.path, request.Pane)
 	if err != nil {
