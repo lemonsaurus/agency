@@ -98,6 +98,8 @@ func buildCloudConf(agencyBin string) string {
 	b.WriteString("# Agency cloud.conf — auto-generated, do not edit\n\n")
 	b.WriteString("set -g prefix None\n")
 	b.WriteString("set -s exit-empty off\n")
+	// A pane's bare `tmux kill-server` reaches this server and ends every pane.
+	b.WriteString("set -s command-alias[100] 'kill-server=run-shell \"echo kill-server is disabled on the Agency server; exit 1\"'\n")
 	b.WriteString("set -g status off\n")
 	b.WriteString("set -g pane-border-status off\n")
 	// agency cloud fit sizes each window to the device focused last.
