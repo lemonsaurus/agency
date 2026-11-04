@@ -221,7 +221,7 @@ Role, parent, root, pending promotion, and task labels live in tmux pane options
 
 Workers request promotion with `agency request-promotion <reason>`. A yellow pane badge marks the pending request. Focus that pane, press `Ctrl+Space`, then `Shift+P`, and confirm with `y`. Approval changes the worker to a manager under its root controller and moves it to its former manager's window. Pi refreshes its tools on the next prompt. Managers cannot become controllers through promotion.
 
-Every role can use `/handoff` without promotion. Failed handoffs keep the original pane and pending input. `agency capabilities` reports the running daemon protocol, configured approval shortcut, and `paneLabels: true`; Pi reports outdated runtimes explicitly.
+Every role can hand off without promotion. Lemon types `/handoff`; a Pi agent calls the agency tool's `handoff` action, with its successor's first step as `text`. Both write a context file, start the successor with `agency replace`, and retire the old pane once the successor is up. Failed handoffs keep the original pane and pending input. `agency capabilities` reports the running daemon protocol, configured approval shortcut, and `paneLabels: true`; Pi reports outdated runtimes explicitly.
 
 Agency's API rejects approval from agent processes. The keyboard flow uses tmux process ancestry and human confirmation. Agents with unrestricted shell access are not sandboxed from the tmux server.
 

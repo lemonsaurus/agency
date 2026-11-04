@@ -219,6 +219,8 @@ Workers request promotion with a reason. Agency sends a structured notice with t
 
 `agency capabilities` reports the running daemon's protocol, configured promotion shortcut, and `paneLabels: true`. Pi reports missing or outdated runtimes without suggesting promotion for a handoff.
 
+Every role hands off without promotion. Lemon types `/handoff`; an agent calls the Pi agency tool's `handoff` action with its successor's first step. Both run Pi's context-handoff extension in-process: it writes a handoff file, starts the successor through `replace`, and kills the old pane once the successor is up. Nothing types into a pane, so agents never pose as human input.
+
 Agent sends are idempotent within `ipc.ResendWindow` (two minutes). The daemon keys each send by sender, target, Enter, and text: a retry joins the delivery in flight, or gets `already-sent <time>` back and delivers nothing. `again` opts out. Delivery to a Pi bridge falls back to typing only when no bridge listens or the bridge refuses; a slow confirmation counts as delivered. `scripts/stress-send` reproduces the overnight load (30 panes, load 15) on a throwaway daemon in a CPU-quota scope and counts duplicates and false failures.
 
 Approval rejects pane-process callers. Tmux-server ancestry and confirmation provide workflow authorization, not isolation from agents with unrestricted shell access.
