@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lemonsaurus/agency/internal/retry"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
@@ -32,9 +34,36 @@ func Group(pane tmux.PaneInfo) string {
 	return pane.Group
 }
 
+// ErrUnreachable marks an SSH connection that failed or stalled, as opposed to
+// a remote command that ran and failed.
+var ErrUnreachable = errors.New("sky unreachable")
+
 // Client runs `agency cloud ...` on the remote host.
 type Client struct {
 	Host string
+	// Retrying, when set, makes Run, Shell and Copy retry an unreachable host
+	// and hears about each retry.
+	Retrying func(attempt, attempts int, err error)
+}
+
+// unreachable keeps the SSH error text and matches ErrUnreachable.
+type unreachable struct {
+	error
+	stalled bool
+}
+
+func (unreachable) Is(target error) bool { return target == ErrUnreachable }
+
+func (u unreachable) Unwrap() error { return u.error }
+
+// sshFailure marks err unreachable when ssh itself failed: ssh exits 255 for
+// its own errors and with the remote command's status otherwise.
+func sshFailure(err, cause error) error {
+	var exit *exec.ExitError
+	if errors.As(cause, &exit) && exit.ExitCode() == 255 {
+		return unreachable{error: err}
+	}
+	return err
 }
 
 // Window is one remote agent: a single-pane window on the headless server.
@@ -71,7 +100,7 @@ func (c *Client) ensureMaster(ctx context.Context) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ssh master for %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
+		return sshFailure(fmt.Errorf("ssh master for %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String())), err)
 	}
 	return nil
 }
@@ -91,56 +120,103 @@ func (c *Client) sshArgs(tty bool, remote ...string) []string {
 	return append(args, c.Host, command)
 }
 
+// do runs one SSH operation under timeout, retrying an unreachable host when
+// Retrying is set.
+func (c *Client) do(ctx context.Context, timeout time.Duration, op func(context.Context) error) error {
+	if c.Retrying == nil {
+		return c.attempt(ctx, timeout, op)
+	}
+	return retry.Do(ctx, func(err error) bool { return errors.Is(err, ErrUnreachable) }, c.Retrying, func() error {
+		err := c.attempt(ctx, timeout, op)
+		if u, ok := err.(unreachable); ok && u.stalled {
+			c.dropStaleMaster(ctx)
+		}
+		return err
+	})
+}
+
+// attempt marks an operation that outlived its own timeout as stalled.
+func (c *Client) attempt(ctx context.Context, timeout time.Duration, op func(context.Context) error) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := c.ensureMaster(attemptCtx)
+	if err == nil {
+		err = op(attemptCtx)
+	}
+	if err != nil && ctx.Err() == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+		return unreachable{error: err, stalled: true}
+	}
+	return err
+}
+
+// dropStaleMaster closes a master that no longer answers. After the network
+// changes, the master process lives on until ServerAliveInterval notices, and
+// every session through it hangs; closing it lets the next attempt start fresh.
+func (c *Client) dropStaleMaster(ctx context.Context) {
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if exec.CommandContext(probe, "ssh", append(append([]string{}, sshOptions...), c.Host, "true")...).Run() == nil {
+		return
+	}
+	_ = exec.CommandContext(ctx, "ssh", "-o", controlPath, "-O", "exit", c.Host).Run()
+}
+
 // Run executes a remote `agency cloud` subcommand and returns its stdout.
 func (c *Client) Run(ctx context.Context, timeout time.Duration, remote ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := c.ensureMaster(ctx); err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(false, remote...)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("ssh %s agency cloud %s: %w: %s", c.Host, strings.Join(remote, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
+	var out string
+	err := c.do(ctx, timeout, func(ctx context.Context) error {
+		cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(false, remote...)...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return sshFailure(fmt.Errorf("ssh %s agency cloud %s: %w: %s", c.Host, strings.Join(remote, " "), err, strings.TrimSpace(stderr.String())), err)
+		}
+		out = stdout.String()
+		return nil
+	})
+	return out, err
 }
 
 // Shell runs a bash script on the host and returns its stdout.
 func (c *Client) Shell(ctx context.Context, timeout time.Duration, script string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := c.ensureMaster(ctx); err != nil {
-		return "", err
-	}
-	args := append(append([]string{}, sshOptions...), c.Host, "bash -s")
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdin = strings.NewReader(script)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("ssh %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
+	var out string
+	err := c.do(ctx, timeout, func(ctx context.Context) error {
+		args := append(append([]string{}, sshOptions...), c.Host, "bash -s")
+		cmd := exec.CommandContext(ctx, "ssh", args...)
+		cmd.Stdin = strings.NewReader(script)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return sshFailure(fmt.Errorf("ssh %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String())), err)
+		}
+		out = stdout.String()
+		return nil
+	})
+	return out, err
 }
 
-// Copy uploads a local file to a path on the host.
+// Copy uploads a local file to a path on the host. It streams through ssh
+// rather than scp, whose exit status cannot tell a dropped connection from a
+// remote write error.
 func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote string) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := c.ensureMaster(ctx); err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "scp", append(append([]string{"-q"}, sshOptions...), local, c.Host+":"+remote)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("scp to %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
+	return c.do(ctx, timeout, func(ctx context.Context) error {
+		file, err := os.Open(local)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		args := append(append([]string{}, sshOptions...), c.Host, "cat > '"+strings.ReplaceAll(remote, "'", `'\''`)+"'")
+		cmd := exec.CommandContext(ctx, "ssh", args...)
+		cmd.Stdin = file
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return sshFailure(fmt.Errorf("copy to %s: %w: %s", c.Host, err, strings.TrimSpace(stderr.String())), err)
+		}
+		return nil
+	})
 }
 
 // WatchHandlers receive what the host's `agency cloud watch` prints.

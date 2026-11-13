@@ -54,8 +54,8 @@ func TestReadFileListIgnoresPlainText(t *testing.T) {
 		return nil, nil
 	}
 	for _, types := range []string{"text/plain", "text/plain;charset=utf-8\nimage/png", "application/octet-stream"} {
-		if _, err := readFileList([]byte(types), read); !errors.Is(err, ErrNoFiles) {
-			t.Fatal(err)
+		if paths, err := readFileList(strings.Fields(types), read); paths != nil || err != nil {
+			t.Fatal(paths, err)
 		}
 	}
 }
@@ -66,16 +66,16 @@ func TestReadFileListPrefersGNOMEAndDoesNotFallbackOnError(t *testing.T) {
 		requested = append(requested, mime)
 		return []byte("cut\nfile:///tmp/copied"), nil
 	}
-	got, err := readFileList([]byte("text/uri-list\nx-special/gnome-copied-files\ntext/plain"), read)
+	got, err := readFileList([]string{"text/uri-list", "x-special/gnome-copied-files", "text/plain"}, read)
 	if err != nil || !reflect.DeepEqual(got, []string{"/tmp/copied"}) || !reflect.DeepEqual(requested, []string{"x-special/gnome-copied-files"}) {
 		t.Fatal(got, err, requested)
 	}
 	failure := errors.New("clipboard read failed")
-	_, err = readFileList([]byte("text/uri-list"), func(string) ([]byte, error) { return nil, failure })
+	_, err = readFileList([]string{"text/uri-list"}, func(string) ([]byte, error) { return nil, failure })
 	if !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
-	_, err = readFileList([]byte("x-special/gnome-copied-files\ntext/uri-list"), func(mime string) ([]byte, error) {
+	_, err = readFileList([]string{"x-special/gnome-copied-files", "text/uri-list"}, func(mime string) ([]byte, error) {
 		if mime != "x-special/gnome-copied-files" {
 			t.Fatal("malformed file selection fell back")
 		}
@@ -93,7 +93,7 @@ func clipboardTool(t *testing.T, dir, name, script string) {
 	}
 }
 
-func TestReadFilesNativeClipboard(t *testing.T) {
+func TestReadNativeClipboard(t *testing.T) {
 	if isWSL() {
 		t.Skip("native clipboard route")
 	}
@@ -116,56 +116,15 @@ esac`)
 *) exit 4 ;;
 esac`)
 			}
-			got, err := ReadFiles(context.Background())
-			if err != nil || !reflect.DeepEqual(got, []string{"/tmp/report space.txt"}) {
-				t.Fatal(got, err)
+			got, image, err := Read(context.Background())
+			if err != nil || image || !reflect.DeepEqual(got, []string{"/tmp/report space.txt"}) {
+				t.Fatal(got, image, err)
 			}
 		})
 	}
 }
 
-func TestReadFilesWSL(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", dir)
-	clipboardTool(t, dir, "powershell.exe", `printf '%s' '["C:\\Users\\Lemon\\report space.txt","D:\\æ.txt"]'`)
-	clipboardTool(t, dir, "wslpath", `case "$2" in
-'C:\Users\Lemon\report space.txt') printf '/mnt/c/Users/Lemon/report space.txt\n' ;;
-'D:\æ.txt') printf '/mnt/d/æ.txt\n' ;;
-*) exit 4 ;;
-esac`)
-	got, err := readFilesWSL(context.Background())
-	if err != nil || !reflect.DeepEqual(got, []string{"/mnt/c/Users/Lemon/report space.txt", "/mnt/d/æ.txt"}) {
-		t.Fatal(got, err)
-	}
-	clipboardTool(t, dir, "powershell.exe", "exit 3")
-	if _, err := readFilesWSL(context.Background()); !errors.Is(err, ErrNoFiles) {
-		t.Fatal(err)
-	}
-	for _, output := range []string{`broken`, `[]`, `["\\\\server\\share\\file"]`, `["relative.txt"]`, `["C:\\line\nfile"]`} {
-		clipboardTool(t, dir, "powershell.exe", "printf '%s' '"+output+"'")
-		if _, err := readFilesWSL(context.Background()); err == nil {
-			t.Fatalf("accepted %q", output)
-		}
-	}
-	clipboardTool(t, dir, "powershell.exe", `printf '%s' '["C:\\file.txt"]'`)
-	clipboardTool(t, dir, "wslpath", "exit 4")
-	if _, err := readFilesWSL(context.Background()); err == nil || !strings.Contains(err.Error(), "wslpath") {
-		t.Fatal(err)
-	}
-}
-
-func TestReadFilesTimeout(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", dir)
-	clipboardTool(t, dir, "powershell.exe", "exec /bin/sleep 10")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := readFilesWSL(ctx); err == nil {
-		t.Fatal("clipboard timeout succeeded")
-	}
-}
-
-func TestImageClipboardStillAvailable(t *testing.T) {
+func TestReadImage(t *testing.T) {
 	if isWSL() {
 		t.Skip("native clipboard route")
 	}
@@ -177,16 +136,116 @@ func TestImageClipboardStillAvailable(t *testing.T) {
 '--type image/png --no-newline') printf 'image fixture' ;;
 *) exit 4 ;;
 esac`)
-	if _, err := ReadFiles(context.Background()); !errors.Is(err, ErrNoFiles) {
-		t.Fatal(err)
+	paths, image, err := Read(context.Background())
+	if err != nil || !image || len(paths) != 1 {
+		t.Fatal(paths, image, err)
 	}
-	path, err := ReadImage(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(path)
-	data, err := os.ReadFile(path)
+	defer os.Remove(paths[0])
+	data, err := os.ReadFile(paths[0])
 	if err != nil || string(data) != "image fixture" {
 		t.Fatal(string(data), err)
+	}
+}
+
+func TestReadPrefersXclipOnWayland(t *testing.T) {
+	if isWSL() {
+		t.Skip("native clipboard route")
+	}
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "test")
+	t.Setenv("DISPLAY", ":0")
+	clipboardTool(t, dir, "wl-paste", "exit 9")
+	clipboardTool(t, dir, "xclip", `case "$*" in
+'-selection clipboard -t TARGETS -o') printf 'text/uri-list\n' ;;
+'-selection clipboard -t text/uri-list -o') printf 'file:///tmp/one' ;;
+*) exit 4 ;;
+esac`)
+	if got, _, err := Read(context.Background()); err != nil || !reflect.DeepEqual(got, []string{"/tmp/one"}) {
+		t.Fatal(got, err)
+	}
+}
+
+func TestReadEmptyAndUnreadable(t *testing.T) {
+	if isWSL() {
+		t.Skip("native clipboard route")
+	}
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "test")
+	for script, want := range map[string]error{
+		`printf 'text/plain\n'`:                                    ErrEmpty,
+		`echo "Nothing is copied" >&2; exit 1`:                     ErrEmpty,
+		`echo "Failed to connect to a Wayland server" >&2; exit 1`: ErrUnreadable,
+		`exec /bin/sleep 10`:                                       ErrUnreadable,
+	} {
+		clipboardTool(t, dir, "wl-paste", script)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, _, err := Read(ctx)
+		cancel()
+		if !errors.Is(err, want) {
+			t.Fatalf("%s: %v", script, err)
+		}
+	}
+	t.Setenv("WAYLAND_DISPLAY", "")
+	if _, _, err := Read(context.Background()); err == nil || errors.Is(err, ErrUnreadable) || !strings.Contains(err.Error(), "xclip is not installed") {
+		t.Fatal(err)
+	}
+	clipboardTool(t, dir, "xclip", `echo "Error: target TARGETS not available" >&2; exit 1`)
+	if _, _, err := Read(context.Background()); !errors.Is(err, ErrEmpty) {
+		t.Fatal(err)
+	}
+}
+
+func wslTools(t *testing.T, powershell string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	clipboardTool(t, dir, "powershell.exe", powershell)
+	clipboardTool(t, dir, "wslpath", `case "$1 $2" in
+'-u C:\Users\Lemon\report space.txt') printf '/mnt/c/Users/Lemon/report space.txt\n' ;;
+'-u D:\æ.txt') printf '/mnt/d/æ.txt\n' ;;
+-w*) printf '\\\\wsl.localhost\\Ubuntu%s\n' "$2" ;;
+*) exit 4 ;;
+esac`)
+	return dir
+}
+
+func TestReadWSL(t *testing.T) {
+	dir := wslTools(t, `printf '%s' '["C:\\Users\\Lemon\\report space.txt","D:\\æ.txt"]'`)
+	got, image, err := readWSL(context.Background())
+	if err != nil || image || !reflect.DeepEqual(got, []string{"/mnt/c/Users/Lemon/report space.txt", "/mnt/d/æ.txt"}) {
+		t.Fatal(got, image, err)
+	}
+	clipboardTool(t, dir, "powershell.exe", `printf 'image\r\n'`)
+	if got, image, err := readWSL(context.Background()); err != nil || !image || len(got) != 1 || !strings.HasPrefix(got[0], os.TempDir()) {
+		t.Fatal(got, image, err)
+	}
+	clipboardTool(t, dir, "powershell.exe", "exit 3")
+	if _, _, err := readWSL(context.Background()); !errors.Is(err, ErrEmpty) {
+		t.Fatal(err)
+	}
+	clipboardTool(t, dir, "powershell.exe", `echo "Requested Clipboard operation did not succeed." >&2; exit 1`)
+	if _, _, err := readWSL(context.Background()); !errors.Is(err, ErrUnreadable) {
+		t.Fatal(err)
+	}
+	for _, output := range []string{`broken`, `[]`, `["\\\\server\\share\\file"]`, `["relative.txt"]`, `["C:\\line\nfile"]`} {
+		clipboardTool(t, dir, "powershell.exe", "printf '%s' '"+output+"'")
+		if _, _, err := readWSL(context.Background()); err == nil || errors.Is(err, ErrUnreadable) {
+			t.Fatalf("accepted %q: %v", output, err)
+		}
+	}
+	clipboardTool(t, dir, "powershell.exe", `printf '%s' '["C:\\file.txt"]'`)
+	if _, _, err := readWSL(context.Background()); err == nil || !strings.Contains(err.Error(), "wslpath") {
+		t.Fatal(err)
+	}
+}
+
+func TestReadWSLTimeout(t *testing.T) {
+	wslTools(t, "exec /bin/sleep 10")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := readWSL(ctx); !errors.Is(err, ErrUnreadable) {
+		t.Fatal(err)
 	}
 }

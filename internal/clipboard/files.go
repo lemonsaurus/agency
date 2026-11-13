@@ -3,61 +3,29 @@ package clipboard
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
 
-// ErrNoFiles means the clipboard does not advertise a file list.
-var ErrNoFiles = errors.New("no files on the clipboard")
-
-// ReadFiles reads copied files, never paths inferred from plain text.
-// A cut selection is read without moving files or changing the clipboard.
-func ReadFiles(ctx context.Context) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
-	defer cancel()
-	if isWSL() {
-		return readFilesWSL(ctx)
-	}
-	var types []byte
-	var err error
-	var read func(string) ([]byte, error)
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		types, err = exec.CommandContext(ctx, "wl-paste", "--list-types").Output()
-		read = func(mime string) ([]byte, error) {
-			return exec.CommandContext(ctx, "wl-paste", "--type", mime, "--no-newline").Output()
-		}
-	} else {
-		types, err = exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o").Output()
-		read = func(mime string) ([]byte, error) {
-			return exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", mime, "-o").Output()
-		}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading clipboard file types: %w", err)
-	}
-	return readFileList(types, read)
-}
-
-func readFileList(types []byte, read func(string) ([]byte, error)) ([]string, error) {
+// readFileList reads the preferred file list type on offer, and returns no
+// paths and no error when none is.
+func readFileList(offered []string, read func(string) ([]byte, error)) ([]string, error) {
 	for _, mime := range []string{"x-special/gnome-copied-files", "text/uri-list"} {
-		for _, offered := range strings.Fields(string(types)) {
-			if offered != mime {
-				continue
-			}
-			data, err := read(mime)
-			if err != nil {
-				return nil, fmt.Errorf("reading clipboard files: %w", err)
-			}
-			return parseFileList(mime, string(data))
+		if !slices.Contains(offered, mime) {
+			continue
 		}
+		data, err := read(mime)
+		if err != nil {
+			return nil, fmt.Errorf("reading clipboard files: %w", err)
+		}
+		return parseFileList(mime, string(data))
 	}
-	return nil, ErrNoFiles
+	return nil, nil
 }
 
 func parseFileList(mime, data string) ([]string, error) {
@@ -88,20 +56,8 @@ func parseFileList(mime, data string) ([]string, error) {
 	return paths, nil
 }
 
-func readFilesWSL(ctx context.Context) ([]string, error) {
-	script := `Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-if (-not [System.Windows.Forms.Clipboard]::ContainsFileDropList()) { exit 3 }
-$files = @([System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { [string]$_ })
-ConvertTo-Json -InputObject $files -Compress`
-	data, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-STA", "-Command", script).Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 3 {
-			return nil, ErrNoFiles
-		}
-		return nil, fmt.Errorf("powershell clipboard files: %w", err)
-	}
+// windowsPaths converts PowerShell's JSON list of Windows paths to WSL paths.
+func windowsPaths(ctx context.Context, data []byte) ([]string, error) {
 	var files []string
 	if err := json.Unmarshal(data, &files); err != nil {
 		return nil, fmt.Errorf("powershell clipboard files: %w", err)

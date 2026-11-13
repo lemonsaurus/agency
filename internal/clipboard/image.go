@@ -1,4 +1,4 @@
-// Package clipboard reads images and file lists from the local system clipboard.
+// Package clipboard reads copied files and images from the local system clipboard.
 package clipboard
 
 import (
@@ -11,36 +11,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-// ErrNoImage means the clipboard holds no image.
-var ErrNoImage = errors.New("no image on the clipboard")
+var (
+	// ErrEmpty means the clipboard holds neither copied files nor an image.
+	ErrEmpty = errors.New("no copied files or image on the clipboard")
+	// ErrUnreadable means the clipboard tool failed or did not answer in time.
+	ErrUnreadable = errors.New("clipboard did not answer")
+)
 
-const readTimeout = 5 * time.Second
+const (
+	// toolTimeout bounds one xclip or wl-paste call. On GNOME, wl-paste waits
+	// for a popup to take focus, which GNOME sometimes never grants.
+	toolTimeout = 3 * time.Second
+	// powershellTimeout covers powershell.exe starting cold from WSL.
+	powershellTimeout = 10 * time.Second
+)
 
-// ReadImage writes the clipboard image to a temp PNG and returns its path.
-// WSL reads the Windows clipboard through PowerShell; Wayland uses wl-paste;
-// X11 uses xclip.
-func ReadImage(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
-	defer cancel()
-	path := filepath.Join(os.TempDir(), "agency-paste-"+randomHex()+".png")
-	switch {
-	case isWSL():
-		return readWSL(ctx, path)
-	case os.Getenv("WAYLAND_DISPLAY") != "":
-		return readWayland(ctx, path)
-	default:
-		return readX11(ctx, path)
+// Read returns copied files, or the copied image saved to a temp PNG; image
+// reports that temp file, which the caller removes. Plain text is never read
+// as paths, and a cut selection is read without moving files.
+// WSL reads the Windows clipboard through one PowerShell call; Linux uses
+// xclip when an X display is up, and wl-paste otherwise.
+func Read(ctx context.Context) (paths []string, image bool, err error) {
+	if isWSL() {
+		return readWSL(ctx)
 	}
-}
-
-func randomHex() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return readNative(ctx)
 }
 
 func isWSL() bool {
@@ -51,52 +51,112 @@ func isWSL() bool {
 	return err == nil && bytes.Contains(bytes.ToLower(release), []byte("microsoft"))
 }
 
-func readWSL(ctx context.Context, path string) (string, error) {
+func imagePath() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return filepath.Join(os.TempDir(), "agency-paste-"+hex.EncodeToString(b)+".png")
+}
+
+// nativeTool builds the command that prints one clipboard target, TARGETS
+// listing the offered types. xclip reads through Xwayland and needs no focus,
+// so it wins over wl-paste whenever it can reach an X display.
+func nativeTool() func(context.Context, string) *exec.Cmd {
+	if _, err := exec.LookPath("xclip"); (err == nil && os.Getenv("DISPLAY") != "") || os.Getenv("WAYLAND_DISPLAY") == "" {
+		return func(ctx context.Context, target string) *exec.Cmd {
+			return exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", target, "-o")
+		}
+	}
+	return func(ctx context.Context, target string) *exec.Cmd {
+		if target == "TARGETS" {
+			return exec.CommandContext(ctx, "wl-paste", "--list-types")
+		}
+		return exec.CommandContext(ctx, "wl-paste", "--type", target, "--no-newline")
+	}
+}
+
+func readNative(ctx context.Context) ([]string, bool, error) {
+	tool := nativeTool()
+	read := func(target string) ([]byte, error) { return output(ctx, tool, target) }
+	types, err := read("TARGETS")
+	if err != nil {
+		return nil, false, err
+	}
+	offered := strings.Fields(string(types))
+	if paths, err := readFileList(offered, read); paths != nil || err != nil {
+		return paths, false, err
+	}
+	if !slices.Contains(offered, "image/png") {
+		return nil, false, ErrEmpty
+	}
+	data, err := read("image/png")
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) == 0 {
+		return nil, false, ErrEmpty
+	}
+	path := imagePath()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return nil, false, err
+	}
+	return []string{path}, true, nil
+}
+
+// output runs one clipboard read. wl-paste and xclip report an empty
+// clipboard as an error, which becomes ErrEmpty.
+func output(ctx context.Context, tool func(context.Context, string) *exec.Cmd, target string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, toolTimeout)
+	defer cancel()
+	cmd := tool(ctx, target)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil {
+		return out, nil
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, fmt.Errorf("%s is not installed", cmd.Args[0])
+	}
+	message := strings.TrimSpace(stderr.String())
+	if strings.Contains(message, "Nothing is copied") || strings.Contains(message, "target TARGETS not available") {
+		return nil, ErrEmpty
+	}
+	return nil, fmt.Errorf("%w: %s %s: %v: %s", ErrUnreadable, cmd.Args[0], target, err, message)
+}
+
+func readWSL(ctx context.Context) ([]string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, powershellTimeout)
+	defer cancel()
+	path := imagePath()
 	winPath, err := exec.CommandContext(ctx, "wslpath", "-w", path).Output()
 	if err != nil {
-		return "", fmt.Errorf("wslpath: %w", err)
+		return nil, false, fmt.Errorf("wslpath: %w", err)
 	}
 	script := fmt.Sprintf(`Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+  $files = @([System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { [string]$_ })
+  ConvertTo-Json -InputObject $files -Compress
+  exit 0
+}
 $img = [System.Windows.Forms.Clipboard]::GetImage()
 if ($img -eq $null) { exit 3 }
-$img.Save('%s', [System.Drawing.Imaging.ImageFormat]::Png)`, strings.TrimSpace(string(winPath)))
+$img.Save('%s', [System.Drawing.Imaging.ImageFormat]::Png)
+'image'`, strings.TrimSpace(string(winPath)))
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-STA", "-Command", script)
-	if err := cmd.Run(); err != nil {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	data, err := cmd.Output()
+	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 3 {
-			return "", ErrNoImage
+			return nil, false, ErrEmpty
 		}
-		return "", fmt.Errorf("powershell clipboard: %w", err)
+		return nil, false, fmt.Errorf("%w: powershell: %v: %s", ErrUnreadable, err, strings.TrimSpace(stderr.String()))
 	}
-	return path, nil
-}
-
-func readWayland(ctx context.Context, path string) (string, error) {
-	types, err := exec.CommandContext(ctx, "wl-paste", "--list-types").Output()
-	if err != nil || !bytes.Contains(types, []byte("image/png")) {
-		return "", ErrNoImage
+	if strings.TrimSpace(string(data)) == "image" {
+		return []string{path}, true, nil
 	}
-	return pipeToFile(exec.CommandContext(ctx, "wl-paste", "--type", "image/png", "--no-newline"), path)
-}
-
-func readX11(ctx context.Context, path string) (string, error) {
-	targets, err := exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o").Output()
-	if err != nil || !bytes.Contains(targets, []byte("image/png")) {
-		return "", ErrNoImage
-	}
-	return pipeToFile(exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", "image/png", "-o"), path)
-}
-
-func pipeToFile(cmd *exec.Cmd, path string) (string, error) {
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", cmd.Args[0], err)
-	}
-	if len(out) == 0 {
-		return "", ErrNoImage
-	}
-	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return "", err
-	}
-	return path, nil
+	paths, err := windowsPaths(ctx, data)
+	return paths, false, err
 }

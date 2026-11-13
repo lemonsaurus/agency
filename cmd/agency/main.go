@@ -25,6 +25,7 @@ import (
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
 	"github.com/lemonsaurus/agency/internal/palette"
+	"github.com/lemonsaurus/agency/internal/retry"
 	"github.com/lemonsaurus/agency/internal/session"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
@@ -230,6 +231,16 @@ func acquireLock(path string) (*os.File, error) {
 
 func logPath(sessionName string) string {
 	return fmt.Sprintf("/tmp/agency-%s.log", sessionName)
+}
+
+// pasteLog appends a paste failure's raw error to the daemon log.
+func pasteLog(sessionName string, err error) {
+	f, openErr := os.OpenFile(logPath(sessionName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if openErr != nil {
+		return
+	}
+	defer f.Close()
+	log.New(f, "", log.Ldate|log.Ltime|log.Lmicroseconds).Printf("paste-image: %v", err)
 }
 
 // setupLogging redirects log output to a file and prints the path to stderr.
@@ -441,9 +452,31 @@ func runCloudAct(args []string) {
 		}
 	}
 	fail := func(err error) {
-		uploadStatus("✗ "+err.Error(), "#f38ba8", err.Error())
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		if args[0] != "paste-image" {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		// run-shell shows any output or failure status fullscreen, so a paste
+		// reports only through the pane border and logs the raw error.
+		message := err.Error()
+		switch {
+		case errors.Is(err, clipboard.ErrEmpty):
+			message = "Nothing to paste. Ctrl+Shift+V pastes text"
+		case errors.Is(err, clipboard.ErrUnreadable):
+			message = "Couldn't read the clipboard"
+		case errors.Is(err, cloud.ErrUnreachable):
+			message = "Sky unreachable"
+		}
+		pasteLog(cfg.Session.Name, err)
+		uploadStatus("✗ "+message, "#f38ba8", message)
+		os.Exit(0)
+	}
+	if args[0] == "paste-image" {
+		uploadStatus("↑ Pasting", "#fab387", "")
+		remote.Retrying = func(attempt, attempts int, err error) {
+			pasteLog(cfg.Session.Name, err)
+			uploadStatus(fmt.Sprintf("↻ Sky not answering, attempt %d/%d", attempt, attempts), "#fab387", "")
+		}
 	}
 	var target cloud.Window
 	found := false
@@ -485,17 +518,15 @@ func runCloudAct(args []string) {
 		ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 		defer stop()
 		uploadStatus("↑ Reading clipboard", "#fab387", "")
-		var image string
-		paths, err := clipboard.ReadFiles(ctx)
-		if errors.Is(err, clipboard.ErrNoFiles) {
-			image, err = clipboard.ReadImage(ctx)
-			if errors.Is(err, clipboard.ErrNoImage) {
-				err = fmt.Errorf("clipboard has no copied files or image; Ctrl+Shift+V pastes text")
-			}
-			if err == nil {
-				paths = []string{image}
-			}
-		}
+		var paths []string
+		var image bool
+		err := retry.Do(ctx, func(err error) bool { return errors.Is(err, clipboard.ErrUnreadable) }, func(attempt, attempts int, err error) {
+			pasteLog(cfg.Session.Name, err)
+			uploadStatus(fmt.Sprintf("↻ Clipboard busy, attempt %d/%d", attempt, attempts), "#fab387", "")
+		}, func() (err error) {
+			paths, image, err = clipboard.Read(ctx)
+			return err
+		})
 		if err != nil {
 			fail(err)
 		}
@@ -503,8 +534,8 @@ func runCloudAct(args []string) {
 			text := fmt.Sprintf("↑ Uploading %d/%d (%.1f MiB)", p.Index, p.Total, float64(p.Size)/(1024*1024))
 			uploadStatus(text, "#fab387", text+" "+p.Name)
 		})
-		if image != "" {
-			_ = os.Remove(image)
+		if image {
+			_ = os.Remove(paths[0])
 		}
 		if err != nil {
 			fail(err)
