@@ -209,6 +209,10 @@ func (m *mockHandler) Focus(_ context.Context) error {
 	return nil
 }
 
+func (m *mockHandler) Cloud(_ context.Context, payload string) (string, error) {
+	return payload, nil
+}
+
 func (m *mockHandler) BroadcastKeys(_ context.Context, keys string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

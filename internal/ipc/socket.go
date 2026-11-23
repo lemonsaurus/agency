@@ -48,6 +48,8 @@ type Handler interface {
 	Focus(ctx context.Context) error
 	// Live serves the phone's voice requests: session start, status, Discord relay.
 	Live(ctx context.Context, payload string) (string, error)
+	// Cloud serves the sky screen and the viewers' wait for the cloud link.
+	Cloud(ctx context.Context, payload string) (string, error)
 }
 
 type spawnPayload struct {
@@ -105,6 +107,7 @@ type Server struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	sends    sendLedger
+	slots    chan struct{}
 
 	// Budget answers budget and job requests; nil leaves them unknown.
 	Budget    *budget.Budget
@@ -119,6 +122,7 @@ func NewServer(path string, handler Handler) *Server {
 		handler: handler,
 		ctx:     ctx,
 		cancel:  cancel,
+		slots:   make(chan struct{}, 32),
 	}
 }
 
@@ -157,21 +161,48 @@ func (s *Server) acceptLoop() {
 				return
 			}
 		}
+		select {
+		case s.slots <- struct{}{}:
+		case <-s.ctx.Done():
+			conn.Close()
+			return
+		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleConn(conn)
+			release := sync.OnceFunc(func() { <-s.slots })
+			defer release()
+			s.handleConn(conn, release)
 		}()
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+var requestReadTimeout = 5 * time.Second
+
+// replyWriter bounds a reply even when the caller stops reading it.
+type replyWriter struct{ net.Conn }
+
+func (w replyWriter) Write(data []byte) (int, error) {
+	if err := w.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return 0, err
+	}
+	return w.Conn.Write(data)
+}
+
+// handleConn serves one request. release frees the connection's admission
+// slot early, for a wait that holds the connection but no other resource.
+func (s *Server) handleConn(conn net.Conn, release func()) {
 	defer conn.Close()
+	stop := context.AfterFunc(s.ctx, func() { conn.Close() })
+	defer stop()
+	conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
+	writer := replyWriter{conn}
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 4096), MaxAskBytes)
 	if !scanner.Scan() {
 		return
 	}
+	conn.SetReadDeadline(time.Time{})
 	line := strings.TrimSpace(scanner.Text())
 	if line == "" {
 		return
@@ -183,27 +214,45 @@ func (s *Server) handleConn(conn net.Conn) {
 	if strings.HasPrefix(line, "live:") {
 		requester, err := s.requester(peerPIDForConn(conn))
 		if (err != nil || !requester.Human) && !reminder(strings.TrimPrefix(line, "live:")) {
-			fmt.Fprintln(conn, "error: voice requests come from Lemon only")
+			fmt.Fprintln(writer, "error: voice requests come from Lemon only")
 			return
 		}
 		reply, err := s.handler.Live(s.ctx, strings.TrimPrefix(line, "live:"))
 		if err != nil {
-			fmt.Fprintf(conn, "error: %v\n", err)
+			fmt.Fprintf(writer, "error: %v\n", err)
 			return
 		}
-		fmt.Fprintln(conn, strings.ReplaceAll(reply, "\n", " "))
+		fmt.Fprintln(writer, strings.ReplaceAll(reply, "\n", " "))
+		return
+	}
+	if payload, ok := strings.CutPrefix(line, "cloud:"); ok {
+		// A viewer may wait here for minutes; its hangup ends the wait, and
+		// waiting viewers take no admission slot.
+		release()
+		ctx, cancel := context.WithCancel(s.ctx)
+		defer cancel()
+		go func() {
+			_, _ = conn.Read(make([]byte, 1))
+			cancel()
+		}()
+		reply, err := s.handler.Cloud(ctx, payload)
+		if err != nil {
+			fmt.Fprintf(writer, "error: %v\n", err)
+			return
+		}
+		fmt.Fprintln(writer, strings.ReplaceAll(reply, "\n", " "))
 		return
 	}
 	response, err := s.dispatch(line, peerPIDForConn(conn))
 	if err != nil {
 		log.Printf("ipc: dispatch %q: %v", line, err)
-		fmt.Fprintf(conn, "error: %v\n", err)
+		fmt.Fprintf(writer, "error: %v\n", err)
 		return
 	}
 	if response == "" {
 		response = "ok"
 	}
-	fmt.Fprintln(conn, response)
+	fmt.Fprintln(writer, response)
 }
 
 // bridgeSendTimeout bounds the wait for a busy Pi to confirm a send.

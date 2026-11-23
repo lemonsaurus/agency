@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -30,7 +31,6 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	windows, remoteErr := m.cloud.Windows(ctx)
 	panes, err := m.tmux.ListPanes(ctx)
 	if err != nil {
 		return "", err
@@ -47,11 +47,22 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 		}
 	}
 
+	if m.Link != nil && m.Link.Collapsed() {
+		return m.collapseCloud(ctx, viewers, placeholders), nil
+	}
+	windows, remoteErr := m.cloud.Windows(ctx)
 	if remoteErr != nil {
 		if len(viewers) == 0 && len(placeholders) == 0 {
 			m.spawnViewer(ctx, cloud.Window{ID: cloud.Placeholder}, "")
 		}
 		return "", remoteErr
+	}
+	if m.Link != nil {
+		ids := make([]string, len(windows))
+		for i, window := range windows {
+			ids[i] = window.ID
+		}
+		m.Link.SetWindows(ids)
 	}
 	// The placeholder goes in before the last viewer leaves, so the session
 	// never empties.
@@ -110,6 +121,61 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 	}
 	_ = m.Visibility(ctx)
 	return fmt.Sprintf("%d cloud panes, %d added, %d moved, %d removed", len(windows), added, moved, removed), nil
+}
+
+// collapseCloud leaves the sky harness one placeholder, which draws the sky
+// screen, and closes every viewer, so this device holds no attachment while
+// another device has the lease or the link gave up. The placeholder goes in
+// first, so the session never empties.
+func (m *Manager) collapseCloud(ctx context.Context, viewers map[string]tmux.PaneInfo, placeholders []string) string {
+	if len(placeholders) == 0 {
+		m.spawnViewer(ctx, cloud.Window{ID: cloud.Placeholder}, "")
+	}
+	for _, paneID := range placeholders[min(1, len(placeholders)):] {
+		m.dropViewer(ctx, paneID)
+	}
+	for _, viewer := range viewers {
+		m.dropViewer(ctx, viewer.ID)
+		_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, viewer.WindowID)
+	}
+	_ = m.Visibility(ctx)
+	return fmt.Sprintf("sky screen, %d viewers closed", len(viewers))
+}
+
+// Cloud serves the sky screen and the viewers: "status" is the link as JSON,
+// "enter" does what the sky screen offers, and "gate <window> <pane>" holds a
+// viewer until it may attach, then answers "attach" or "gone".
+func (m *Manager) Cloud(ctx context.Context, payload string) (string, error) {
+	if m.Link == nil {
+		return "", fmt.Errorf("no [cloud] host configured")
+	}
+	fields := strings.Fields(payload)
+	switch {
+	case len(fields) == 1 && fields[0] == "status":
+		data, err := json.Marshal(m.Link.Status())
+		return string(data), err
+	case len(fields) == 1 && fields[0] == "enter":
+		status := m.Link.Status()
+		switch {
+		case status.State != cloud.LinkUp:
+			m.Link.Retry()
+			return "reconnecting", nil
+		case !status.Here:
+			m.Link.Take()
+			return "taking over", nil
+		}
+		return m.SyncCloud(ctx)
+	case len(fields) == 3 && fields[0] == "gate":
+		gone, err := m.Link.Wait(ctx, fields[1], m.viewerShown(fields[2]))
+		if err != nil {
+			return "", err
+		}
+		if gone {
+			return "gone", nil
+		}
+		return "attach", nil
+	}
+	return "", fmt.Errorf("unknown cloud request %q", payload)
 }
 
 func (m *Manager) dropViewer(ctx context.Context, paneID string) {

@@ -221,15 +221,17 @@ func (c *Client) Copy(ctx context.Context, timeout time.Duration, local, remote 
 
 // WatchHandlers receive what the host's `agency cloud watch` prints.
 type WatchHandlers struct {
+	Up       func()               // the host printed its first line: the link is up
 	Changed  func()               // the panes the sky harness mirrors changed
 	Reminder func(payload string) // a "reminder {json}" line
 	Views    func(payload string) // a "views ..." line: what the host did with a shown set
+	Lease    func(payload string) // a "lease {json}" line: who holds the sky harness now
 }
 
 // Watch reports the host's lines to handlers until the link drops or ctx
-// ends, and writes every line from send to the host. The open stdin pipe
-// keeps the remote side alive.
-func (c *Client) Watch(ctx context.Context, handlers WatchHandlers, send <-chan string) error {
+// ends, and writes every line from shown and requests to the host. The open
+// stdin pipe keeps the remote side alive.
+func (c *Client) Watch(ctx context.Context, handlers WatchHandlers, shown, requests <-chan string) error {
 	if err := c.ensureMaster(ctx); err != nil {
 		return err
 	}
@@ -255,7 +257,11 @@ func (c *Client) Watch(ctx context.Context, handlers WatchHandlers, send <-chan 
 			select {
 			case <-done:
 				return
-			case line := <-send:
+			case line := <-shown:
+				if _, err := fmt.Fprintln(stdin, line); err != nil {
+					return
+				}
+			case line := <-requests:
 				if _, err := fmt.Fprintln(stdin, line); err != nil {
 					return
 				}
@@ -263,7 +269,15 @@ func (c *Client) Watch(ctx context.Context, handlers WatchHandlers, send <-chan 
 		}
 	}()
 	lines := bufio.NewScanner(stdout)
-	for lines.Scan() {
+	for up := false; lines.Scan(); {
+		if !up {
+			up = true
+			handlers.Up()
+		}
+		if payload, ok := strings.CutPrefix(lines.Text(), "lease "); ok {
+			handlers.Lease(payload)
+			continue
+		}
 		if payload, ok := strings.CutPrefix(lines.Text(), "reminder "); ok {
 			handlers.Reminder(payload)
 			continue

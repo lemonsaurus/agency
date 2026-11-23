@@ -34,4 +34,19 @@ func TestParkFrameClipsToTheTerminal(t *testing.T) {
 	if ParkFrame("x", 0, 5) != "" {
 		t.Fatal("drew into a zero-width terminal")
 	}
+	if empty := ParkFrame("\n \n", 40, 9); !strings.Contains(empty, "parked") || !strings.Contains(empty, parkEmpty) {
+		t.Fatalf("a failed capture drew a blank park screen: %q", empty)
+	}
+}
+
+func TestLeaseRequestRoundTrips(t *testing.T) {
+	for _, verb := range []string{"claim", "take"} {
+		got, device, host, ok := ParseLeaseRequest(LeaseRequest(verb, "bluefin-agency", "bluefin"))
+		if !ok || got != verb || device != "bluefin-agency" || host != "bluefin" {
+			t.Fatalf("%s round trip = %q %q %q %v", verb, got, device, host, ok)
+		}
+	}
+	if _, _, _, ok := ParseLeaseRequest("shown bluefin-agency 0 bluefin-agency/%1"); ok {
+		t.Fatal("parsed a shown line as a lease request")
+	}
 }

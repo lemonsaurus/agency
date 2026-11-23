@@ -273,13 +273,13 @@ func Model(ctx context.Context, socket string, request ModelRequest) (ModelReply
 func (s *Server) handleAsk(conn net.Conn, reader io.Reader, payload string) {
 	var request AskRequest
 	if err := json.Unmarshal([]byte(payload), &request); err != nil {
-		json.NewEncoder(conn).Encode(AskReply{Error: &AskError{Code: "invalid_request", Message: "invalid ask request"}})
+		json.NewEncoder(replyWriter{conn}).Encode(AskReply{Error: &AskError{Code: "invalid_request", Message: "invalid ask request"}})
 		return
 	}
 	reply := AskReply{ID: request.ID}
 	fail := func(code, message string) {
 		reply.Error = &AskError{Code: code, Message: message}
-		json.NewEncoder(conn).Encode(reply)
+		json.NewEncoder(replyWriter{conn}).Encode(reply)
 	}
 	if !requestIDPattern.MatchString(request.ID) || !paneIDPattern.MatchString(request.Pane) || strings.TrimSpace(request.Text) == "" || request.TimeoutMS <= 0 || request.TimeoutMS > MaxAskTimeout.Milliseconds() {
 		fail("invalid_request", "invalid ask ID, pane, text, or timeout (maximum 30m)")
@@ -320,5 +320,5 @@ func (s *Server) handleAsk(conn net.Conn, reader io.Reader, payload string) {
 		fail(code, err.Error())
 		return
 	}
-	json.NewEncoder(conn).Encode(reply)
+	json.NewEncoder(replyWriter{conn}).Encode(reply)
 }

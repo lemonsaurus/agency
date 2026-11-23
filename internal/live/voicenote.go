@@ -78,7 +78,11 @@ func RecordNote(ctx context.Context, api, key, voice, persona, script string) (V
 			}
 			var e event
 			if json.Unmarshal(data, &e) == nil {
-				events <- e
+				select {
+				case events <- e:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()

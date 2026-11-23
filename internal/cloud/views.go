@@ -13,12 +13,32 @@ import (
 // host's shown sets are scoped by it, so every machine virtualizes its own
 // mirrors independently.
 func Device(session string) string {
+	return Hostname() + "-" + session
+}
+
+// Hostname is this machine's short hostname, as the lease shows it.
+func Hostname() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "local"
 	}
 	host, _, _ = strings.Cut(host, ".")
-	return host + "-" + session
+	return host
+}
+
+// LeaseRequest asks the host for the lease: "claim" takes it only while
+// nobody holds it, "take" moves it from whoever does.
+func LeaseRequest(verb, device, host string) string {
+	return verb + " " + device + " " + host
+}
+
+// ParseLeaseRequest reads a LeaseRequest.
+func ParseLeaseRequest(line string) (verb, device, host string, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 3 || fields[0] != "claim" && fields[0] != "take" {
+		return "", "", "", false
+	}
+	return fields[0], fields[1], fields[2], true
 }
 
 // ViewerKey identifies one local viewer pane to the host.
@@ -51,14 +71,22 @@ const (
 	parkTag   = " parked "
 )
 
+// parkEmpty stands in for a snapshot the host could not capture.
+const parkEmpty = "no snapshot yet"
+
 // ParkFrame draws what a parked viewer shows: the pane's last text, grey,
 // clipped to width × height cells with a "parked" tag in the top right. A
 // taller pane loses its top rows, since an agent's input sits at the bottom.
+// Without text the frame says so in its middle row.
 func ParkFrame(text string, width, height int) string {
 	if width < 1 || height < 1 {
 		return ""
 	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if strings.TrimSpace(text) == "" {
+		lines = make([]string, height/2+1)
+		lines[height/2] = strings.Repeat(" ", max(0, (width-len(parkEmpty))/2)) + parkEmpty
+	}
 	if len(lines) > height {
 		lines = lines[len(lines)-height:]
 	}

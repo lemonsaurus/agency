@@ -153,16 +153,12 @@ func (c *Client) clientSessions(ctx context.Context) (map[string][]string, error
 }
 
 // ApplyShown records the viewer keys device has on screen and when it last
-// took focus, reconciles, and refits the windows.
+// took focus, and reconciles. The caller refits the windows.
 func (c *Client) ApplyShown(ctx context.Context, device string, focused int64, keys []string) (ViewState, error) {
 	if _, err := c.Cmd.Run(ctx, "set-option", "-g", shownOption(device), "="+strings.Join(keys, " "), ";", "set-option", "-g", focusedOption(device), strconv.FormatInt(focused, 10)); err != nil {
 		return ViewState{}, err
 	}
-	state, err := c.Reconcile(ctx, device)
-	if err != nil {
-		return state, err
-	}
-	return state, c.Fit(ctx)
+	return c.Reconcile(ctx, device)
 }
 
 // Fit sizes every window a client shows to the viewers of the device that

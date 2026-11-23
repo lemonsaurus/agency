@@ -88,6 +88,8 @@ type Manager struct {
 	OutsideIsHuman bool
 	// Deaths records kills, handoffs, and vanished panes; nil records nothing.
 	Deaths *deaths.Log
+	// Link is this device's connection to the cloud host; nil without one.
+	Link *cloud.Link
 }
 
 // NewManager creates a session manager.

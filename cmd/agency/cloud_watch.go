@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/cloud"
+	"github.com/lemonsaurus/agency/internal/coalesce"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/live"
 	"github.com/lemonsaurus/agency/internal/notify"
@@ -19,28 +21,31 @@ import (
 )
 
 // runCloudWatch runs on the host: it prints a line whenever the panes a sky
-// harness mirrors change, and a "reminder {json}" line when a reminder comes
-// due while the link is up. Each "shown <device> <focused> <keys...>" line on
-// stdin says which of that device's viewers are on screen and when it last took
-// focus: the rest are parked, windows fit the device focused last, and a
-// "views" line reports the result. It exits when the SSH client closes
-// stdin.
+// harness mirrors change, a "reminder {json}" line when a reminder comes due
+// while the link is up, and a "lease {json}" line at start and whenever the
+// lease or its holder's focus changes. Each "shown <device> <focused>
+// <keys...>" line on stdin says which of that device's viewers are on screen
+// and when it last took focus: the rest are parked, windows fit the device
+// focused last, and a "views" line reports the result. "claim" and "take"
+// lines move the lease. It exits when the SSH client closes stdin.
 func runCloudWatch(cfg *config.Config) {
 	tc := tmux.NewClient(cfg.Session.Name, "")
 	ctx, cancel := context.WithCancel(context.Background())
-	shown := make(chan string)
+	stdin := make(chan string)
 	go func() {
 		defer cancel()
 		lines := bufio.NewScanner(os.Stdin)
 		for lines.Scan() {
 			select {
-			case shown <- lines.Text():
+			case stdin <- lines.Text():
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	last := ""
+	var lease tmux.Lease
+	leased := false // a lease line went out
 	since := time.Now()
 	devices := map[string]bool{}
 	report := func(device string, state tmux.ViewState, err error) bool {
@@ -60,6 +65,14 @@ func runCloudWatch(cfg *config.Config) {
 			}
 		}
 		since = now
+		if current, err := tc.Lease(ctx); err == nil && (!leased || current != lease) {
+			leased = true
+			lease = current
+			payload, _ := json.Marshal(lease)
+			if _, err := fmt.Printf("lease %s\n", payload); err != nil {
+				return
+			}
+		}
 		if panes, err := tc.ListPanes(ctx); err == nil {
 			if signature := watchSignature(panes, cfg.Session.Name); signature != last {
 				last = signature
@@ -81,17 +94,40 @@ func runCloudWatch(cfg *config.Config) {
 		select {
 		case <-ctx.Done():
 			return
-		case line := <-shown:
+		case line := <-stdin:
 			if device, focused, keys, ok := cloud.ParseShownLine(line); ok {
 				devices[device] = true
 				state, err := tc.ApplyShown(ctx, device, focused, keys)
+				go fitOnce(tc)
 				if !report(device, state, err) {
 					return
 				}
 			}
+			if verb, device, host, ok := cloud.ParseLeaseRequest(line); ok {
+				take := tc.ClaimLease
+				if verb == "take" {
+					take = tc.TakeLease
+				}
+				if err := take(ctx, device, host, time.Now()); err != nil {
+					log.Printf("lease %s %s: %v", verb, device, err)
+				}
+				go fitOnce(tc)
+			}
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// fitOnce sizes the host's windows, one fit at a time across every process:
+// hooks fire on each client event, and a burst of them shares one trailing
+// fit.
+func fitOnce(tc *tmux.Client) error {
+	_, err := coalesce.Run(filepath.Join(os.TempDir(), "agency-fit-"+os.Getenv("AGENCY_TMUX_SOCKET")), func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return tc.Fit(ctx)
+	})
+	return err
 }
 
 // watchSignature covers everything sync mirrors: panes, windows, groups,
@@ -107,9 +143,17 @@ func watchSignature(panes []tmux.PaneInfo, session string) string {
 	return b.String()
 }
 
-// watchCloud keeps the sky harness in step with the host: every change the
-// host reports syncs, and a dropped link reconnects with backoff.
-func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
+// newCloudLink is this device's link to the host.
+func newCloudLink(session string) *cloud.Link {
+	return cloud.NewLink(cloud.Device(session), cloud.Hostname())
+}
+
+// watchCloud keeps the sky harness in step with the host over the one link
+// every viewer of this device shares: every change the host reports syncs,
+// the lease decides whether this device streams, and a dropped link
+// reconnects with capped, jittered backoff until it gives up and waits for a
+// manual retry from the sky screen.
+func watchCloud(ctx context.Context, mgr *session.Manager, link *cloud.Link, host string) {
 	syncs := make(chan struct{}, 1)
 	trigger := func() {
 		select {
@@ -131,6 +175,23 @@ func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
 			}
 		}
 	}()
+	// A sync collapses the sky harness to the sky screen, or brings the
+	// viewers back, whenever the lease or the give-up flips.
+	go func() {
+		collapsed := link.Collapsed()
+		for {
+			changed := link.Changed()
+			if now := link.Collapsed(); now != collapsed {
+				collapsed = now
+				trigger()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-changed:
+			}
+		}
+	}()
 	// The channel holds only the latest shown set, so a link that is down
 	// never queues stale ones.
 	shown := make(chan string, 1)
@@ -148,30 +209,41 @@ func watchCloud(ctx context.Context, mgr *session.Manager, host string) {
 	trigger()
 	remote := &cloud.Client{Host: host}
 	handlers := cloud.WatchHandlers{
+		Up:       func() { link.Up(time.Now()) },
 		Changed:  trigger,
 		Reminder: func(payload string) { showReminder(ctx, payload) },
 		Views:    func(payload string) { log.Printf("sky views: %s", payload) },
+		Lease: func(payload string) {
+			var lease tmux.Lease
+			if err := json.Unmarshal([]byte(payload), &lease); err == nil {
+				link.SetLease(lease)
+			}
+		},
 	}
-	delay := time.Second
 	for {
-		started := time.Now()
-		if line := mgr.ShownLine(); line != "" {
-			send(line)
+		link.Connecting()
+		// A fresh process or a fresh link has told the host nothing yet.
+		if err := mgr.ResendVisibility(ctx); err != nil {
+			log.Printf("cloud watch: visibility: %v", err)
 		}
-		err := remote.Watch(ctx, handlers, shown)
+		err := remote.Watch(ctx, handlers, shown, link.Requests())
 		if ctx.Err() != nil {
 			return
 		}
-		if time.Since(started) > time.Minute {
-			delay = time.Second
+		delay, offline := link.Dropped(err, time.Now(), cloud.Jitter())
+		var wait <-chan time.Time
+		if offline {
+			log.Printf("cloud watch: link closed (%v); gave up after %d tries until a manual retry", err, cloud.LinkAttempts)
+		} else {
+			log.Printf("cloud watch: link closed (%v); reconnecting in %s", err, delay.Round(time.Millisecond))
+			wait = time.After(delay)
 		}
-		log.Printf("cloud watch: link closed (%v); reconnecting in %s", err, delay)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(delay):
+		case <-wait:
+		case <-link.Retried():
 		}
-		delay = min(delay*2, time.Minute)
 	}
 }
 

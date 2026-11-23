@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,12 +23,22 @@ func (m *Manager) SetShownSink(sink func(line string)) {
 	m.shownSink = sink
 }
 
-// ShownLine is the last shown set sent to the host, for resending after a
-// reconnect.
-func (m *Manager) ShownLine() string {
+// ResendVisibility works out which viewers are on screen and sends the host
+// that set even when it has not changed, for a fresh link or process.
+func (m *Manager) ResendVisibility(ctx context.Context) error {
+	m.shownMu.Lock()
+	m.shownLine = ""
+	m.shownMu.Unlock()
+	return m.Visibility(ctx)
+}
+
+// viewerShown reports whether the last shown set sent to the host has the
+// viewer in pane on screen.
+func (m *Manager) viewerShown(pane string) bool {
 	m.shownMu.Lock()
 	defer m.shownMu.Unlock()
-	return m.shownLine
+	device, _, keys, ok := cloud.ParseShownLine(m.shownLine)
+	return ok && slices.Contains(keys, cloud.ViewerKey(device, pane))
 }
 
 // Focus records that a terminal of this device took focus and tells the host,

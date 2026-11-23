@@ -251,3 +251,47 @@ func TestBoxKillWindowKillsGroup(t *testing.T) {
 		t.Fatalf("kill calls = %v", calls)
 	}
 }
+
+func TestSyncCloudCollapsesToTheSkyScreenWhileTheLeaseIsElsewhere(t *testing.T) {
+	ctx := context.Background()
+	mock := &testMock{listOutput: "1\tjournalia\t%1\t0\tssh\t/tmp\t1\t200\t\t\t\t\t\t@3\t@9\t\t\tremote-agency\n" +
+		"1\tagency\t%2\t0\tssh\t/tmp\t1\t201\t\t\t\t\t\t@4\t@10\t\t\tremote-agency"}
+	mgr := newTestManager(mock)
+	mgr.cfg.Cloud.Host = "cloud"
+	remote := &mockCloud{windows: []cloud.Window{{ID: "@9"}, {ID: "@10"}}}
+	mgr.cloud = remote
+	mgr.Link = cloud.NewLink("bluefin-agency", "bluefin")
+	mgr.Link.Up(time.Now())
+	mgr.Link.SetLease(tmux.Lease{Device: "CITRUS-BRUTE-agency", Host: "CITRUS-BRUTE"})
+	if _, err := mgr.SyncCloud(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var killed []string
+	for _, call := range mock.findCalls("kill-pane") {
+		killed = append(killed, call[len(call)-1])
+	}
+	if strings.Join(killed, " ") != "%1 %2" && strings.Join(killed, " ") != "%2 %1" {
+		t.Fatalf("killed %v, want every viewer", killed)
+	}
+	created := mock.findCall("new-window")
+	if created == nil || !strings.HasSuffix(created[len(created)-1], "cloud-view "+cloud.Placeholder) {
+		t.Fatalf("sky screen = %v", created)
+	}
+	if len(remote.calls) != 0 {
+		t.Fatalf("collapsed sync reached the host: %v", remote.calls)
+	}
+}
+
+func TestCloudEnterTakesOverOnlyWhenAsked(t *testing.T) {
+	mgr := newTestManager(&testMock{})
+	mgr.cfg.Cloud.Host = "cloud"
+	mgr.Link = cloud.NewLink("bluefin-agency", "bluefin")
+	mgr.Link.Up(time.Now())
+	mgr.Link.SetLease(tmux.Lease{Device: "CITRUS-BRUTE-agency", Host: "CITRUS-BRUTE"})
+	if reply, err := mgr.Cloud(context.Background(), "enter"); err != nil || reply != "taking over" {
+		t.Fatalf("enter = %q, %v", reply, err)
+	}
+	if got := <-mgr.Link.Requests(); got != "take bluefin-agency bluefin" {
+		t.Fatalf("request = %q", got)
+	}
+}

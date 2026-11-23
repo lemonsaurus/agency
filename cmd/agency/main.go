@@ -343,7 +343,7 @@ func runCloud(args []string) {
 		runParkScreen(args[1:])
 		return
 	case "fit":
-		if err := tmux.NewClient("", "").Fit(context.Background()); err != nil {
+		if err := fitOnce(tmux.NewClient("", "")); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -608,55 +608,49 @@ func runNewWindow(args []string) {
 
 // runCloudView is the viewer pane's process: it stays attached to one remote
 // window, reconnects after a dropped link, and exits once the window is gone.
-// It never restarts the agent. As the placeholder it re-syncs on Enter until
-// a sync replaces it.
+// It never restarts the agent. Before each attach it waits on the daemon,
+// which holds every viewer of the device until the shared link is up and the
+// device holds the lease, then lets them through a few at a time. As the
+// placeholder it draws the sky screen.
 func runCloudView(args []string) {
 	cfg := loadConfig()
+	if len(args) == 0 || args[0] == cloud.Placeholder {
+		runSkyScreen(cfg)
+		return
+	}
 	remote := &cloud.Client{Host: cfg.Cloud.Host}
 	ctx := context.Background()
-	if len(args) == 0 || args[0] == cloud.Placeholder {
-		fmt.Printf("☁  No remote panes from %s.\n   Prefix+%s opens a shell there, Prefix+%s picks an agent. Enter re-syncs.\n", cfg.Cloud.Host, cfg.Keys.Terminal, cfg.Keys.Palette)
-		for {
-			fmt.Scanln()
-			resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "sync-cloud")
-			if err != nil {
-				resp = err.Error()
-			}
-			fmt.Println("☁  " + resp)
-		}
-	}
 	windowID := args[0]
-	viewer := ""
-	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+	pane, viewer := os.Getenv("TMUX_PANE"), ""
+	if pane != "" {
 		viewer = cloud.ViewerKey(cloud.Device(cfg.Session.Name), pane)
+	} else {
+		pane = "-"
 	}
-	delay := time.Second
+	failed := 0
 	for {
-		_ = remote.Attach(ctx, windowID, viewer)
-		windows, err := remote.Windows(ctx)
+		gate, err := ipc.SendMessage(socketPath(cfg.Session.Name), "cloud:gate "+windowID+" "+pane)
 		if err != nil {
-			fmt.Printf("\n☁  link dropped (%v). Reconnecting in %s...\n", err, delay)
+			failed++
+			delay := cloud.Backoff(failed, cloud.Jitter())
+			fmt.Printf("\n☁  Agency is not answering (%v). Asking again in %s...\n", err, delay.Round(time.Second))
 			time.Sleep(delay)
-			if delay < 30*time.Second {
-				delay *= 2
-			}
 			continue
 		}
-		delay = time.Second
-		if !hasWindow(windows, windowID) {
+		if gate == "gone" {
 			fmt.Printf("\n☁  remote pane %s is gone.\n", windowID)
 			return
 		}
-	}
-}
-
-func hasWindow(windows []cloud.Window, id string) bool {
-	for _, window := range windows {
-		if window.ID == id {
-			return true
+		started := time.Now()
+		_ = remote.Attach(ctx, windowID, viewer)
+		if time.Since(started) > time.Minute {
+			failed = 0
 		}
+		failed++
+		delay := cloud.Backoff(failed, cloud.Jitter())
+		fmt.Printf("\n☁  link dropped. Reconnecting in %s...\n", delay.Round(time.Second))
+		time.Sleep(delay)
 	}
-	return false
 }
 
 // startDaemon brings up the backend. cloud selects the headless profile: a
@@ -772,6 +766,8 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 		}
 	}
 
+	dumpProfilesOnSignal(ctx)
+
 	// Start status poller.
 	go poller.Run(ctx)
 
@@ -800,7 +796,8 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	}()
 
 	if !cloud && cfg.Cloud.Host != "" {
-		go watchCloud(ctx, mgr, cfg.Cloud.Host)
+		mgr.Link = newCloudLink(sessionName)
+		go watchCloud(ctx, mgr, mgr.Link, cfg.Cloud.Host)
 	}
 
 	return &daemon{ctx: ctx, cancel: cancel, tc: tc, close: func() {

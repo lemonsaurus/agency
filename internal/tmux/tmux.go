@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Commander abstracts command execution for testability.
@@ -36,13 +38,30 @@ func (e *ExecCommander) args(args []string) []string {
 	return append([]string{"-L", e.SocketName}, args...)
 }
 
+var commandTimeout = 10 * time.Second
+
+// commandSlots bounds short-lived tmux clients across all clients in this process.
+var commandSlots = make(chan struct{}, 8)
+
 func (e *ExecCommander) Run(ctx context.Context, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	select {
+	case commandSlots <- struct{}{}:
+		defer func() { <-commandSlots }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 	cmd := exec.CommandContext(ctx, e.bin(), e.args(args)...)
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimRight(stdout.String(), "\n"), nil
@@ -142,7 +161,15 @@ func (c *Client) Attach(ctx context.Context) error {
 // A viewer key opts into parking: the client starts on its park session when
 // its device does not show the key, and later moves between the two as the
 // device reports what is on screen. Without a key the client always streams.
+// A keyed viewer attaches only while its device holds the lease, and its
+// view session comes back if anything removes it while the client stays.
 func (c *Client) AttachWindow(ctx context.Context, windowID, viewer string) error {
+	device, keyed := viewerDevice(viewer)
+	if keyed {
+		if lease := parseLease(c.showOption(ctx, leaseOption)); !lease.Holds(device) {
+			return fmt.Errorf("in use on %s", lease.Host)
+		}
+	}
 	c.SweepViews(ctx)
 	id := os.Getpid()
 	view := fmt.Sprintf("%s%d", ViewPrefix, id)
@@ -155,22 +182,59 @@ func (c *Client) AttachWindow(ctx context.Context, windowID, viewer string) erro
 	if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err != nil {
 		return err
 	}
-	device, keyed := viewerDevice(viewer)
 	if !keyed {
 		// destroy-unattached is set from inside the attached client, so a link
 		// that dies before the deferred kill still takes the view session with it.
 		return c.Cmd.Exec(ctx, "attach-session", "-t", view, ";", "set-option", "-t", view, "destroy-unattached", "on")
 	}
-	for _, option := range [][2]string{{"@agency_viewer", viewer}, {"@agency_window", windowID}} {
-		if _, err := c.Cmd.Run(ctx, "set-option", "-t", "="+view+":", option[0], option[1]); err != nil {
-			return err
-		}
+	if err := c.markView(ctx, view, windowID, viewer); err != nil {
+		return err
 	}
 	target := view
 	if !c.isShown(ctx, viewer, device) && c.park(ctx, park, windowID) == nil {
 		target = park
 	}
+	heal, stop := context.WithCancel(ctx)
+	defer stop()
+	go c.keepView(heal, view, windowID, viewer)
 	return c.Cmd.Exec(ctx, "attach-session", "-t", "="+target)
+}
+
+// markView tags a view session with its viewer key and window, which the
+// host's reconcile reads.
+func (c *Client) markView(ctx context.Context, view, windowID, viewer string) error {
+	for _, option := range [][2]string{{"@agency_viewer", viewer}, {"@agency_window", windowID}} {
+		if _, err := c.Cmd.Run(ctx, "set-option", "-t", "="+view+":", option[0], option[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// viewCheck is how often an attached viewer checks that its view session
+// still exists. A parked client whose view session is gone is invisible to
+// reconcile and would sit on its park screen for good.
+var viewCheck = 15 * time.Second
+
+// keepView recreates the view session whenever it goes missing while the
+// client stays attached, until ctx ends.
+func (c *Client) keepView(ctx context.Context, view, windowID, viewer string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(viewCheck + time.Duration(rand.Int64N(int64(viewCheck/2)))):
+		}
+		if _, err := c.Cmd.Run(ctx, "has-session", "-t", "="+view); err == nil || ctx.Err() != nil {
+			continue
+		}
+		if _, err := c.Cmd.Run(ctx, "new-session", "-d", "-t", c.SessionName, "-s", view); err != nil {
+			continue
+		}
+		if _, err := c.Cmd.Run(ctx, "select-window", "-t", view+":"+windowID); err == nil {
+			_ = c.markView(ctx, view, windowID, viewer)
+		}
+	}
 }
 
 // SplitWindow creates a new pane by splitting, running the given command.
