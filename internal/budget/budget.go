@@ -23,6 +23,7 @@ type Limits struct {
 	MemShare        float64       `json:"memShare"`        // ceiling as a share of RAM
 	Reserve         Cost          `json:"reserve"`         // kept free of workers' spawns and jobs
 	MaxWait         time.Duration `json:"maxWait"`         // longest a controller's or manager's spawn waits on the projection
+	JobCost         Cost          `json:"jobCost"`         // a job's estimate before its class has run three times
 	MinAvailable    uint64        `json:"minAvailable"`    // MemAvailable below this refuses
 	MaxMemorySome60 float64       `json:"maxMemorySome60"` // memory PSI some avg60 above this refuses
 	MaxMemoryFull10 float64       `json:"maxMemoryFull10"` // memory PSI full avg10 above this refuses
@@ -39,17 +40,16 @@ var DefaultLimits = Limits{
 	MemShare:        0.7,
 	Reserve:         Cost{CPU: 1.5, Mem: 3 * GB},
 	MaxWait:         10 * time.Minute,
+	JobCost:         Cost{CPU: 1, Mem: 1536 << 20},
 	MinAvailable:    12 * GB,
 	MaxMemorySome60: 10,
 	MaxMemoryFull10: 5,
 	MaxLoadPerCore:  2,
 }
 
-// Fallback costs for classes the learner has not seen three times yet.
-var (
-	DefaultPaneCost = Cost{CPU: 0.5, Mem: GB}
-	DefaultJobCost  = Cost{CPU: 2, Mem: 3 * GB}
-)
+// DefaultPaneCost is the estimate for a pane class the learner has not seen
+// three times yet.
+var DefaultPaneCost = Cost{CPU: 0.5, Mem: GB}
 
 const (
 	interval   = 5 * time.Second
@@ -557,7 +557,7 @@ func (b *Budget) Job(t Ticket) Decision {
 		ticket.ID = b.nextID(KindJob)
 	}
 	if ticket.Cost == (Cost{}) {
-		ticket.Cost = b.learner.estimate("job:"+ticket.Class, DefaultJobCost)
+		ticket.Cost = b.learner.estimate("job:"+ticket.Class, b.limits.JobCost)
 	}
 	ticket.Cost = b.clamp(ticket.Cost)
 	reason := b.fit(ticket)

@@ -74,6 +74,8 @@ type AdmissionConfig struct {
 	ReserveCores    float64 `toml:"reserve_cores"`     // kept free of workers, 1.5
 	ReserveGB       float64 `toml:"reserve_gb"`        // kept free of workers, 3
 	MaxWait         string  `toml:"max_wait"`          // controllers' and managers' longest wait, "10m"
+	JobCores        float64 `toml:"job_cores"`         // a new kind of job's estimate until it has run 3 times, 1
+	JobGB           float64 `toml:"job_gb"`            // 1.5
 	MinAvailableGB  float64 `toml:"min_available_gb"`  // backstop, 12
 	MaxMemorySome60 float64 `toml:"max_memory_some60"` // backstop, memory PSI some avg60, 10
 	MaxMemoryFull10 float64 `toml:"max_memory_full10"` // backstop, memory PSI full avg10, 5

@@ -64,11 +64,15 @@ func admissionLimits(a config.AdmissionConfig) budget.Limits {
 	set(&l.CPUShare, a.CPUShare)
 	set(&l.MemShare, a.MemoryShare)
 	set(&l.Reserve.CPU, a.ReserveCores)
+	set(&l.JobCost.CPU, a.JobCores)
 	set(&l.MaxMemorySome60, a.MaxMemorySome60)
 	set(&l.MaxMemoryFull10, a.MaxMemoryFull10)
 	set(&l.MaxLoadPerCore, a.MaxLoadPerCore)
 	if a.ReserveGB > 0 {
 		l.Reserve.Mem = uint64(a.ReserveGB * budget.GB)
+	}
+	if a.JobGB > 0 {
+		l.JobCost.Mem = uint64(a.JobGB * budget.GB)
 	}
 	if a.MinAvailableGB > 0 {
 		l.MinAvailable = uint64(a.MinAvailableGB * budget.GB)
