@@ -267,10 +267,10 @@ var apparmorProfiles = "/sys/kernel/security/apparmor/policy/profiles"
 func roleCommand(command string, role control.Role, parentID, rootID string) string {
 	rootValue := fmt.Sprintf("%q", rootID)
 	if role == control.RoleController {
-		rootValue = `"$(tmux display-message -p '#{pane_id}')"`
+		rootValue = `"$TMUX_PANE"`
 	}
 	command = fmt.Sprintf(
-		`AGENCY_ROLE=%s AGENCY_PANE_ID="$(tmux display-message -p '#{pane_id}')" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%s %s`,
+		`AGENCY_ROLE=%s AGENCY_PANE_ID="$TMUX_PANE" AGENCY_PARENT_ID=%q AGENCY_ROOT_ID=%s %s`,
 		role, parentID, rootValue, command,
 	)
 	if !profileLoaded(paneProfile) {

@@ -1299,7 +1299,7 @@ func runKill(args []string) {
 			os.Exit(1)
 		}
 		message = "kill-window:" + args[1]
-	} else if agencyRole() == "worker" && os.Getenv("AGENCY_PANE_ID") != args[0] {
+	} else if agencyRole() == "worker" && os.Getenv("TMUX_PANE") != args[0] {
 		fmt.Fprintln(os.Stderr, "Error: worker panes may only kill their own pane")
 		os.Exit(1)
 	}
@@ -1319,7 +1319,7 @@ func runMove(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: agency move <pane-id> <window-name>")
 		os.Exit(1)
 	}
-	if agencyRole() == "worker" && os.Getenv("AGENCY_PANE_ID") != args[0] {
+	if agencyRole() == "worker" && os.Getenv("TMUX_PANE") != args[0] {
 		fmt.Fprintln(os.Stderr, "Error: worker panes may only move their own pane")
 		os.Exit(1)
 	}
