@@ -184,6 +184,9 @@ func New(limits Limits, stateDir string) *Budget {
 func (b *Budget) Run(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Busy cores and CPU use are differences, so the first reading takes two samples.
+	b.Sample(ctx)
+	time.Sleep(time.Second)
 	b.Sample(ctx)
 	for {
 		select {
