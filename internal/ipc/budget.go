@@ -116,7 +116,8 @@ func QueuedReply(d budget.Decision) string {
 }
 
 // Started tells a queued spawn's requester how it went, and keeps the saved
-// queue current.
+// queue current. A requester whose Pi has no bridge gets the text typed in,
+// as `agency send` does.
 func (a *Admission) Started(s budget.Started, notify func(paneID, text string) bool) {
 	a.saveQueue()
 	label := s.Ticket.Label
@@ -127,8 +128,15 @@ func (a *Admission) Started(s budget.Started, notify func(paneID, text string) b
 	if s.Err != nil {
 		text = fmt.Sprintf("[agency] queued spawn %s %q failed to start: %v", s.Ticket.ID, label, s.Err)
 	}
-	if s.Ticket.Pane == "" || !notify(s.Ticket.Pane, text) {
+	if s.Ticket.Pane == "" {
 		log.Print(text)
+		return
+	}
+	if notify(s.Ticket.Pane, text) {
+		return
+	}
+	if err := a.Handler.SendText(a.ctx, control.Requester{Human: true}, s.Ticket.Pane, text, true); err != nil {
+		log.Printf("%s Telling %s failed: %v", text, s.Ticket.Pane, err)
 	}
 }
 
