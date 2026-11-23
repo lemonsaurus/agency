@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lemonsaurus/agency/internal/budget"
 	"github.com/lemonsaurus/agency/internal/control"
 )
 
@@ -104,6 +105,10 @@ type Server struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	sends    sendLedger
+
+	// Budget answers budget and job requests; nil leaves them unknown.
+	Budget    *budget.Budget
+	Admission *Admission
 }
 
 // NewServer creates a socket server at the given path.
@@ -257,6 +262,11 @@ func requestedRole(requester control.Requester, value string) (control.Role, err
 }
 
 func (s *Server) dispatch(line string, pid int) (string, error) {
+	if s.Budget != nil {
+		if reply, ok, err := s.budgetDispatch(line, pid); ok {
+			return reply, err
+		}
+	}
 	if line == "capabilities" {
 		capabilities := s.handler.Capabilities()
 		capabilities.PromptBridge = true

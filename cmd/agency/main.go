@@ -100,6 +100,12 @@ func main() {
 		runKillAll()
 	case "list":
 		runList(os.Args[2:])
+	case "budget":
+		runBudget(os.Args[2:])
+	case "top":
+		runTop()
+	case "job":
+		runJob(os.Args[2:])
 	case "layout":
 		runLayout(os.Args[2:])
 	case "relayout":
@@ -179,6 +185,11 @@ Usage:
   agency move-window <target> <index> Place a window at an index, shifting the rest
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
+  agency budget [--json]            Box budget: headroom, queue, jobs, and what each pane costs
+  agency budget cancel <ticket>     Drop a queued spawn or job
+  agency budget scopes              Move tmux and every pane into their systemd scopes now
+  agency top                        Live budget view
+  agency job [--cost 4c,6g] -- cmd  Run a heavy command once the box has budget for it
   agency layout <layout>            Switch layout (tiled, columns, rows, main-vertical)
   agency attach                     Reattach to existing session
   agency config                     Print resolved config
@@ -744,7 +755,9 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	if cloud {
 		mgr.LiveHandler = newLiveManager(tc, mgr, sockPath).Handle
 	}
-	srv := ipc.NewServer(sockPath, mgr)
+	handler, attachBudget := admissionHandler(ctx, cloud, tc, mgr)
+	srv := ipc.NewServer(sockPath, handler)
+	attachBudget(srv)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Starting socket server: %v", err)
 	}
