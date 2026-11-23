@@ -94,7 +94,7 @@ func readBudget(sessionName string) (budget.Snapshot, bool) {
 		}
 	}
 	tc := tmux.NewClient(sessionName, "")
-	b := budget.New(budget.DefaultLimits, "")
+	b := budget.New(admissionLimits(loadConfig().Admission), "")
 	b.Panes = func(ctx context.Context) []budget.Pane { return budgetPanes(ctx, tc) }
 	ctx := context.Background()
 	b.Sample(ctx)
@@ -305,12 +305,11 @@ func renderBudget(s budget.Snapshot, live bool, width, rows int) string {
 	b.WriteString(" " + title + sub + strings.Repeat(" ", max(1, width-lipgloss.Width(title+sub+clock)-2)) + clock + "\n\n")
 
 	barWidth := max(20, width-48)
-	ceilingShare := budget.DefaultLimits.Share
 	cpuTotal, memTotal := float64(box.Cores), float64(box.MemTotal)
 	fmt.Fprintf(&b, " %s %s %s\n", budgetDim.Render("cpu"), gauge(s.Committed.CPU, s.Ceiling.CPU, cpuTotal, barWidth),
-		budgetPlain.Render(fmt.Sprintf("%5.1f / %.1f cores", s.Committed.CPU, s.Ceiling.CPU))+budgetFaint.Render(fmt.Sprintf("  ceiling %.0f%%", ceilingShare*100)))
+		budgetPlain.Render(fmt.Sprintf("%5.1f / %.1f cores", s.Committed.CPU, s.Ceiling.CPU))+budgetFaint.Render(fmt.Sprintf("  ceiling %.0f%%", s.Limits.CPUShare*100)))
 	fmt.Fprintf(&b, " %s %s %s\n", budgetDim.Render("mem"), gauge(float64(s.Committed.Mem), float64(s.Ceiling.Mem), memTotal, barWidth),
-		budgetPlain.Render(fmt.Sprintf("%5s / %s GB", gb(s.Committed.Mem), gb(s.Ceiling.Mem))))
+		budgetPlain.Render(fmt.Sprintf("%5s / %s GB", gb(s.Committed.Mem), gb(s.Ceiling.Mem)))+budgetFaint.Render(fmt.Sprintf("  ceiling %.0f%%", s.Limits.MemShare*100)))
 
 	status := budgetGood.Render("✓ admitting")
 	switch {
@@ -322,8 +321,8 @@ func renderBudget(s budget.Snapshot, live bool, width, rows int) string {
 	stats := fmt.Sprintf("load %.1f · psi cpu %.0f%% mem %.1f%% io %.1f%% · %s GB free · disk %.0f%%",
 		box.Load1, box.CPU.SomeAvg10, box.Memory.SomeAvg60, box.IO.SomeAvg60, gb(box.MemAvailable), box.DiskUsed)
 	fmt.Fprintf(&b, " %s  %s\n", status, budgetDim.Render(stats))
-	fmt.Fprintf(&b, " %s\n", budgetDim.Render(fmt.Sprintf("headroom %.1f cores, %s GB · outside agency %.1f cores, %s GB",
-		s.Headroom.CPU, gb(s.Headroom.Mem), s.Other.CPU, gb(s.Other.Mem))))
+	fmt.Fprintf(&b, " %s\n", budgetDim.Render(fmt.Sprintf("headroom %.1f cores, %s GB · workers stop %.1f cores, %s GB short · outside agency %.1f cores, %s GB",
+		s.Headroom.CPU, gb(s.Headroom.Mem), s.Limits.Reserve.CPU, gb(s.Limits.Reserve.Mem), s.Other.CPU, gb(s.Other.Mem))))
 
 	section := func(name string, count int) {
 		label := budgetBold.Render(fmt.Sprintf("%s (%d)", name, count))

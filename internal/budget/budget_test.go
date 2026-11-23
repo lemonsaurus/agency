@@ -32,19 +32,19 @@ func TestSpawnAdmittedUnderCeiling(t *testing.T) {
 
 func TestPendingEstimatesQueueABurst(t *testing.T) {
 	b := idleBox()
-	// The ceiling is 8.4 cores; each admitted spawn holds its estimate
-	// before the box shows any of it.
+	// Workers may fill 10.2 cores less the 1.5 reserve; each admitted spawn
+	// holds its estimate before the box shows any of it.
 	var admitted int
 	for range 10 {
 		if b.Spawn(Ticket{Role: control.RoleWorker, Cost: Cost{CPU: 1.5, Mem: GB}}, nil).Admitted {
 			admitted++
 		}
 	}
-	if admitted != 4 {
-		t.Errorf("admitted %d of a burst of 10, want 4", admitted)
+	if admitted != 5 {
+		t.Errorf("admitted %d of a burst of 10, want 5", admitted)
 	}
-	if len(b.queue) != 6 {
-		t.Errorf("queued %d, want 6", len(b.queue))
+	if len(b.queue) != 5 {
+		t.Errorf("queued %d, want 5", len(b.queue))
 	}
 }
 
@@ -196,5 +196,57 @@ func TestParsePressure(t *testing.T) {
 	p := parsePressure("some avg10=58.80 avg60=36.26 avg300=18.16 total=1\nfull avg10=0.44 avg60=0.69 avg300=0.77 total=2\n")
 	if p.SomeAvg10 != 58.8 || p.SomeAvg60 != 36.26 || p.FullAvg10 != 0.44 || p.FullAvg60 != 0.69 {
 		t.Errorf("got %+v", p)
+	}
+}
+
+func TestReserveKeepsRoomForManagers(t *testing.T) {
+	b := idleBox()
+	b.busy = 8 // ceiling 10.2 cores, workers stop at 8.7
+	worker := b.Spawn(Ticket{Role: control.RoleWorker, Cost: Cost{CPU: 1}}, nil)
+	manager := b.Spawn(Ticket{Role: control.RoleManager, Cost: Cost{CPU: 1}}, nil)
+	if worker.Admitted || !manager.Admitted {
+		t.Errorf("worker %+v manager %+v, want the manager admitted into the reserve", worker, manager)
+	}
+}
+
+func TestOverdueManagerSpawnPassesTheProjection(t *testing.T) {
+	b := idleBox()
+	b.busy = 11
+	started := make(chan Started, 1)
+	b.OnStart = func(s Started) { started <- s }
+	d := b.Spawn(Ticket{Role: control.RoleManager, Cost: Cost{CPU: 1}}, func() (string, error) { return "%7", nil })
+	if d.Admitted {
+		t.Fatalf("got %+v, want queued", d)
+	}
+	b.launch(b.pump(time.Now()))
+	if len(b.queue) != 1 {
+		t.Fatal("manager spawn left the queue before MaxWait")
+	}
+	b.queue[0].Enqueued = time.Now().Add(-DefaultLimits.MaxWait)
+	b.launch(b.pump(time.Now()))
+	select {
+	case s := <-started:
+		if s.PaneID != "%7" {
+			t.Errorf("started %+v", s)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("overdue manager spawn never started")
+	}
+}
+
+func TestOverdueWorkerAndBackstopStillWait(t *testing.T) {
+	b := idleBox()
+	b.busy = 11
+	b.Spawn(Ticket{Role: control.RoleWorker, Cost: Cost{CPU: 1}}, nil)
+	b.queue[0].Enqueued = time.Now().Add(-time.Hour)
+	if started := b.pump(time.Now()); len(started) != 0 {
+		t.Error("an overdue worker spawn passed the projection")
+	}
+	b.queue = nil
+	b.Spawn(Ticket{Role: control.RoleManager, Cost: Cost{CPU: 1}}, nil)
+	b.queue[0].Enqueued = time.Now().Add(-time.Hour)
+	b.box.MemAvailable = 2 * GB
+	if started := b.pump(time.Now()); len(started) != 0 {
+		t.Error("an overdue manager spawn passed the backstop")
 	}
 }

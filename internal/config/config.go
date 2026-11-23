@@ -16,6 +16,9 @@ type Config struct {
 	Agents  map[string]AgentConfig `toml:"agents"`
 	// AgentOrder preserves insertion order from TOML parsing.
 	AgentOrder []string `toml:"-"`
+	// Admission tunes the headless server's resource budget. The daemon
+	// rereads it when the file changes.
+	Admission AdmissionConfig `toml:"admission"`
 }
 
 type KeysConfig struct {
@@ -64,6 +67,19 @@ type CloudConfig struct {
 	Host string `toml:"host"`
 }
 
+// AdmissionConfig overrides the budget's limits. Unset fields keep the defaults.
+type AdmissionConfig struct {
+	CPUShare        float64 `toml:"cpu_share"`         // ceiling as a share of cores, 0.85
+	MemoryShare     float64 `toml:"memory_share"`      // ceiling as a share of RAM, 0.7
+	ReserveCores    float64 `toml:"reserve_cores"`     // kept free of workers, 1.5
+	ReserveGB       float64 `toml:"reserve_gb"`        // kept free of workers, 3
+	MaxWait         string  `toml:"max_wait"`          // controllers' and managers' longest wait, "10m"
+	MinAvailableGB  float64 `toml:"min_available_gb"`  // backstop, 12
+	MaxMemorySome60 float64 `toml:"max_memory_some60"` // backstop, memory PSI some avg60, 10
+	MaxMemoryFull10 float64 `toml:"max_memory_full10"` // backstop, memory PSI full avg10, 5
+	MaxLoadPerCore  float64 `toml:"max_load_per_core"` // backstop, 2
+}
+
 type ThemeConfig struct {
 	ActiveBorder   string `toml:"active_border"`
 	InactiveBorder string `toml:"inactive_border"`
@@ -96,12 +112,20 @@ func xdgConfigDir() string {
 }
 
 func Load() (*Config, error) {
-	configDir := xdgConfigDir()
-	if configDir == "" {
+	path := Path()
+	if path == "" {
 		return DefaultConfig(), nil
 	}
-	path := filepath.Join(configDir, "agency", "config.toml")
 	return LoadFromPath(path)
+}
+
+// Path is the config file, empty when there is no config directory.
+func Path() string {
+	configDir := xdgConfigDir()
+	if configDir == "" {
+		return ""
+	}
+	return filepath.Join(configDir, "agency", "config.toml")
 }
 
 func LoadFromPath(path string) (*Config, error) {

@@ -749,7 +749,7 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	if cloud {
 		mgr.LiveHandler = newLiveManager(tc, mgr, sockPath).Handle
 	}
-	handler, attachBudget := admissionHandler(ctx, cloud, tc, mgr)
+	handler, attachBudget := admissionHandler(ctx, cfg, cloud, tc, mgr)
 	srv := ipc.NewServer(sockPath, handler)
 	attachBudget(srv)
 	if err := srv.Start(); err != nil {

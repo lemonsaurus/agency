@@ -129,6 +129,11 @@ agency approve-promotion <pane>      Approve promotion (human tmux authority onl
 agency kill <pane-id>               Kill a specific pane
 agency kill-all                     Kill all managed panes
 agency list                         List all panes
+agency budget [--json]              Box budget: headroom, queue, jobs, and what each pane costs
+agency budget cancel <ticket>       Drop a queued spawn or job
+agency budget scopes                Move tmux and every pane into their systemd scopes now
+agency top                          Live budget view
+agency job [--cost 4c,6g] -- <cmd>  Run a heavy command once the box has budget for it
 agency layout <name>                Switch layout (tiled, columns, rows, main-vertical)
 agency attach                       Reattach to a running session
 agency serve                        Headless daemon on its own tmux server (the cloud box)
@@ -270,6 +275,18 @@ From a viewer, the spawn keys and palette create the agent on the host in that p
 In Sky, `Ctrl+V` uploads files copied in the local file manager or an image from the clipboard. Select files, copy them, then press `Ctrl+V` in the target pane. Agency inserts their remote paths into the current prompt without pressing Enter. `Ctrl+Shift+V` remains the terminal's text paste; dragging files still pastes local paths. The pane menu has **Paste Files / Image** for the same action.
 
 Uploads use a unique `/tmp/agency-attachments.*` directory on Sky, with directory mode 0700 and file mode 0600. Agency accepts regular files and rejects directories, symlinks, and nonlocal file URIs. Spaces and punctuation become underscores in remote filenames. A cut selection is copied without changing the source files or clipboard. Agency inserts paths only after the whole batch uploads. The local pane border keeps upload progress, retries, completion, or failure visible; a paste never opens tmux's fullscreen output, and the raw error of a failed or retried step goes to `agency logs`. A clipboard tool that fails or hangs, and an SSH connection that drops or stalls, get three attempts; a stalled shared SSH master is closed so the next attempt opens a fresh one. Linux reads the clipboard with `xclip` through Xwayland when it is installed, since GNOME's `wl-paste` needs a focus grab that GNOME sometimes refuses. Failed batches get cleaned up; completed attachments remain until Sky cleans `/tmp`.
+
+## Resource budget
+
+On the headless server every spawn and every `agency job` goes through a budget, so the box never reaches pressure in the first place. The daemon samples the box every 5 s and learns what each kind of pane (role and command) and each kind of job (program, subcommand, repository) costs. A request is admitted only while box use, plus the estimates of everything admitted but not yet showing, plus its own estimate, stays under 85% of cores and 70% of RAM. Workers stop 1.5 cores and 3 GB short of that, so controllers and managers always find room. A backstop refuses anything while MemAvailable is under 12 GB, memory pressure is high, or load is over twice the core count.
+
+What does not fit queues by the requester's role, then by arrival. A queued spawn answers `queued q-N: position P of W, <reason>` at once, and the requester's Pi gets the pane id when it starts. A controller's or manager's spawn that has waited 10 minutes starts as soon as the backstop allows. Lemon's own spawns always run.
+
+Wrap builds, test suites, Docker builds and headless browsers in `agency job -- <cmd>`. The job waits for a lease, then runs in its own `agency-job-<ticket>.scope` at a CPU weight below every pane.
+
+Each pane runs in `agency-pane-<id>.scope` under `agency.slice` (MemoryHigh is RAM less 8 GB), with a CPU weight of 400, 200 or 100 by role. `agency.service` and the tmux server's `agency-tmux.scope` get weight 1000, so no build starves the harness.
+
+Tune the limits in `[admission]` (see `configs/default.toml`). The daemon rereads the file within 5 s.
 
 ## Reminders
 

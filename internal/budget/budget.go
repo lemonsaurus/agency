@@ -13,22 +13,32 @@ import (
 	"github.com/lemonsaurus/agency/internal/control"
 )
 
-// Limits is where the budget says no. Share sets the ceiling on projected
-// use; the rest is the backstop, read straight off the box, which refuses
-// whatever the projection says.
+// Limits is where the budget says no. The shares set the ceiling on
+// projected use. Workers stop Reserve short of it, so controllers and
+// managers always find room, and a controller's or manager's spawn that has
+// waited MaxWait goes in past the projection. The backstop, read straight
+// off the box, refuses whatever the projection says.
 type Limits struct {
-	Share           float64 // ceiling as a share of cores and memory
-	MinAvailable    uint64  // MemAvailable below this refuses
-	MaxMemorySome60 float64 // memory PSI some avg60 above this refuses
-	MaxMemoryFull10 float64 // memory PSI full avg10 above this refuses
-	MaxLoadPerCore  float64 // load1 per core above this refuses
+	CPUShare        float64       `json:"cpuShare"`        // ceiling as a share of cores
+	MemShare        float64       `json:"memShare"`        // ceiling as a share of RAM
+	Reserve         Cost          `json:"reserve"`         // kept free of workers' spawns and jobs
+	MaxWait         time.Duration `json:"maxWait"`         // longest a controller's or manager's spawn waits on the projection
+	MinAvailable    uint64        `json:"minAvailable"`    // MemAvailable below this refuses
+	MaxMemorySome60 float64       `json:"maxMemorySome60"` // memory PSI some avg60 above this refuses
+	MaxMemoryFull10 float64       `json:"maxMemoryFull10"` // memory PSI full avg10 above this refuses
+	MaxLoadPerCore  float64       `json:"maxLoadPerCore"`  // load1 per core above this refuses
 }
 
-// DefaultLimits keeps 30% of the box free and sits below the Harness
-// Janitor's intervention lines (MemAvailable 6 GB, memory PSI full avg60 20).
-// Disk is the Janitor's: a spawn barely writes, so a full disk queues nothing.
+// DefaultLimits overcommits CPU further than memory, since too little CPU
+// only slows panes while too little memory kills them, and sits below the
+// Harness Janitor's intervention lines (MemAvailable 6 GB, memory PSI full
+// avg60 20). Disk is the Janitor's: a spawn barely writes, so a full disk
+// queues nothing.
 var DefaultLimits = Limits{
-	Share:           0.7,
+	CPUShare:        0.85,
+	MemShare:        0.7,
+	Reserve:         Cost{CPU: 1.5, Mem: 3 * GB},
+	MaxWait:         10 * time.Minute,
 	MinAvailable:    12 * GB,
 	MaxMemorySome60: 10,
 	MaxMemoryFull10: 5,
@@ -130,6 +140,7 @@ type Decision struct {
 // Snapshot is the whole budget at one moment.
 type Snapshot struct {
 	At        time.Time `json:"at"`
+	Limits    Limits    `json:"limits"`
 	Box       Box       `json:"box"`
 	Busy      float64   `json:"busy"` // smoothed busy cores
 	Ceiling   Cost      `json:"ceiling"`
@@ -308,9 +319,34 @@ func (b *Budget) pending(e *Entry, now time.Time) Cost {
 // ceiling is the share of the box the budget hands out.
 func (b *Budget) ceiling() Cost {
 	return Cost{
-		CPU: float64(b.box.Cores) * b.limits.Share,
-		Mem: uint64(float64(b.box.MemTotal) * b.limits.Share),
+		CPU: float64(b.box.Cores) * b.limits.CPUShare,
+		Mem: uint64(float64(b.box.MemTotal) * b.limits.MemShare),
 	}
+}
+
+// ceilingFor is the ceiling t may fill: workers and unknown requesters stop
+// the reserve short of it.
+func (b *Budget) ceilingFor(t *Ticket) Cost {
+	ceiling := b.ceiling()
+	if rank(t) < rank(&Ticket{Role: control.RoleWorker}) {
+		return ceiling
+	}
+	return ceiling.over(b.limits.Reserve)
+}
+
+// overdue reports whether t has waited out MaxWait as a controller's or
+// manager's spawn, which then needs only the backstop's say.
+func (b *Budget) overdue(t *Ticket, now time.Time) bool {
+	return t.Kind == KindSpawn && rank(t) <= rank(&Ticket{Role: control.RoleManager}) &&
+		b.limits.MaxWait > 0 && now.Sub(t.Enqueued) >= b.limits.MaxWait && b.backstop() == ""
+}
+
+// SetLimits replaces the limits; queued tickets are judged by them from the
+// next sample.
+func (b *Budget) SetLimits(limits Limits) {
+	b.mu.Lock()
+	b.limits = limits
+	b.mu.Unlock()
 }
 
 // committed is what the box uses now plus every estimate still on its way.
@@ -340,12 +376,13 @@ func (b *Budget) backstop() string {
 	return ""
 }
 
-// fit says why cost does not fit right now, or "".
-func (b *Budget) fit(cost Cost) string {
+// fit says why t does not fit right now, or "".
+func (b *Budget) fit(t *Ticket) string {
 	if reason := b.backstop(); reason != "" {
 		return reason
 	}
-	ceiling := b.ceiling()
+	cost := t.Cost
+	ceiling := b.ceilingFor(t)
 	projected := b.committed().add(cost)
 	switch {
 	case projected.CPU > ceiling.CPU:
@@ -426,7 +463,7 @@ func (b *Budget) decision(t *Ticket, admitted bool, reason string) Decision {
 		Reason:    reason,
 		Cost:      t.Cost,
 		Projected: b.committed(),
-		Ceiling:   b.ceiling(),
+		Ceiling:   b.ceilingFor(t),
 	}
 }
 
@@ -447,7 +484,7 @@ func (b *Budget) Spawn(t Ticket, start func() (string, error)) Decision {
 	ticket.ID = b.nextID(KindSpawn)
 	ticket.Enqueued = time.Now()
 	ticket.Cost = b.clamp(ticket.Cost)
-	reason := b.fit(ticket.Cost)
+	reason := b.fit(ticket)
 	if ticket.Human || reason == "" && !b.ahead(ticket) {
 		b.charge(ticket)
 		d := b.decision(ticket, true, "")
@@ -506,7 +543,7 @@ func (b *Budget) Job(t Ticket) Decision {
 		for _, q := range b.queue {
 			if q.ID == t.ID {
 				q.lastPoll = now
-				reason := b.fit(q.Cost)
+				reason := b.fit(q)
 				if reason == "" {
 					reason = "behind higher-priority requests"
 				}
@@ -523,7 +560,7 @@ func (b *Budget) Job(t Ticket) Decision {
 		ticket.Cost = b.learner.estimate("job:"+ticket.Class, DefaultJobCost)
 	}
 	ticket.Cost = b.clamp(ticket.Cost)
-	reason := b.fit(ticket.Cost)
+	reason := b.fit(ticket)
 	if reason == "" && !b.ahead(ticket) {
 		b.charge(ticket)
 		return b.decision(ticket, true, "")
@@ -595,7 +632,7 @@ func (b *Budget) pump(now time.Time) []*Ticket {
 	var started []*Ticket
 	for len(b.queue) > 0 {
 		t := b.queue[0]
-		if b.fit(t.Cost) != "" {
+		if b.fit(t) != "" && !b.overdue(t, now) {
 			break
 		}
 		b.queue = b.queue[1:]
@@ -664,6 +701,7 @@ func (b *Budget) Snapshot() Snapshot {
 	defer b.mu.Unlock()
 	s := Snapshot{
 		At:        time.Now(),
+		Limits:    b.limits,
 		Box:       b.box,
 		Busy:      b.busy,
 		Ceiling:   b.ceiling(),

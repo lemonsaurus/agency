@@ -9,6 +9,19 @@ max_workers_per_manager = 8
 # [cloud]
 # host = "lemon.harness.journalia.com"
 
+# Resource budget of the headless server. Unset keys keep these defaults; the
+# daemon rereads the file within 5 s.
+# [admission]
+# cpu_share = 0.85                 # ceiling as a share of cores
+# memory_share = 0.7               # ceiling as a share of RAM
+# reserve_cores = 1.5              # kept free of workers for controllers and managers
+# reserve_gb = 3
+# max_wait = "10m"                 # a controller's or manager's spawn then needs only the backstop
+# min_available_gb = 12            # backstop: MemAvailable floor
+# max_memory_some60 = 10           # backstop: memory PSI some avg60
+# max_memory_full10 = 5            # backstop: memory PSI full avg10
+# max_load_per_core = 2            # backstop: load1 per core
+
 [theme]
 active_border = "#89b4fa"        # Catppuccin blue
 inactive_border = "#45475a"      # Catppuccin surface1

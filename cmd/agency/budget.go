@@ -13,6 +13,7 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/budget"
 	"github.com/lemonsaurus/agency/internal/cgroup"
+	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
 	"github.com/lemonsaurus/agency/internal/session"
@@ -32,11 +33,11 @@ func budgetStateDir() string {
 
 // admissionHandler puts the headless server's spawns through the budget. The
 // returned attach wires the budget into the socket server once it exists.
-func admissionHandler(ctx context.Context, cloud bool, tc *tmux.Client, mgr *session.Manager) (ipc.Handler, func(*ipc.Server)) {
+func admissionHandler(ctx context.Context, cfg *config.Config, cloud bool, tc *tmux.Client, mgr *session.Manager) (ipc.Handler, func(*ipc.Server)) {
 	if !cloud {
 		return mgr, func(*ipc.Server) {}
 	}
-	b := budget.New(budget.DefaultLimits, budgetStateDir())
+	b := budget.New(admissionLimits(cfg.Admission), budgetStateDir())
 	b.Panes = func(ctx context.Context) []budget.Pane { return budgetPanes(ctx, tc) }
 	admission := ipc.NewAdmission(ctx, mgr, b, budgetStateDir())
 	return admission, func(srv *ipc.Server) {
@@ -45,6 +46,72 @@ func admissionHandler(ctx context.Context, cloud bool, tc *tmux.Client, mgr *ses
 		admission.RestoreQueue()
 		go b.Run(ctx)
 		go keepScopes(ctx, tc)
+		go watchAdmission(ctx, b)
+	}
+}
+
+// configPoll is how often the daemon checks the config file for new limits.
+const configPoll = 5 * time.Second
+
+// admissionLimits applies the config's overrides to the default limits.
+func admissionLimits(a config.AdmissionConfig) budget.Limits {
+	l := budget.DefaultLimits
+	set := func(dst *float64, v float64) {
+		if v > 0 {
+			*dst = v
+		}
+	}
+	set(&l.CPUShare, a.CPUShare)
+	set(&l.MemShare, a.MemoryShare)
+	set(&l.Reserve.CPU, a.ReserveCores)
+	set(&l.MaxMemorySome60, a.MaxMemorySome60)
+	set(&l.MaxMemoryFull10, a.MaxMemoryFull10)
+	set(&l.MaxLoadPerCore, a.MaxLoadPerCore)
+	if a.ReserveGB > 0 {
+		l.Reserve.Mem = uint64(a.ReserveGB * budget.GB)
+	}
+	if a.MinAvailableGB > 0 {
+		l.MinAvailable = uint64(a.MinAvailableGB * budget.GB)
+	}
+	if d, err := time.ParseDuration(a.MaxWait); err == nil && d > 0 {
+		l.MaxWait = d
+	}
+	return l
+}
+
+// watchAdmission rereads [admission] whenever the config file changes, so
+// tuning the budget never needs a restart. A file that fails to parse keeps
+// the limits in force.
+func watchAdmission(ctx context.Context, b *budget.Budget) {
+	path := config.Path()
+	modified := func() time.Time {
+		info, err := os.Stat(path)
+		if err != nil {
+			return time.Time{}
+		}
+		return info.ModTime()
+	}
+	last := modified()
+	ticker := time.NewTicker(configPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if at := modified(); !at.Equal(last) {
+			last = at
+			cfg, err := config.LoadFromPath(path)
+			if err != nil {
+				log.Printf("budget: keeping limits, %v", err)
+				continue
+			}
+			limits := admissionLimits(cfg.Admission)
+			b.SetLimits(limits)
+			log.Printf("budget: limits reloaded: cpu %.0f%%, memory %.0f%%, reserve %s, max wait %s",
+				limits.CPUShare*100, limits.MemShare*100, limits.Reserve, limits.MaxWait)
+		}
 	}
 }
 
