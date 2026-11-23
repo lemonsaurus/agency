@@ -503,7 +503,11 @@ func (b *Budget) Job(t Ticket) Decision {
 		for _, q := range b.queue {
 			if q.ID == t.ID {
 				q.lastPoll = now
-				return b.decision(q, false, b.fit(q.Cost))
+				reason := b.fit(q.Cost)
+				if reason == "" {
+					reason = "behind higher-priority requests"
+				}
+				return b.decision(q, false, reason)
 			}
 		}
 	}
