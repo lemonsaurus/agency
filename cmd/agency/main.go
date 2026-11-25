@@ -21,9 +21,11 @@ import (
 	"github.com/lemonsaurus/agency/internal/agents"
 	"github.com/lemonsaurus/agency/internal/clipboard"
 	"github.com/lemonsaurus/agency/internal/cloud"
+	"github.com/lemonsaurus/agency/internal/coalesce"
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
+	"github.com/lemonsaurus/agency/internal/order"
 	"github.com/lemonsaurus/agency/internal/palette"
 	"github.com/lemonsaurus/agency/internal/retry"
 	"github.com/lemonsaurus/agency/internal/session"
@@ -94,6 +96,10 @@ func main() {
 		runRenameWindow(os.Args[2:])
 	case "move-window":
 		runMoveWindow(os.Args[2:])
+	case "window-order":
+		runWindowOrder(os.Args[2:])
+	case "window-moved":
+		runWindowMoved()
 	case "handoff-cloud":
 		runHandoffCloud(os.Args[2:])
 	case "kill-all":
@@ -166,6 +172,7 @@ Usage:
   agency spawn <agent> [dir...]     Spawn agent pane(s), one per dir (claude, codex, ...)
   agency spawn --cmd "..." [dir]    Spawn arbitrary command
   agency spawn --window <name> ...   Spawn into a named tmux window
+  agency spawn --window <name> --index <n> ...  Open the window at index n instead of the end
   agency spawn --role <role> ...     Request a manager or worker pane
   agency spawn --label "task" ...    Set task label (required for agent spawns)
   agency spawn --prompt "text" ...   Send the agent its first message
@@ -183,6 +190,8 @@ Usage:
   agency move <pane-id> <window>   Move a pane into a window (created if missing)
   agency rename-window <target> <name> Rename a window by name, index, or id
   agency move-window <target> <index> Place a window at an index, shifting the rest
+  agency window-order [moves-json]  Apply a device's moves to the sky's window order and print it (used over SSH)
+  agency window-moved               Send the sky a window moved on this device (tmux hook)
   agency kill-all                   Kill all agent panes
   agency list                       List all panes with status
   agency budget [--json]            Box budget: headroom, queue, jobs, and what each pane costs
@@ -718,6 +727,11 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 	mgr := session.NewManager(tc, registry, cfg, poller)
 	mgr.WindowPerPane = cloud
 	mgr.OutsideIsHuman = cloud
+	if cloud {
+		if mgr.Order, err = order.Open(windowOrderPath()); err != nil {
+			log.Fatalf("Loading window order: %v", err)
+		}
+	}
 	startDeathLog(mgr, cloud)
 
 	// Check if tmux session already exists (crash recovery).
@@ -853,11 +867,12 @@ func runSpawn(args []string) {
 	sockPath := socketPath(cfg.Session.Name)
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name] [--role manager|worker] [--label task] [--prompt text] <agent|--cmd> [dir]")
+		fmt.Fprintln(os.Stderr, "Usage: agency spawn [--window name [--index n]] [--role manager|worker] [--label task] [--prompt text] <agent|--cmd> [dir]")
 		os.Exit(1)
 	}
 
 	windowName := ""
+	index := 0
 	role := ""
 	label := ""
 	prompt := ""
@@ -869,6 +884,13 @@ func runSpawn(args []string) {
 		switch args[0] {
 		case "--window":
 			windowName = args[1]
+		case "--index":
+			n, err := strconv.Atoi(args[1])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "Error: --index must be a window index from 1")
+				os.Exit(1)
+			}
+			index = n
 		case "--label":
 			label = args[1]
 		case "--prompt":
@@ -888,6 +910,10 @@ func runSpawn(args []string) {
 	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: agent or command is required")
+		os.Exit(1)
+	}
+	if index > 0 && windowName == "" {
+		fmt.Fprintln(os.Stderr, "Error: --index needs --window")
 		os.Exit(1)
 	}
 
@@ -933,6 +959,19 @@ func runSpawn(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(resp)
+		// A queued spawn opens its window later, at the end.
+		if index > 0 && !strings.HasPrefix(resp, ipc.QueuedPrefix) {
+			payload, _ := json.Marshal(moveWindowPayload{Target: windowName, Index: index})
+			resp, err := ipc.SendMessage(sockPath, "move-window:"+string(payload))
+			if err == nil && resp != "ok" {
+				err = errors.New(strings.TrimPrefix(resp, "error: "))
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: placing window %s at %d: %v\n", windowName, index, err)
+				os.Exit(1)
+			}
+			index = 0
+		}
 	}
 }
 
@@ -1389,6 +1428,44 @@ func runMoveWindow(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("moved window %s to index %d\n", args[0], index)
+}
+
+func runWindowOrder(args []string) {
+	payload := "[]"
+	if len(args) == 1 {
+		payload = args[0]
+	} else if len(args) > 1 {
+		fmt.Fprintln(os.Stderr, "Usage: agency window-order [moves-json]")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "window-order:"+payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(resp, "error:") {
+		fmt.Fprintln(os.Stderr, resp)
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
+// runWindowMoved is the window-linked hook. One move links every window
+// again, so a burst shares one trailing report.
+func runWindowMoved() {
+	cfg := loadConfig()
+	_, err := coalesce.Run(filepath.Join(os.TempDir(), "agency-window-moved-"+cfg.Session.Name), func() error {
+		resp, err := ipc.SendMessage(socketPath(cfg.Session.Name), "window-moved")
+		if err == nil && strings.HasPrefix(resp, "error:") {
+			err = errors.New(resp)
+		}
+		return err
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runKillAll() {

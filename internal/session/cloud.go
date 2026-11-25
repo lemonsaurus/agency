@@ -64,6 +64,13 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 		}
 		m.Link.SetWindows(ids)
 	}
+	// Moves made here since the last sync go to the box before new viewers
+	// open windows that are not moves.
+	moves := m.skyMoves(ctx)
+	m.skyGroups = map[string]string{}
+	for _, window := range windows {
+		m.skyGroups[window.ID] = cloud.Group(window.Pane)
+	}
 	// The placeholder goes in before the last viewer leaves, so the session
 	// never empties.
 	if len(windows) == 0 && len(placeholders) == 0 {
@@ -119,15 +126,21 @@ func (m *Manager) SyncCloud(ctx context.Context) (string, error) {
 			m.dropViewer(ctx, paneID)
 		}
 	}
+	summary := fmt.Sprintf("%d cloud panes, %d added, %d moved, %d removed", len(windows), added, moved, removed)
+	if err := m.arrangeSky(ctx, moves); err != nil {
+		summary += fmt.Sprintf(", window order unavailable: %v", err)
+	}
 	_ = m.Visibility(ctx)
-	return fmt.Sprintf("%d cloud panes, %d added, %d moved, %d removed", len(windows), added, moved, removed), nil
+	return summary, nil
 }
 
 // collapseCloud leaves the sky harness one placeholder, which draws the sky
 // screen, and closes every viewer, so this device holds no attachment while
 // another device has the lease or the link gave up. The placeholder goes in
-// first, so the session never empties.
+// first, so the session never empties. The windows that come back take the
+// box's order.
 func (m *Manager) collapseCloud(ctx context.Context, viewers map[string]tmux.PaneInfo, placeholders []string) string {
+	m.skyBase = nil
 	if len(placeholders) == 0 {
 		m.spawnViewer(ctx, cloud.Window{ID: cloud.Placeholder}, "")
 	}

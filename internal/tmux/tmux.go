@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lemonsaurus/agency/internal/order"
 )
 
 // Commander abstracts command execution for testability.
@@ -540,6 +542,36 @@ func (c *Client) MoveWindow(ctx context.Context, target string, index int) error
 	}
 	_, err = c.Cmd.Run(ctx, "move-window", side, "-s", resolved, "-t", occupant.ID)
 	return err
+}
+
+// ArrangeWindows puts the session's windows in the order of ids with the
+// fewest moves, and returns how many it made. Targets name the session, so
+// sessions grouped with it follow and never take the move themselves.
+func (c *Client) ArrangeWindows(ctx context.Context, ids []string) (int, error) {
+	windows, err := c.listWindowRefs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	current := make([]string, len(windows))
+	for i, window := range windows {
+		current[i] = window.ID
+	}
+	made := 0
+	for _, move := range order.Moves(current, ids) {
+		args := []string{"move-window", "-a", "-s", c.SessionName + ":" + move.Name, "-t", c.SessionName + ":" + move.After}
+		if move.After == "" {
+			if current[0] == move.Name {
+				continue
+			}
+			args[1], args[5] = "-b", c.SessionName+":"+current[0]
+		}
+		if _, err := c.Cmd.Run(ctx, args...); err != nil {
+			return 0, err
+		}
+		current = order.Apply(current, []order.Move{move})
+		made++
+	}
+	return made, nil
 }
 
 func (c *Client) windowTarget(windowName string) string {

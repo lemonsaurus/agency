@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lemonsaurus/agency/internal/control"
+	"github.com/lemonsaurus/agency/internal/order"
 )
 
 type spawnRecord struct {
@@ -175,6 +176,12 @@ func (m *mockHandler) MoveWindow(_ context.Context, target string, index int) er
 	m.windowMoves = append(m.windowMoves, moveWindowRecord{target: target, index: index})
 	return nil
 }
+
+func (m *mockHandler) WindowOrder(_ context.Context, moves []order.Move) ([]string, error) {
+	return order.Apply([]string{"control", "journalia", "agency"}, moves), nil
+}
+
+func (m *mockHandler) WindowMoved(context.Context) error { return nil }
 
 func (m *mockHandler) MovePane(_ context.Context, paneID, windowName string) error {
 	m.mu.Lock()

@@ -23,12 +23,22 @@ import (
 // scopeInterval is how often the daemon moves new panes into their scopes.
 const scopeInterval = 15 * time.Second
 
-func budgetStateDir() string {
+// stateDir holds what the daemon keeps across restarts.
+func stateDir() string {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "agency", "budget")
+		return filepath.Join(dir, "agency")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "agency", "budget")
+	return filepath.Join(home, ".local", "state", "agency")
+}
+
+func budgetStateDir() string {
+	return filepath.Join(stateDir(), "budget")
+}
+
+// windowOrderPath holds the sky's window order.
+func windowOrderPath() string {
+	return filepath.Join(stateDir(), "window-order.json")
 }
 
 // admissionHandler puts the headless server's spawns through the budget. The

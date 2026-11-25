@@ -17,6 +17,7 @@ import (
 
 	"github.com/lemonsaurus/agency/internal/budget"
 	"github.com/lemonsaurus/agency/internal/control"
+	"github.com/lemonsaurus/agency/internal/order"
 )
 
 // Handler processes IPC commands from the socket.
@@ -50,6 +51,11 @@ type Handler interface {
 	Live(ctx context.Context, payload string) (string, error)
 	// Cloud serves the sky screen and the viewers' wait for the cloud link.
 	Cloud(ctx context.Context, payload string) (string, error)
+	// WindowOrder applies a device's moves to the sky box's window order and
+	// returns the order.
+	WindowOrder(ctx context.Context, moves []order.Move) ([]string, error)
+	// WindowMoved tells the sky box about a sky window moved on this device.
+	WindowMoved(ctx context.Context) error
 }
 
 type spawnPayload struct {
@@ -334,6 +340,9 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 	if line == "sync-cloud" {
 		return s.handler.SyncCloud(s.ctx)
 	}
+	if line == "window-moved" {
+		return "", s.handler.WindowMoved(s.ctx)
+	}
 	if line == "whoami" {
 		requester, err := s.requester(pid)
 		if err != nil {
@@ -459,6 +468,17 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 			return "", fmt.Errorf("target and name are required")
 		}
 		return "", s.handler.RenameWindow(s.ctx, payload.Target, payload.Name)
+	case "window-order":
+		var moves []order.Move
+		if err := json.Unmarshal([]byte(arg), &moves); err != nil {
+			return "", fmt.Errorf("invalid window-order payload: %w", err)
+		}
+		names, err := s.handler.WindowOrder(s.ctx, moves)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(names)
+		return string(data), nil
 	case "move-window":
 		var payload moveWindowPayload
 		if err := json.Unmarshal([]byte(arg), &payload); err != nil {

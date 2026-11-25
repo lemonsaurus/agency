@@ -16,14 +16,15 @@ import (
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/live"
 	"github.com/lemonsaurus/agency/internal/notify"
+	"github.com/lemonsaurus/agency/internal/order"
 	"github.com/lemonsaurus/agency/internal/session"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
 
 // runCloudWatch runs on the host: it prints a line whenever the panes a sky
-// harness mirrors change, a "reminder {json}" line when a reminder comes due
-// while the link is up, and a "lease {json}" line at start and whenever the
-// lease or its holder's focus changes. Each "shown <device> <focused>
+// harness mirrors or the window order change, a "reminder {json}" line when a
+// reminder comes due while the link is up, and a "lease {json}" line at start
+// and whenever the lease or its holder's focus changes. Each "shown <device> <focused>
 // <keys...>" line on stdin says which of that device's viewers are on screen
 // and when it last took focus: the rest are parked, windows fit the device
 // focused last, and a "views" line reports the result. "claim" and "take"
@@ -74,7 +75,8 @@ func runCloudWatch(cfg *config.Config) {
 			}
 		}
 		if panes, err := tc.ListPanes(ctx); err == nil {
-			if signature := watchSignature(panes, cfg.Session.Name); signature != last {
+			names, _ := order.Read(windowOrderPath())
+			if signature := watchSignature(panes, cfg.Session.Name) + strings.Join(names, "\n"); signature != last {
 				last = signature
 				if _, err := fmt.Println("changed"); err != nil {
 					return

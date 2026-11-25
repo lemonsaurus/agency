@@ -17,6 +17,7 @@ import (
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/deaths"
 	"github.com/lemonsaurus/agency/internal/layout"
+	"github.com/lemonsaurus/agency/internal/order"
 	"github.com/lemonsaurus/agency/internal/status"
 	"github.com/lemonsaurus/agency/internal/tmux"
 )
@@ -90,6 +91,12 @@ type Manager struct {
 	Deaths *deaths.Log
 	// Link is this device's connection to the cloud host; nil without one.
 	Link *cloud.Link
+	// Order is the sky box's window order, which every device follows; nil
+	// off the box.
+	Order *order.Store
+
+	skyBase   []string          // the box's order this device last arranged to; nil until then
+	skyGroups map[string]string // remote window id → its group, as of the last sync
 }
 
 // NewManager creates a session manager.
@@ -236,6 +243,9 @@ func (m *Manager) spawnPane(ctx context.Context, requester control.Requester, ro
 	}
 
 	_ = m.applyLayoutForWindow(ctx, m.cfg.Session.DefaultLayout, paneID)
+	if m.WindowPerPane {
+		_, _ = m.boxOrder(ctx, nil)
+	}
 
 	return paneID, nil
 }
@@ -761,7 +771,11 @@ func (m *Manager) MovePane(ctx context.Context, paneID, windowName string) error
 	defer m.mu.Unlock()
 
 	if m.WindowPerPane {
-		return m.tmux.SetPaneOption(ctx, paneID, "@agency_group", windowName)
+		if err := m.tmux.SetPaneOption(ctx, paneID, "@agency_group", windowName); err != nil {
+			return err
+		}
+		_, _ = m.boxOrder(ctx, nil)
+		return nil
 	}
 	if err := m.tmux.MovePane(ctx, paneID, windowName); err != nil {
 		return err
@@ -777,7 +791,16 @@ func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 	defer m.mu.Unlock()
 
 	if m.WindowPerPane {
-		return m.renameGroup(ctx, target, name)
+		if err := m.renameGroup(ctx, target, name); err != nil {
+			return err
+		}
+		if m.Order != nil {
+			if _, err := m.Order.Update(func(names []string) []string { return order.Rename(names, target, name) }); err != nil {
+				return err
+			}
+			_, _ = m.boxOrder(ctx, nil)
+		}
+		return nil
 	}
 	renamed, err := m.renameRemoteWindow(ctx, target, name)
 	if err != nil {
@@ -800,11 +823,18 @@ func (m *Manager) RenameWindow(ctx context.Context, target, name string) error {
 	return nil
 }
 
+// MoveWindow places a window at an index. On the box the window is a group
+// and every device follows; a device moves its own windows, or its sky
+// windows, which tell the box.
 func (m *Manager) MoveWindow(ctx context.Context, target string, index int) error {
 	if m.WindowPerPane {
-		return fmt.Errorf("sky harness window order is local to each workstation")
+		return m.moveGroup(ctx, target, index)
 	}
-	return m.tmux.MoveWindow(ctx, target, index)
+	err := m.tmux.MoveWindow(ctx, target, index)
+	if err == nil || m.cfg.Cloud.Host == "" || m.remote.MoveWindow(ctx, target, index) != nil {
+		return err
+	}
+	return m.WindowMoved(ctx)
 }
 
 // paneGroup is a pane's group, so a spawn without a window joins the

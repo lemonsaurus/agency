@@ -202,6 +202,11 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	newWindow := fmt.Sprintf(`command-prompt -p 'New window:' { run-shell -b "%s new-window '#{session_name}' '%%%%' '#{pane_current_path}'" }`, agencyBin)
 	rename := fmt.Sprintf(`command-prompt -F -I '#W' -p 'Rename window:' { run-shell -b "%s rename-window '#{window_id}' '%%%%' >/dev/null" }`, agencyBin)
 	worldItem := fmt.Sprintf(`'#{?%s,♁  Earth,☁  Sky}' 'k' { %s }`, inRemote, world)
+	// A swap links no window, so the window-linked hook below misses it.
+	swapped := ""
+	if cfg.Cloud.Host != "" {
+		swapped = fmt.Sprintf(` ; run-shell -b "%s window-moved"`, agencyBin)
+	}
 	b.WriteString("# Worlds\n")
 	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.World, world)
 	fmt.Fprintf(&b, "bind %s %s\n", cfg.Keys.NewWindow, newWindow)
@@ -210,11 +215,11 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	fmt.Fprintf(&b, "bind -T root MouseDown3Status display-menu -T '#[align=centre] #{window_index}:#{window_name} ' -t = -x W -y W"+
 		" '+  New Window' 'n' { %s }"+
 		" '✎  Rename' 'r' { %s }"+
-		" '#{?#{>:#{session_windows},1},,-}⇠  Swap Left' 'l' { swap-window -t :-1 }"+
-		" '#{?#{>:#{session_windows},1},,-}⇢  Swap Right' 'R' { swap-window -t :+1 }"+
+		" '#{?#{>:#{session_windows},1},,-}⇠  Swap Left' 'l' { swap-window -t :-1%s }"+
+		" '#{?#{>:#{session_windows},1},,-}⇢  Swap Right' 'R' { swap-window -t :+1%s }"+
 		" '#{?%s,,☁  Send to Sky}' 's' { confirm-before -p 'Send #W to the sky? (y/n)' { run-shell -b \"%s send-to-sky '#{client_name}' '#{window_id}'\" } }"+
 		" '#[fg=#f38ba8,bold]×  #{?%s,Destroy,Kill}#[default]' 'X' { if -F '%s' { run-shell -b \"%s cloud-act kill-window '#{window_name}'\" } { kill-window } }"+
-		" '' %s\n", newWindow, rename, inRemote, agencyBin, inRemote, inRemote, agencyBin, worldItem)
+		" '' %s\n", newWindow, rename, swapped, swapped, inRemote, agencyBin, inRemote, inRemote, agencyBin, worldItem)
 	b.WriteString("\n")
 
 	// Clipboard: drag to select, Ctrl+C to copy.
@@ -296,7 +301,7 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 	// The cloud host streams only the sky viewers on screen: tell the daemon
 	// whenever what is on screen may have changed.
 	if cfg.Cloud.Host != "" {
-		b.WriteString("# Park sky viewers that leave the screen; size sky windows to the focused device\n")
+		b.WriteString("# Park sky viewers that leave the screen; size sky windows to the focused device; keep the sky's window order\n")
 		b.WriteString("set -g focus-events on\n")
 		for _, hook := range []string{"session-window-changed", "client-session-changed", "client-detached", "window-pane-changed", "after-resize-pane"} {
 			fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s visibility'\"\n", hook, agencyBin)
@@ -304,6 +309,8 @@ func buildTmuxConf(cfg *config.Config, agencyBin string) string {
 		for _, hook := range []string{"client-attached", "client-focus-in"} {
 			fmt.Fprintf(&b, "set-hook -g %s \"run-shell -b '%s focus'\"\n", hook, agencyBin)
 		}
+		// Every move of a sky window relinks it; the box keeps the order for all devices.
+		fmt.Fprintf(&b, "set-hook -g window-linked \"if -F '#{==:#{hook_session_name},%s}' { run-shell -b '%s window-moved' }\"\n", remote, agencyBin)
 		b.WriteString("\n")
 	}
 
