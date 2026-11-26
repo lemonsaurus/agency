@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"math/rand/v2"
@@ -545,13 +546,19 @@ func (c *Client) MoveWindow(ctx context.Context, target string, index int) error
 }
 
 // ArrangeWindows puts the session's windows in the order of ids with the
-// fewest moves, and returns how many it made. Targets name the session, so
-// sessions grouped with it follow and never take the move themselves.
+// fewest moves, numbers them without gaps, and returns how many moves it
+// made. Targets name the session, so sessions grouped with it follow and
+// never take the move themselves.
 func (c *Client) ArrangeWindows(ctx context.Context, ids []string) (int, error) {
 	windows, err := c.listWindowRefs(ctx)
 	if err != nil {
 		return 0, err
 	}
+	want, _, err := c.groupWindows(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer c.showWindows(ctx, want)
 	current := make([]string, len(windows))
 	for i, window := range windows {
 		current[i] = window.ID
@@ -571,7 +578,59 @@ func (c *Client) ArrangeWindows(ctx context.Context, ids []string) (int, error) 
 		current = order.Apply(current, []order.Move{move})
 		made++
 	}
+	if windows, err = c.listWindowRefs(ctx); err != nil {
+		return made, err
+	}
+	for i, window := range windows {
+		if window.Index != windows[0].Index+i {
+			_, err = c.Cmd.Run(ctx, "move-window", "-r", "-t", c.SessionName)
+			return made, err
+		}
+	}
 	return made, nil
+}
+
+// groupWindows maps the session and every session grouped with it to the
+// window it should show, a view session's own window or else the one shown
+// now, and to the window it shows now. Grouped sessions keep a window index,
+// not a window, so a move or renumber changes what they show.
+func (c *Client) groupWindows(ctx context.Context) (want, now map[string]string, err error) {
+	out, err := c.Cmd.Run(ctx, "list-sessions", "-F", "#{session_name}\t#{session_group}\t#{window_id}\t#{@agency_window}")
+	if err != nil {
+		return nil, nil, err
+	}
+	var sessions [][]string
+	group := ""
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) != 4 {
+			continue
+		}
+		if parts[0] == c.SessionName {
+			group = parts[1]
+		}
+		sessions = append(sessions, parts)
+	}
+	want, now = map[string]string{}, map[string]string{}
+	for _, parts := range sessions {
+		if parts[0] == c.SessionName || group != "" && parts[1] == group {
+			want[parts[0]], now[parts[0]] = cmp.Or(parts[3], parts[2]), parts[2]
+		}
+	}
+	return want, now, nil
+}
+
+// showWindows puts each session back on its window from groupWindows.
+func (c *Client) showWindows(ctx context.Context, want map[string]string) {
+	_, now, err := c.groupWindows(ctx)
+	if err != nil {
+		return
+	}
+	for session, window := range want {
+		if current, ok := now[session]; ok && current != window {
+			_, _ = c.Cmd.Run(ctx, "select-window", "-t", "="+session+":"+window)
+		}
+	}
 }
 
 func (c *Client) windowTarget(windowName string) string {

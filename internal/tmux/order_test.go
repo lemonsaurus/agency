@@ -38,7 +38,9 @@ func (c *Client) windowNames(t *testing.T, session string) []string {
 
 // The box's windows sit in sessions grouped with the main one, and a parked
 // viewer sits on a session of its own. Arranging the main session moves the
-// whole group and leaves the park session alone.
+// whole group without gaps, leaves the park session alone, and keeps every
+// grouped session on its window: a view session on its own window, even one
+// it drifted from, and any other on the window it showed.
 func TestArrangeWindowsMovesGroupedViewSessionsAndLeavesParkAlone(t *testing.T) {
 	ctx := context.Background()
 	c := realTmux(t, "cloud")
@@ -61,6 +63,9 @@ func TestArrangeWindowsMovesGroupedViewSessionsAndLeavesParkAlone(t *testing.T) 
 		name, id, _ := strings.Cut(line, " ")
 		ids[name] = id
 	}
+	run("select-window", "-t", "view-1:"+ids["runtimes"])
+	run("set-option", "-t", "view-2", "@agency_window", ids["agency"])
+	shows := map[string]string{"cloud": ids["journalia"], "view-1": ids["runtimes"], "view-2": ids["agency"]}
 	for _, want := range [][]string{
 		{"control", "journalia", "agency", "runtimes", "secretary"},
 		{"secretary", "runtimes", "agency", "journalia", "control"},
@@ -77,6 +82,12 @@ func TestArrangeWindowsMovesGroupedViewSessionsAndLeavesParkAlone(t *testing.T) 
 			if got := c.windowNames(t, session); !slices.Equal(got, want) {
 				t.Fatalf("%s = %v, want %v", session, got, want)
 			}
+			if got := run("display-message", "-p", "-t", "="+session+":", "#{window_id}"); got != shows[session] {
+				t.Fatalf("%s shows %s, want %s", session, got, shows[session])
+			}
+		}
+		if got := run("list-windows", "-t", "cloud", "-F", "#{window_index}"); got != "0\n1\n2\n3\n4" {
+			t.Fatalf("cloud indexes = %q", got)
 		}
 		if got := c.windowNames(t, "park-1"); !slices.Equal(got, []string{"parked"}) {
 			t.Fatalf("park-1 = %v", got)
