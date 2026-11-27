@@ -109,6 +109,9 @@ func TestServeRestoresTheSessionAfterTmuxDies(t *testing.T) {
 	if out := agency("restore"); !strings.Contains(out, "Nothing to restore") {
 		t.Fatalf("second restore = %q", out)
 	}
+	if out := agency("restore", "--json"); out != `{"type":"nothing"}` {
+		t.Fatalf("restore --json = %q", out)
+	}
 	data, _ := os.ReadFile(saved)
 	var m manifest.Manifest
 	if json.Unmarshal(data, &m) != nil || len(m.Panes()) < 3 {

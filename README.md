@@ -304,6 +304,7 @@ agency restore --dry-run             Show what would come back; start nothing
 agency restore                       Finish a restore in progress, or rebuild a dead session
 agency restore --skip %12,mother     Leave panes dead, by id or label fragment
 agency restore --forget              Drop the saved panes and any restore in progress
+agency restore --json [--dry-run]    One JSON object per line, for programs (plan, events, done)
 ```
 
 Panes start one at a time, parents first, windows in order: Pi panes resume with `pi --session <file>`, other commands rerun. Each resumed Pi gets a recovery note with its old and new ID and its parent's and children's new IDs, delivered through its bridge once it is up. Every new pane carries its old ID as `@agency_restored`. A restore that stops keeps its progress in `restore-<session>.json` and picks up where it left off; a finished one leaves nothing to redo. The sky window order lives in its own file and survives. Panes in the `control` window and panes without an agency role are not restored.

@@ -315,10 +315,20 @@ func (c *Client) Attach(ctx context.Context, windowID, viewer string) error {
 // Interactive runs one command on the host with this terminal attached, for
 // commands that draw their own screen.
 func (c *Client) Interactive(ctx context.Context, remote ...string) error {
+	return c.stream(ctx, true, remote...)
+}
+
+// Stream runs one command on the host and copies its output as it comes,
+// without a terminal.
+func (c *Client) Stream(ctx context.Context, remote ...string) error {
+	return c.stream(ctx, false, remote...)
+}
+
+func (c *Client) stream(ctx context.Context, tty bool, remote ...string) error {
 	if err := c.ensureMaster(ctx); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(true, remote...)...)
+	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(tty, remote...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

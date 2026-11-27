@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +30,12 @@ import (
 func runRestore(args []string) {
 	cfg := loadConfig()
 	if cfg.Cloud.Host != "" {
-		if err := (&cloud.Client{Host: cfg.Cloud.Host}).Interactive(context.Background(), append([]string{"restore"}, args...)...); err != nil {
+		client := &cloud.Client{Host: cfg.Cloud.Host}
+		run := client.Interactive
+		if slices.Contains(args, "--json") {
+			run = client.Stream
+		}
+		if err := run(context.Background(), append([]string{"restore"}, args...)...); err != nil {
 			os.Exit(1)
 		}
 		return
@@ -43,8 +49,9 @@ func runHostRestore(args []string) {
 	dry := flags.Bool("dry-run", false, "Show what would come back; start nothing")
 	skip := flags.String("skip", "", "Comma-separated pane IDs or label fragments to leave dead")
 	forget := flags.Bool("forget", false, "Drop the saved panes and any restore in progress")
+	asJSON := flags.Bool("json", false, "Print one JSON object per line instead of the screen")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agency restore [--dry-run] [--skip %id,label,...] [--forget]")
+		fmt.Fprintln(os.Stderr, "Usage: agency restore [--dry-run] [--skip %id,label,...] [--forget] [--json]")
 		os.Exit(1)
 	}
 	lipgloss.SetHasDarkBackground(true)
@@ -77,6 +84,10 @@ func runHostRestore(args []string) {
 		fail("Error: %v", err)
 	}
 	if !ok {
+		if *asJSON {
+			emitJSON(map[string]any{"type": "nothing"})
+			return
+		}
 		fmt.Println("Nothing to restore: the session is the one that was saved.")
 		return
 	}
@@ -85,6 +96,10 @@ func runHostRestore(args []string) {
 		options.Skip = strings.Split(*skip, ",")
 	}
 	steps := restore.Plan(state.Manifest, options)
+	if *asJSON {
+		runRestoreJSON(ctx, tc, name, path, pendingFile, server, state, steps, *dry)
+		return
+	}
 	view := newRestoreView(os.Stdout, steps, state, *dry)
 	if *dry {
 		view.finish(restore.Result{}, true)
@@ -100,6 +115,53 @@ func runHostRestore(args []string) {
 		_ = manifest.Finish(path, pendingFile, server)
 	}
 	view.finish(result, false)
+	if !result.Ok() {
+		os.Exit(1)
+	}
+}
+
+// emitJSON prints one JSON object on a line.
+func emitJSON(v any) {
+	data, _ := json.Marshal(v)
+	fmt.Println(string(data))
+}
+
+// runRestoreJSON is the restore for programs: a plan line, then with a real
+// run one line per event and a closing line with the outcome.
+//
+//	{"type":"plan","session":"cloud","savedAt":"...","inProgress":false,"dryRun":true,"panes":[{"old":"%5","role":"manager","parent":"%1","label":"...","group":"...","command":"pi --session ...","resumed":true,"session":"/path.jsonl","skip":""}]}
+//	{"type":"event","kind":"starting|started|kept|failed|telling|told|unsent","old":"%5","new":"%12","label":"...","index":3,"total":31,"error":"..."}
+//	{"type":"done","ok":true,"restored":31,"failed":0,"unsent":0}
+func runRestoreJSON(ctx context.Context, tc *tmux.Client, name, path, pendingFile, server string, state manifest.Pending, steps []restore.Step, dry bool) {
+	panes := make([]map[string]any, 0, len(steps))
+	for _, step := range steps {
+		panes = append(panes, map[string]any{
+			"old": step.Pane.ID, "role": step.Pane.Role, "parent": step.Pane.Parent, "label": step.Pane.Label, "group": step.Window,
+			"command": step.Command, "resumed": step.Resumed, "session": step.Pane.Session, "skip": step.Skip, "new": state.Restored[step.Pane.ID],
+		})
+	}
+	_, inProgress := os.Stat(pendingFile)
+	emitJSON(map[string]any{"type": "plan", "session": name, "savedAt": state.Manifest.SavedAt, "inProgress": inProgress == nil, "dryRun": dry, "panes": panes})
+	if dry {
+		return
+	}
+	if server == "" {
+		emitJSON(map[string]any{"type": "done", "ok": false, "error": "the tmux server is not running"})
+		os.Exit(1)
+	}
+	result := restore.Run(ctx, hostTarget{tc: tc, socket: socketPath(name)}, state.Manifest, steps, &state,
+		func(p manifest.Pending) error { return manifest.Save(pendingFile, p) },
+		func(e restore.Event) {
+			line := map[string]any{"type": "event", "kind": e.Kind, "old": e.Step.Pane.ID, "new": e.New, "label": e.Step.Pane.Label, "index": e.Index, "total": e.Total}
+			if e.Err != nil {
+				line["error"] = e.Err.Error()
+			}
+			emitJSON(line)
+		})
+	if result.Ok() {
+		_ = manifest.Finish(path, pendingFile, server)
+	}
+	emitJSON(map[string]any{"type": "done", "ok": result.Ok(), "restored": len(result.Restored), "failed": len(result.Failed), "unsent": len(result.Unsent)})
 	if !result.Ok() {
 		os.Exit(1)
 	}
