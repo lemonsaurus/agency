@@ -312,6 +312,19 @@ func (c *Client) Attach(ctx context.Context, windowID, viewer string) error {
 	return cmd.Run()
 }
 
+// Interactive runs one command on the host with this terminal attached, for
+// commands that draw their own screen.
+func (c *Client) Interactive(ctx context.Context, remote ...string) error {
+	if err := c.ensureMaster(ctx); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "ssh", c.sshArgs(true, remote...)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Windows lists remote agents, one per window.
 func (c *Client) Windows(ctx context.Context) ([]Window, error) {
 	out, err := c.Run(ctx, 15*time.Second, "list", "--json")

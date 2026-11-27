@@ -120,6 +120,7 @@ agency spawn --role <role> --label "task" ...  Programmatic manager or worker sp
 agency spawn --prompt "text" ...               Start the agent on a first prompt
 agency label [--pane %N]             Read a pane's task label
 agency label [--pane %N] -- "task"    Set a pane's task label (empty clears)
+agency restore [--dry-run] [--skip ...]  Rebuild the sky session from its saved panes after tmux died
 agency whoami [--role]               Print current pane authority
 agency capabilities                 Print running daemon protocol and promotion shortcut
 agency replace [--cmd "..." dir]     Start a role-preserving successor
@@ -289,6 +290,23 @@ Wrap builds, test suites, Docker builds and headless browsers in `agency job -- 
 Each pane runs in `agency-pane-<id>.scope` under `agency.slice` (MemoryHigh is RAM less 8 GB), with a CPU weight of 400, 200 or 100 by role. `agency.service` and the tmux server's `agency-tmux.scope` get weight 1000, so no build starves the harness.
 
 Tune the limits in `[admission]` (see `configs/default.toml`). The daemon rereads the file within 5 s.
+
+## Surviving a tmux crash
+
+The daemon writes `~/.local/state/agency/manifest-<session>.json` atomically whenever a pane changes: every agent pane's id, role, parent, root, task label, window group and order, working directory and command, plus the Pi session file of each Pi pane. A Pi pane's bridge announces its session file in `<pane>.session` next to its socket; a pane started with `pi --session <file>` is found from its command.
+
+`agency serve` asks tmux every 3 s. After two failed checks in a row it starts a new session, writes the dead session's manifest to `restore-<session>.json`, restores every agent pane there, and notifies Lemon's phone and connected desktops through the reminder path when it starts and when it finishes. The same restore runs when the daemon starts and finds the saved manifest belongs to a server that is gone. A tmux server that stops answering for 45 s is reported, not replaced.
+
+`agency restore` does the same by hand, over SSH from earth:
+
+```
+agency restore --dry-run             Show what would come back; start nothing
+agency restore                       Finish a restore in progress, or rebuild a dead session
+agency restore --skip %12,mother     Leave panes dead, by id or label fragment
+agency restore --forget              Drop the saved panes and any restore in progress
+```
+
+Panes start one at a time, parents first, windows in order: Pi panes resume with `pi --session <file>`, other commands rerun. Each resumed Pi gets a recovery note with its old and new ID and its parent's and children's new IDs, delivered through its bridge once it is up. Every new pane carries its old ID as `@agency_restored`. A restore that stops keeps its progress in `restore-<session>.json` and picks up where it left off; a finished one leaves nothing to redo. The sky window order lives in its own file and survives. Panes in the `control` window and panes without an agency role are not restored.
 
 ## Reminders
 
@@ -521,6 +539,9 @@ tail -f $(agency logs)
 
 **The daemon grows or stalls**
 `kill -USR1 <daemon pid>` writes goroutine, heap, and thread profiles into a new private `agency-profile-*` directory under `/tmp` and logs the path, goroutine count, and heap size. The daemon runs at most 8 tmux commands at once, each for at most 10 seconds, and serves at most 32 requests at once.
+
+**tmux died and took every pane with it**
+The daemon replaces the server and restores the panes on its own; `agency restore --dry-run` shows what it would bring back. Test tmux servers started with the cloud conf refuse `kill-server`, so tests end them with `tmuxtest.Kill`.
 
 **A pane disappeared**
 ```bash

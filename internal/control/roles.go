@@ -93,3 +93,16 @@ func ValidateTaskLabel(label string, required bool) error {
 func (r Requester) CanKillWindow() bool {
 	return r.Role != RoleWorker
 }
+
+// RestoreSpec is one pane of a dead session to bring back. Parent and Root
+// are the new IDs of the pane's parent and root.
+type RestoreSpec struct {
+	Old     string `json:"old"`
+	Role    Role   `json:"role"`
+	Parent  string `json:"parent,omitempty"`
+	Root    string `json:"root,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Window  string `json:"window,omitempty"`
+	Command string `json:"command"`
+	Dir     string `json:"dir,omitempty"`
+}

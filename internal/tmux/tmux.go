@@ -806,3 +806,27 @@ func (c *Client) RespawnPane(ctx context.Context, paneID, command string) error 
 	)
 	return err
 }
+
+// ServerID names the running server by its PID and start time, which no
+// other server on the socket shares.
+func (c *Client) ServerID(ctx context.Context) (string, error) {
+	out, err := c.Cmd.Run(ctx, "display-message", "-p", "#{pid}:#{start_time}")
+	return strings.TrimSpace(out), err
+}
+
+// serverGone are the messages tmux prints when its server is not there.
+var serverGone = []string{"no server running", "server exited unexpectedly", "error connecting to", "lost server"}
+
+// ServerDown is whether err says the tmux server is gone, as opposed to a
+// command that failed or timed out on a live one.
+func ServerDown(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, message := range serverGone {
+		if strings.Contains(err.Error(), message) {
+			return true
+		}
+	}
+	return false
+}

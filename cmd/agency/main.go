@@ -25,8 +25,10 @@ import (
 	"github.com/lemonsaurus/agency/internal/config"
 	"github.com/lemonsaurus/agency/internal/control"
 	"github.com/lemonsaurus/agency/internal/ipc"
+	"github.com/lemonsaurus/agency/internal/manifest"
 	"github.com/lemonsaurus/agency/internal/order"
 	"github.com/lemonsaurus/agency/internal/palette"
+	"github.com/lemonsaurus/agency/internal/restore"
 	"github.com/lemonsaurus/agency/internal/retry"
 	"github.com/lemonsaurus/agency/internal/session"
 	"github.com/lemonsaurus/agency/internal/status"
@@ -52,6 +54,8 @@ func main() {
 		runCloud(os.Args[2:])
 	case "remind":
 		runRemind(os.Args[2:])
+	case "restore":
+		runRestore(os.Args[2:])
 	case "cloud-view":
 		runCloudView(os.Args[2:])
 	case "sync-cloud":
@@ -161,6 +165,7 @@ Usage:
   agency cloud watch                Print a line whenever the headless panes change (used over SSH)
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, zone, sdp}; prints the answer JSON
   agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close
+  agency restore [--dry-run] [--skip %id,label,...] [--forget]  Rebuild the sky session from its saved panes after tmux died
   agency remind [<+20m|YYYY-MM-DDTHH:MM> <text>]  One-off reminder for the phone and connected desktops, in Lemon's zone; no arguments print the time there
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
   agency world <client> <session>   Switch a client between local and the sky harness (tmux keybinding)
@@ -383,6 +388,9 @@ func runCloud(args []string) {
 		return
 	case "watch":
 		runCloudWatch(cfg)
+		return
+	case "restore":
+		runHostRestore(args[1:])
 		return
 	}
 	if args[0] == "attach" {
@@ -741,8 +749,17 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 		}
 		log.Printf("Existing tmux session found, adopting orphan panes...")
 	} else {
+		if cloud {
+			// The saved panes belong to a server that is gone; keep them for the restore.
+			if _, _, err := manifest.Freeze(manifestPath(sessionName), pendingPath(sessionName), "", false); err != nil {
+				log.Printf("Warning: freezing the manifest: %v", err)
+			}
+		}
 		if err := tc.NewSession(ctx); err != nil {
 			log.Fatalf("Creating tmux session: %v", err)
+		}
+		if cloud {
+			clearSessions(socketPath(sessionName))
 		}
 	}
 	if err := tc.NameFirstWindow(ctx, "control"); err != nil {
@@ -760,25 +777,38 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 
 	// Start IPC socket server.
 	sockPath := socketPath(sessionName)
+	var alert func(string)
 	if cloud {
-		mgr.LiveHandler = newLiveManager(tc, mgr, sockPath).Handle
+		liveManager := newLiveManager(tc, mgr, sockPath)
+		mgr.LiveHandler, alert = liveManager.Handle, liveManager.Alert
 	}
 	handler, attachBudget := admissionHandler(ctx, cfg, cloud, tc, mgr)
 	srv := ipc.NewServer(sockPath, handler)
 	attachBudget(srv)
+	var writer *manifest.Writer
+	if cloud {
+		writer = &manifest.Writer{
+			Path: manifestPath(sessionName), PendingPath: pendingPath(sessionName), Session: sessionName,
+			Source: tc, SessionFile: restore.SessionFile(sockPath),
+		}
+		srv.OnChange = writer.Poke
+	}
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Starting socket server: %v", err)
 	}
 
 	// Set AGENCY_SOCKET in the tmux session environment.
-	if err := tc.SetEnv(ctx, "AGENCY_SOCKET", sockPath); err != nil {
-		log.Printf("Warning: setting AGENCY_SOCKET: %v", err)
-	}
-	if tmuxSocket != "" {
-		if err := tc.SetEnv(ctx, "AGENCY_TMUX_SOCKET", tmuxSocket); err != nil {
-			log.Printf("Warning: setting AGENCY_TMUX_SOCKET: %v", err)
+	setupEnv := func(ctx context.Context) {
+		if err := tc.SetEnv(ctx, "AGENCY_SOCKET", sockPath); err != nil {
+			log.Printf("Warning: setting AGENCY_SOCKET: %v", err)
+		}
+		if tmuxSocket != "" {
+			if err := tc.SetEnv(ctx, "AGENCY_TMUX_SOCKET", tmuxSocket); err != nil {
+				log.Printf("Warning: setting AGENCY_TMUX_SOCKET: %v", err)
+			}
 		}
 	}
+	setupEnv(ctx)
 
 	dumpProfilesOnSignal(ctx)
 
@@ -803,11 +833,21 @@ func startDaemon(cfg *config.Config, cloud bool, controllerPane string) *daemon 
 					log.Printf("pruned dead pane %s", id)
 				}
 				if len(removed) > 0 {
+					writer.Poke()
+				}
+				if len(removed) > 0 {
 					attention.update(ctx, poller.Snapshot())
 				}
 			}
 		}
 	}()
+
+	if cloud {
+		go writer.Run(ctx)
+		rec := &recovery{tc: tc, mgr: mgr, socket: sockPath, alert: alert, setup: setupEnv, restored: writer.Poke}
+		go rec.resume(ctx)
+		go rec.watch(ctx)
+	}
 
 	if !cloud && cfg.Cloud.Host != "" {
 		mgr.Link = newCloudLink(sessionName)

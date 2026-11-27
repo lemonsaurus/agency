@@ -234,3 +234,11 @@ func DueReminders(path string, after, upto time.Time) []Reminder {
 	}
 	return due
 }
+
+// Alert notifies the phone and every connected desktop now, as a reminder due
+// in a second.
+func (m *Manager) Alert(text string) {
+	if _, err := m.reminders.Add("+1s", text, time.Now()); err != nil {
+		log.Printf("alert: %v", err)
+	}
+}

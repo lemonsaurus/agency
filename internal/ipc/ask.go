@@ -54,6 +54,15 @@ func BridgePath(daemonSocket, paneID string) (string, error) {
 	return filepath.Join(home, ".agents", "run", "agency", fmt.Sprintf("%x", hash[:8]), paneID[1:]+".sock"), nil
 }
 
+// SessionPath is where a Pi pane's bridge writes the path of its session file.
+func SessionPath(daemonSocket, paneID string) (string, error) {
+	path, err := BridgePath(daemonSocket, paneID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(path, ".sock") + ".session", nil
+}
+
 // Exactly one of text, accepted, or error.
 func (r AskReply) valid() bool {
 	count := 0

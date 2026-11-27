@@ -56,6 +56,9 @@ type Handler interface {
 	WindowOrder(ctx context.Context, moves []order.Move) ([]string, error)
 	// WindowMoved tells the sky box about a sky window moved on this device.
 	WindowMoved(ctx context.Context) error
+	// RestorePane brings back one pane of a dead session with the role,
+	// parent and label it had.
+	RestorePane(ctx context.Context, spec control.RestoreSpec) (string, error)
 }
 
 type spawnPayload struct {
@@ -118,6 +121,8 @@ type Server struct {
 	// Budget answers budget and job requests; nil leaves them unknown.
 	Budget    *budget.Budget
 	Admission *Admission
+	// OnChange runs after a request that may have changed the session.
+	OnChange func()
 }
 
 // NewServer creates a socket server at the given path.
@@ -250,6 +255,9 @@ func (s *Server) handleConn(conn net.Conn, release func()) {
 		return
 	}
 	response, err := s.dispatch(line, peerPIDForConn(conn))
+	if s.OnChange != nil && line != "whoami" && line != "capabilities" && line != "label:{}" {
+		defer s.OnChange()
+	}
 	if err != nil {
 		log.Printf("ipc: dispatch %q: %v", line, err)
 		fmt.Fprintf(writer, "error: %v\n", err)
@@ -383,6 +391,19 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		name, dir := splitDirSuffix(arg)
 		return s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "", "")
+	case "restore-pane":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		if !requester.Human {
+			return "", fmt.Errorf("restoring panes is for Lemon only")
+		}
+		var spec control.RestoreSpec
+		if err := json.Unmarshal([]byte(arg), &spec); err != nil {
+			return "", fmt.Errorf("invalid restore-pane payload: %w", err)
+		}
+		return s.handler.RestorePane(s.ctx, spec)
 	case "spawn-role", "spawn-window":
 		requester, err := s.requester(pid)
 		if err != nil {
