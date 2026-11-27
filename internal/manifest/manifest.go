@@ -72,8 +72,8 @@ type Pending struct {
 }
 
 // Build turns the box's tmux panes into a manifest. sessionFile finds the Pi
-// session file of a pane from its ID and command; it may be nil.
-func Build(session string, panes []tmux.PaneInfo, sessionFile func(paneID, command string) string) Manifest {
+// session file of a pane from the pane and its command; it may be nil.
+func Build(session string, panes []tmux.PaneInfo, sessionFile func(pane tmux.PaneInfo, command string) string) Manifest {
 	var own []tmux.PaneInfo
 	seen := map[string]bool{}
 	for _, pane := range panes {
@@ -110,7 +110,7 @@ func Build(session string, panes []tmux.PaneInfo, sessionFile func(paneID, comma
 			entry.Promotion = string(promotion)
 		}
 		if sessionFile != nil {
-			entry.Session = sessionFile(pane.ID, entry.Command)
+			entry.Session = sessionFile(pane, entry.Command)
 		}
 		manifest.Windows[at].Panes = append(manifest.Windows[at].Panes, entry)
 	}

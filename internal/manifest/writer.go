@@ -27,7 +27,7 @@ type Writer struct {
 	PendingPath string
 	Session     string
 	Source      Source
-	SessionFile func(paneID, command string) string
+	SessionFile func(pane tmux.PaneInfo, command string) string
 
 	poke chan struct{}
 	mu   sync.Mutex

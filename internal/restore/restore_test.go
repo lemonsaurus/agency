@@ -143,3 +143,13 @@ func TestRunReportsFailuresAndSkipsOrphans(t *testing.T) {
 		t.Fatalf("unsent = %v", result.Unsent)
 	}
 }
+
+func TestSessionFileNameCarriesItsCreationTime(t *testing.T) {
+	created, ok := nameTime("2026-11-27T09-47-46-911Z_01a21c67-615e-761b-963c-88cc36a731a0.jsonl")
+	if !ok || !created.Equal(time.Date(2026, 11, 27, 9, 47, 46, 911_000_000, time.UTC)) {
+		t.Fatalf("created = %v, %v", created, ok)
+	}
+	if _, ok := nameTime("notes.jsonl"); ok {
+		t.Fatal("a stray file parsed as a session")
+	}
+}

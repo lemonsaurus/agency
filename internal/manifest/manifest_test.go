@@ -22,7 +22,7 @@ func TestBuildKeepsTheBoxPanesInWindowOrder(t *testing.T) {
 		{ID: "%1", Session: "view-9", WindowID: "@1", WindowIndex: 1},
 		{ID: "%2", Session: "park-4", WindowID: "@2", WindowIndex: 2},
 	}
-	got := Build("cloud", panes, func(id, command string) string { return "file-" + id })
+	got := Build("cloud", panes, func(pane tmux.PaneInfo, command string) string { return "file-" + pane.ID })
 	if len(got.Windows) != 2 || got.Windows[0].Group != "alpha" || got.Windows[1].Group != "beta" {
 		t.Fatalf("windows = %+v", got.Windows)
 	}
