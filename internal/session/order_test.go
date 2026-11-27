@@ -16,6 +16,7 @@ import (
 	"github.com/lemonsaurus/agency/internal/cloud"
 	"github.com/lemonsaurus/agency/internal/order"
 	"github.com/lemonsaurus/agency/internal/tmux"
+	"github.com/lemonsaurus/agency/internal/tmuxtest"
 )
 
 // skyBox stands in for the box over SSH: it lists remote windows and keeps
@@ -72,7 +73,7 @@ func newSkyDevice(t *testing.T, box *skyBox, opened ...string) *skyDevice {
 	}
 	socket := fmt.Sprintf("agency-sky-test-%d-%d", os.Getpid(), time.Now().UnixNano())
 	tc := &tmux.Client{Cmd: &tmux.ExecCommander{SocketName: socket}, SessionName: "test"}
-	t.Cleanup(func() { tc.Cmd.Run(context.Background(), "kill-server") })
+	t.Cleanup(func() { tmuxtest.Kill(socket) })
 	mgr := newTestManager(&testMock{})
 	mgr.tmux = tc
 	mgr.remote = &tmux.Client{Cmd: tc.Cmd, SessionName: mgr.cfg.Session.RemoteName()}

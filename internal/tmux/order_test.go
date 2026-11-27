@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/config"
+	"github.com/lemonsaurus/agency/internal/tmuxtest"
 )
 
 // realTmux starts a private tmux server for the test and returns a client
@@ -23,7 +24,7 @@ func realTmux(t *testing.T, session string) *Client {
 	}
 	socket := fmt.Sprintf("agency-order-test-%d-%s", os.Getpid(), strings.ReplaceAll(t.Name(), "/", "-"))
 	c := &Client{Cmd: &ExecCommander{SocketName: socket}, SessionName: session}
-	t.Cleanup(func() { c.Cmd.Run(context.Background(), "kill-server") })
+	t.Cleanup(func() { tmuxtest.Kill(socket) })
 	return c
 }
 

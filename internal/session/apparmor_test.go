@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lemonsaurus/agency/internal/control"
+	"github.com/lemonsaurus/agency/internal/tmuxtest"
 )
 
 func TestMain(m *testing.M) {
@@ -15,6 +16,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	apparmorProfiles = dir
+	tmuxtest.Sweep()
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

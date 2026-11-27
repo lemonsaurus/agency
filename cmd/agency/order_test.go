@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lemonsaurus/agency/internal/order"
+	"github.com/lemonsaurus/agency/internal/tmuxtest"
 )
 
 // The sky box keeps one window order for every device: moves by group,
@@ -70,7 +71,7 @@ func TestServeKeepsTheWindowOrderAcrossMovesAndRestarts(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		stop()
-		exec.Command("tmux", "-L", "agency-"+session, "kill-server").Run()
+		tmuxtest.Kill("agency-" + session)
 		for _, suffix := range []string{".sock", ".lock", ".log"} {
 			os.Remove(fmt.Sprintf("/tmp/agency-%s%s", session, suffix))
 		}

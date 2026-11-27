@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/lemonsaurus/agency/internal/tmuxtest"
 )
 
 // The test binary doubles as agency when AGENCY_TEST_MAIN is set, so tests can run real subcommands.
@@ -17,6 +19,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
+	tmuxtest.Sweep()
 	os.Exit(m.Run())
 }
 
@@ -35,7 +38,7 @@ func TestServeRecordsStartAndInstallsDeathHooks(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	t.Cleanup(func() {
-		tmux("kill-server")
+		tmuxtest.Kill("agency-" + session)
 		for _, suffix := range []string{".sock", ".lock", ".log"} {
 			os.Remove(fmt.Sprintf("/tmp/agency-%s%s", session, suffix))
 		}
