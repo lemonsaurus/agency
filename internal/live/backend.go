@@ -129,7 +129,10 @@ func (b *Backend) Complete(ctx context.Context, input []map[string]any, format j
 				result, err := b.Tools(ctx, output.Name, output.Arguments)
 				var payload []byte
 				var lookup LookupError
+				var route RouteError
 				switch {
+				case errors.As(err, &route):
+					payload, _ = json.Marshal(map[string]string{"error": err.Error() + ". Nothing was started and nothing was sent. Correct the route and call again."})
 				case errors.As(err, &lookup):
 					payload, _ = json.Marshal(map[string]string{"error": err.Error() + ". Only this lookup failed: nothing changed and no session's work failed. Looking again is safe."})
 				case err != nil:

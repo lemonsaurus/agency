@@ -167,6 +167,9 @@ func (s *Session) delegate(id string) {
 	var tools []string
 	for _, call := range reply.Fetched {
 		tools = append(tools, call.Tool)
+		if strings.HasPrefix(call.Result, `{"error":`) {
+			log.Printf("live: %s tool %s failed: %s", s.Agent, call.Tool, truncate(call.Result, 400))
+		}
 	}
 	log.Printf("live: %s delegation answered after %s, tools [%s]: %s", s.Agent, span(time.Since(now)), strings.Join(tools, " "), truncate(reply.Say, 300))
 	s.recall.Add(Exchange{At: now, Asked: asked, Fetched: reply.Fetched, Said: reply.Say, Details: reply.Details})

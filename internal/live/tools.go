@@ -49,7 +49,7 @@ func NewDispatcher(box Box, discord *Discord, emit func(Update)) *Dispatcher {
 var Schema = json.RawMessage(`[
 {"type":"function","name":"activity","description":"What every session on the box has been doing in the last 12 hours, from the diary all sessions write: state (working, idle, stopped, failed, closed), their latest prompts, narrated steps and answers, most recently active first. Call this first whenever Lemon asks how things are going, what is happening, or what everyone is doing.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
 {"type":"function","name":"list_panes","description":"List open sessions with their id, task name, status and model, plus the projects on the box where a session can be opened.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}},
-{"type":"function","name":"ask_project","description":"Ask a question or give an instruction inside a project. Reuses the phone's own session in that project or opens one. Queued and returned at once; the session's progress and answer arrive in the conversation on their own. Use this by default for anything project-related; no permission needed. Never automatically retry.","parameters":{"type":"object","properties":{"project_path":{"type":"string"},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"],"description":"narrate: Lemon is focused on this and wants to hear progress. background: he asked to set it up and move on; only the finish is announced."}},"required":["project_path","text","mode"],"additionalProperties":false}},
+{"type":"function","name":"ask_project","description":"Ask a question or give an instruction inside a project. Reuses the phone's own session in that project or opens one. Queued and returned at once; the session's progress and answer arrive in the conversation on their own. Use this by default for anything project-related; no permission needed. Never automatically retry.","parameters":{"type":"object","properties":{"project_path":{"type":"string","description":"Exactly one path from the projects in list_panes. A notes vault, a file or any other path is not a project: put it in text and pick the project the work belongs to."},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"],"description":"narrate: Lemon is focused on this and wants to hear progress. background: he asked to set it up and move on; only the finish is announced."}},"required":["project_path","text","mode"],"additionalProperties":false}},
 {"type":"function","name":"ask_pane","description":"Send Lemon's instruction to a specific existing session he named. Queued and returned at once; progress and answer arrive in the conversation on their own. Never automatically retry.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."},"text":{"type":"string"},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","text","mode"],"additionalProperties":false}},
 {"type":"function","name":"check_pane","description":"Check in on a session: whether it is working or idle, its model, what it is doing now, and its last answer.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."}},"required":["pane_id"],"additionalProperties":false}},
 {"type":"function","name":"follow_pane","description":"Switch how a running session reaches the conversation: narrate progress, or background until it finishes.","parameters":{"type":"object","properties":{"pane_id":{"type":"string","description":"The session's id from list_panes, or its task name."},"mode":{"type":"string","enum":["narrate","background"]}},"required":["pane_id","mode"],"additionalProperties":false}},
@@ -91,6 +91,13 @@ func Mutates(name string) bool { return !lookups[name] }
 type LookupError struct{ error }
 
 func (e LookupError) Unwrap() error { return e.error }
+
+// RouteError is a request that could not be aimed: the project is not on the box's list, or the box
+// could not be read. It fails before anything starts or is sent, so correcting the route and asking
+// again is safe.
+type RouteError struct{ error }
+
+func (e RouteError) Unwrap() error { return e.error }
 
 // CallFrom is Call for the call or, texted, for the chat: the work it starts reports back there.
 func (d *Dispatcher) CallFrom(ctx context.Context, texted bool, name, arguments string) (any, error) {
@@ -147,14 +154,14 @@ func (d *Dispatcher) call(ctx context.Context, texted bool, name, arguments stri
 	case "ask_project":
 		project, err := d.project(args.ProjectPath)
 		if err != nil {
-			return nil, err
+			return nil, RouteError{err}
 		}
 		// Reuse the pane the phone opened in this project; otherwise spawn one unlabeled and let Pi
 		// name it from the first prompt. deliver finds it as the bridged pane in that directory
 		// that did not exist before the spawn.
 		panes, err := d.box.Panes(ctx)
 		if err != nil {
-			return nil, err
+			return nil, RouteError{fmt.Errorf("could not list the sessions: %v", err)}
 		}
 		d.mu.Lock()
 		ownedID := d.owned[project.Path]
@@ -320,14 +327,14 @@ func (d *Dispatcher) rename(panes []Pane) {
 func (d *Dispatcher) project(path string) (Project, error) {
 	projects, err := d.box.Projects()
 	if err != nil {
-		return Project{}, err
+		return Project{}, fmt.Errorf("could not list the projects: %v", err)
 	}
 	for _, project := range projects {
 		if project.Path == path {
 			return project, nil
 		}
 	}
-	return Project{}, fmt.Errorf("choose a project path returned by list_panes")
+	return Project{}, fmt.Errorf("%q is not one of the box's projects. Use a path from the projects in list_panes; a notes vault or file path goes in text, with the project the work belongs to as project_path", path)
 }
 
 // enqueue records the ticket and starts delivering it; the caller gets a one-line status now.
