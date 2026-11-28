@@ -183,6 +183,8 @@ func (m *mockHandler) WindowOrder(_ context.Context, moves []order.Move) ([]stri
 
 func (m *mockHandler) WindowMoved(context.Context) error { return nil }
 
+func (m *mockHandler) Reparent(context.Context, control.Reparent) error { return nil }
+
 func (m *mockHandler) RestorePane(context.Context, control.RestoreSpec) (string, error) {
 	return "%9", nil
 }

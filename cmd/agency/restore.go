@@ -96,11 +96,12 @@ func runHostRestore(args []string) {
 		options.Skip = strings.Split(*skip, ",")
 	}
 	steps := restore.Plan(state.Manifest, options)
+	kept := keptPanes(ctx, tc, state, steps)
 	if *asJSON {
-		runRestoreJSON(ctx, tc, name, path, pendingFile, server, state, steps, *dry)
+		runRestoreJSON(ctx, tc, name, path, pendingFile, server, state, steps, kept, *dry)
 		return
 	}
-	view := newRestoreView(os.Stdout, steps, state, *dry)
+	view := newRestoreView(os.Stdout, steps, state, kept, *dry)
 	if *dry {
 		view.finish(restore.Result{}, true)
 		return
@@ -120,6 +121,17 @@ func runHostRestore(args []string) {
 	}
 }
 
+// keptPanes are the panes an earlier run, or the daemon's, already brought back: old ID to new.
+func keptPanes(ctx context.Context, tc *tmux.Client, state manifest.Pending, steps []restore.Step) map[string]string {
+	kept := map[string]string{}
+	for _, step := range steps {
+		if id, ok := state.Restored[step.Pane.ID]; ok && step.Skip == "" && paneRestoredFrom(ctx, tc, id, step.Pane.ID) {
+			kept[step.Pane.ID] = id
+		}
+	}
+	return kept
+}
+
 // emitJSON prints one JSON object on a line.
 func emitJSON(v any) {
 	data, _ := json.Marshal(v)
@@ -132,12 +144,12 @@ func emitJSON(v any) {
 //	{"type":"plan","session":"cloud","savedAt":"...","inProgress":false,"dryRun":true,"panes":[{"old":"%5","role":"manager","parent":"%1","label":"...","group":"...","command":"pi --session ...","resumed":true,"session":"/path.jsonl","skip":""}]}
 //	{"type":"event","kind":"starting|started|kept|failed|telling|told|unsent","old":"%5","new":"%12","label":"...","index":3,"total":31,"error":"..."}
 //	{"type":"done","ok":true,"restored":31,"failed":0,"unsent":0}
-func runRestoreJSON(ctx context.Context, tc *tmux.Client, name, path, pendingFile, server string, state manifest.Pending, steps []restore.Step, dry bool) {
+func runRestoreJSON(ctx context.Context, tc *tmux.Client, name, path, pendingFile, server string, state manifest.Pending, steps []restore.Step, kept map[string]string, dry bool) {
 	panes := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		panes = append(panes, map[string]any{
 			"old": step.Pane.ID, "role": step.Pane.Role, "parent": step.Pane.Parent, "label": step.Pane.Label, "group": step.Window,
-			"command": step.Command, "resumed": step.Resumed, "session": step.Pane.Session, "skip": step.Skip, "new": state.Restored[step.Pane.ID],
+			"command": step.Command, "resumed": step.Resumed, "session": step.Pane.Session, "skip": step.Skip, "new": kept[step.Pane.ID],
 		})
 	}
 	_, inProgress := os.Stat(pendingFile)
@@ -240,7 +252,7 @@ type restoreView struct {
 	stop    chan struct{}
 }
 
-func newRestoreView(out io.Writer, steps []restore.Step, state manifest.Pending, dry bool) *restoreView {
+func newRestoreView(out io.Writer, steps []restore.Step, state manifest.Pending, kept map[string]string, dry bool) *restoreView {
 	v := &restoreView{out: out, dry: dry, state: state, byOld: map[string]*restoreRow{}, started: time.Now(), stop: make(chan struct{}), width: 100, height: 40}
 	if file, ok := out.(*os.File); ok && term.IsTerminal(file.Fd()) {
 		v.tty = true
@@ -252,6 +264,8 @@ func newRestoreView(out io.Writer, steps []restore.Step, state manifest.Pending,
 		row := &restoreRow{step: step}
 		if step.Skip != "" {
 			row.state = stateSkipped
+		} else if id, ok := kept[step.Pane.ID]; ok {
+			row.state, row.id = stateKept, id
 		}
 		v.rows = append(v.rows, row)
 		v.byOld[step.Pane.ID] = row
@@ -504,18 +518,20 @@ func (v *restoreView) finish(result restore.Result, dry bool) {
 		fmt.Fprint(v.out, "\x1b[?25h")
 	}
 	if dry {
-		resumed, fresh, skipped := 0, 0, 0
+		resumed, fresh, skipped, back := 0, 0, 0, 0
 		for _, row := range v.rows {
 			switch {
 			case row.step.Skip != "":
 				skipped++
+			case row.state == stateKept:
+				back++
 			case row.step.Resumed:
 				resumed++
 			default:
 				fresh++
 			}
 		}
-		fmt.Fprintf(v.out, "\n  %s\n\n", rowDim.Render(fmt.Sprintf("Would start %d panes: %d resume a Pi conversation, %d rerun their command. %d stay dead. Nothing was started.", resumed+fresh, resumed, fresh, skipped)))
+		fmt.Fprintf(v.out, "\n  %s\n\n", rowDim.Render(fmt.Sprintf("Would start %d panes: %d resume a Pi conversation, %d rerun their command. %d are already back, %d stay dead. Nothing was started.", resumed+fresh, resumed, fresh, back, skipped)))
 		return
 	}
 	switch {

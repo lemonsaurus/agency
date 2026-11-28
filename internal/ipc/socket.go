@@ -59,6 +59,8 @@ type Handler interface {
 	// RestorePane brings back one pane of a dead session with the role,
 	// parent and label it had.
 	RestorePane(ctx context.Context, spec control.RestoreSpec) (string, error)
+	// Reparent puts a pane under a new parent, with its descendants' roots following.
+	Reparent(ctx context.Context, move control.Reparent) error
 }
 
 type spawnPayload struct {
@@ -391,6 +393,19 @@ func (s *Server) dispatch(line string, pid int) (string, error) {
 		}
 		name, dir := splitDirSuffix(arg)
 		return s.handler.SpawnAgent(s.ctx, requester, role, name, dir, "", "")
+	case "reparent":
+		requester, err := s.requester(pid)
+		if err != nil {
+			return "", err
+		}
+		if !requester.Human {
+			return "", fmt.Errorf("reparenting panes is for Lemon only")
+		}
+		var move control.Reparent
+		if err := json.Unmarshal([]byte(arg), &move); err != nil || move.Pane == "" || move.Parent == "" {
+			return "", fmt.Errorf("reparent needs a pane and a parent")
+		}
+		return "", s.handler.Reparent(s.ctx, move)
 	case "restore-pane":
 		requester, err := s.requester(pid)
 		if err != nil {

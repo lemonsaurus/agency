@@ -88,6 +88,8 @@ func main() {
 		runRequestPromotion(os.Args[2:])
 	case "approve-promotion":
 		runApprovePromotion(os.Args[2:])
+	case "reparent":
+		runReparent(os.Args[2:])
 	case "send":
 		runSend(os.Args[2:])
 	case "capture":
@@ -165,6 +167,7 @@ Usage:
   agency cloud watch                Print a line whenever the headless panes change (used over SSH)
   agency cloud live start <json>    Create a GPT-Live session the box drives: {voice, accent, zone, sdp}; prints the answer JSON
   agency cloud live status|said <text>|discord <json>|discord-done <id> [error]|reminder-done <id> [error]|reminders|push-token <token> <zone>|chat-sync <rev>|chat-send <text>|chat-voice <seconds> <peaks> < audio|chat-react <id> [emoji]|close
+  agency reparent <pane> <new-parent>    Move a pane under another parent (Lemon only)
   agency restore [--dry-run] [--skip %id,label,...] [--forget]  Rebuild the sky session from its saved panes after tmux died
   agency remind [<+20m|YYYY-MM-DDTHH:MM> <text>]  One-off reminder for the phone and connected desktops, in Lemon's zone; no arguments print the time there
   agency sync-cloud                 Mirror the cloud host's panes into the sky harness
@@ -1154,6 +1157,20 @@ func runRequestPromotion(args []string) {
 	}
 	if resp != "ok" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp)
+		os.Exit(1)
+	}
+}
+
+// runReparent is `agency reparent <pane> <new-parent>`, for Lemon.
+func runReparent(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "Usage: agency reparent <pane-id> <new-parent-id>")
+		os.Exit(1)
+	}
+	payload, _ := json.Marshal(control.Reparent{Pane: args[0], Parent: args[1]})
+	resp, err := ipc.SendMessage(socketPath(loadConfig().Session.Name), "reparent:"+string(payload))
+	if err != nil || resp != "ok" {
+		fmt.Fprintf(os.Stderr, "Error: %v %s\n", err, resp)
 		os.Exit(1)
 	}
 }

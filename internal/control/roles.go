@@ -94,6 +94,12 @@ func (r Requester) CanKillWindow() bool {
 	return r.Role != RoleWorker
 }
 
+// Reparent moves a pane under another parent.
+type Reparent struct {
+	Pane   string `json:"pane"`
+	Parent string `json:"parent"`
+}
+
 // RestoreSpec is one pane of a dead session to bring back. Parent and Root
 // are the new IDs of the pane's parent and root.
 type RestoreSpec struct {

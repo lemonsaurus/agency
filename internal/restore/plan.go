@@ -5,6 +5,7 @@ package restore
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -44,7 +45,7 @@ func Plan(m manifest.Manifest, opts Options) []Step {
 		for _, pane := range window.Panes {
 			step := Step{Pane: pane, Window: name, Command: pane.Command}
 			switch {
-			case window.Name == "control":
+			case window.Name == "control" && pane.Label == "" && isShell(pane.Command):
 				step.Skip = "control window"
 			case pane.Role == "":
 				step.Skip = "not an agent"
@@ -86,6 +87,20 @@ func skipped(pane manifest.Pane, skip []string) bool {
 		if item == pane.ID || item != "" && !strings.HasPrefix(item, "%") && strings.Contains(strings.ToLower(pane.Label), strings.ToLower(item)) {
 			return true
 		}
+	}
+	return false
+}
+
+// isShell is whether command is a bare login shell: the control window's own, which a new
+// session already has.
+func isShell(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return true
+	}
+	switch filepath.Base(fields[0]) {
+	case "zsh", "bash", "sh", "fish", "dash":
+		return len(fields) == 1
 	}
 	return false
 }

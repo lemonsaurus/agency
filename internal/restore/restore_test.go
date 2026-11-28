@@ -153,3 +153,16 @@ func TestSessionFileNameCarriesItsCreationTime(t *testing.T) {
 		t.Fatal("a stray file parsed as a session")
 	}
 }
+
+// The control window holds the daemon's own shell, which a new session already has, and often
+// the controller Lemon runs there, which must come back.
+func TestPlanKeepsAControllerRunningInTheControlWindow(t *testing.T) {
+	m := manifest.Manifest{Windows: []manifest.Window{{Name: "control", Panes: []manifest.Pane{
+		{ID: "%0", Role: "controller", Command: "zsh"},
+		{ID: "%5", Role: "controller", Label: "Release", Command: "pi", Session: "/s/r.jsonl"},
+	}}}}
+	steps := Plan(m, Options{})
+	if steps[0].Skip != "control window" || steps[1].Skip != "" || !steps[1].Resumed {
+		t.Fatalf("steps = %+v", steps)
+	}
+}
