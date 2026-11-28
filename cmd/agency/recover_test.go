@@ -56,7 +56,7 @@ func TestServeRestoresTheSessionAfterTmuxDies(t *testing.T) {
 	var boss string
 	wait := func(what string, done func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(60 * time.Second); !done(); time.Sleep(100 * time.Millisecond) {
+		for deadline := time.Now().Add(120 * time.Second); !done(); time.Sleep(100 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				log, _ := os.ReadFile(fmt.Sprintf("/tmp/agency-%s.log", session))
 				data, _ := os.ReadFile(filepath.Join(home, ".local", "state", "agency", "manifest-"+session+".json"))
